@@ -1,13 +1,15 @@
 import { test, expect } from 'claude-code/testing'
 import type { ToolCallResult } from 'claude-code'
-import { debugLine, factsOf, notice, questionText, resumeReply, stopText } from '../../hooks/core/text.ts'
-import { HOUR, RESETS, T0, above, auditor, bash, begin, clear, cmd, drain, measure, slowAsk, step, typed, world } from '../helpers/world.ts'
+import { atText, debugLine, factsOf, notice, questionText, resumeReply, stopReply, stopText } from '../../hooks/core/text.ts'
+import { HOUR, RESETS, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, slowAsk, step, stopRec, typed, world } from '../helpers/world.ts'
 
 // The gate through the engine (design 11.4, gate.test.ts): one question for every held loop,
 // every answer class, the carrier, the hand-off, decisions from another copy, forks and failures.
 
 const F93 = factsOf({ kind: 'live', pct: 93, resetsAtMs: Date.parse(RESETS) }, 10)
 const STOP = stopText(F93)
+const AT = atText(Date.parse(RESETS), ['five_hour']) // {at} with autoResume on
+const AUTO_OFF = { SPARE10_AUTO_RESUME: 'off' } // the 0.1 behaviour: a question waits for its answer
 const debug = (w: { logs: Array<{ text: string; to?: string }> }) => w.logs.filter((l) => l.to === 'debug').map((l) => l.text)
 const transcript = (w: { logs: Array<{ text: string; to?: string }> }) => w.logs.filter((l) => l.to !== 'debug').map((l) => l.text)
 
@@ -68,7 +70,7 @@ test('Stop here: parked loops are denied, later calls denied and steps refused, 
   expect((await bash($, 'a1')).deny).toBe(STOP)
   await w.clock.advance(1000)
   w.envSetDelayMs = 0
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${Date.parse(RESETS)} ${T0}`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto'))
   expect((await bash($)).deny).toBe(STOP)
   expect((await bash($, 'a1')).deny).toBe(STOP)
   const refused = await drain($, step())
@@ -76,7 +78,7 @@ test('Stop here: parked loops are denied, later calls denied and steps refused, 
   expect(w.requests).toBe(0)
   expect(w.ran).toEqual([])
   expect(w.asked).toHaveLength(1)
-  expect(transcript(w)).toContain(notice.stopped(F93))
+  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true }))
 })
 
 test('a dismissed dialog, Chat about this (a rejection) and free text all read as Stop', async ($, on) => {
@@ -86,6 +88,7 @@ test('a dismissed dialog, Chat about this (a rejection) and free text all read a
     w.env.delete('SPARE10_STOPPED')
     w.answer = answer
     expect((await bash($)).deny).toBe(STOP)
+    await w.clock.settle() // the stop is written after the held call returns
     expect(w.env.get('SPARE10_STOPPED')).toBeDefined()
     expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   }
@@ -97,7 +100,7 @@ test('the dialog shows the loop question, the spare10 chip and Stop here first',
   const w = world(on, { pct: 93, answer: 'Resume' })
   await begin($, w)
   await bash($)
-  expect(w.asked).toEqual([{ question: questionText(F93, 'loop', 'hold'), header: 'spare10', labels: ['Stop here', 'Resume'] }])
+  expect(w.asked).toEqual([{ question: questionText(F93, 'loop', 'hold', true), header: 'spare10', labels: ['Stop here', 'Resume'] }])
 })
 
 test('a carrier the host rejects is re-armed and the loop still resumes', async ($, on) => {
@@ -197,6 +200,7 @@ test('a stopped value older than the question does not answer it, nor one for a 
   const w = world(on, { pct: 93, answer: 'dismiss' })
   await begin($, w)
   expect((await bash($)).deny).toBe(STOP)
+  await w.clock.settle() // the stop is written after the held call returns
   expect(w.env.get('SPARE10_STOPPED')).toBeDefined()
   w.answer = 'hang'
   const p = $.prompt.submit(typed('go'))
@@ -207,7 +211,7 @@ test('a stopped value older than the question does not answer it, nor one for a 
   expect(w.prompts).toEqual([])
   // Written after the question opened, but for a window that has ended.
   await w.clock.advance(1000)
-  w.env.set('SPARE10_STOPPED', `S1 ${T0 + 500} ${T0 + 600}`)
+  w.env.set('SPARE10_STOPPED', stopRec('S1', T0 + 500, T0 + 600))
   w.cap()
   await w.clock.settle()
   expect(w.dialogAborted).toBe('no')
@@ -224,7 +228,7 @@ test("another session's stop never settles this session's question", async ($, o
   const held = bash($)
   await w.clock.settle()
   await w.clock.advance(1000)
-  w.env.set('SPARE10_STOPPED', `S0 ${Date.parse(RESETS)} ${w.clock.now()}`) // another conversation, after the question opened
+  w.env.set('SPARE10_STOPPED', stopRec('S0', RESETS, w.clock.now())) // another conversation, after the question opened
   w.cap()
   await w.clock.settle()
   expect(w.dialogAborted).toBe('no')
@@ -244,7 +248,7 @@ test('after /clear, a stop from another copy under the new id settles the open q
   expect(w.asked).toHaveLength(1)
   await clear($, w, 'S2') // nothing gated runs after it: this copy's cached id is still S1
   await w.clock.advance(1000)
-  w.env.set('SPARE10_STOPPED', `S2 ${Date.parse(RESETS)} ${w.clock.now()}`) // another copy's /spare10 stop
+  w.env.set('SPARE10_STOPPED', `S2 ${Date.parse(RESETS)} ${w.clock.now()}`) // legacy: a 0.1 copy's /spare10 stop (three tokens) still stops
   w.cap()
   await w.clock.settle()
   expect(out?.deny).toBe(STOP)
@@ -252,7 +256,7 @@ test('after /clear, a stop from another copy under the new id settles the open q
 })
 
 test('the question has no timed release: past its window end the loops stay held, B6 is logged once, and Resume then runs them', async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1'] })
+  const w = world(on, { pct: 93, agents: ['a1'], env: AUTO_OFF })
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   await w.clock.settle()
@@ -272,12 +276,12 @@ test('the question has no timed release: past its window end the loops stay held
 })
 
 test('without resetsAt a hold is not released after one hour', async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: null })
+  const w = world(on, { pct: 93, resetsAt: null, env: AUTO_OFF })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
   expect(w.asked).toHaveLength(1)
-  await w.clock.advance(2 * HOUR)
+  await w.clock.advance(2 * HOUR + TICK) // B6 comes on the first tick after the fallback window end
   w.cap()
   await w.clock.settle()
   expect(w.ran).toEqual([])
@@ -415,12 +419,12 @@ test('a question stopped by /spare10 stop before its dialog arrives: the late di
   const held = bash($, 'a1')
   await w.clock.settle()
   expect(w.asked).toEqual([])
-  expect((await $.command.run(cmd('stop'))).text).toBe('stopped. Held work is refused.')
+  expect((await $.command.run(cmd('stop'))).text).toBe(stopReply('asking', undefined, undefined, { at: AT }))
   expect((await held).deny).toBe(STOP)
   await w.clock.advance(1000)
   await w.clock.settle()
   expect(w.asked).toEqual([]) // no dialog is left whose Stop here or Resume nobody reads
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${Date.parse(RESETS)} ${T0}`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto'))
   expect((await bash($, 'a1')).deny).toBe(STOP)
 })
 
@@ -489,8 +493,8 @@ test('after five hand-offs the next lost raiser settles the question as Stop her
   expect(w.asked).toHaveLength(6)
   expect(bg?.deny).toBe(STOP) // the live waiter is refused
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${Date.parse(RESETS)} ${T0 + 1500}`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0 + 1500, 'five_hour,work,auto'))
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.ran).toEqual([])
-  expect(transcript(w)).toContain(notice.stopped(F93))
+  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true }))
 })

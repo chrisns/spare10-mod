@@ -11,9 +11,13 @@ export function badgeLabel(reserve: number, test: boolean): string {
   return test ? `${label} (test)` : label
 }
 
-/** The table in B21. Only the tripped row pulses, by swapping its glyph for one space. */
-export function badgeView(phase: Phase, i: { reserve: number; test: boolean; mode: Mode; blink: boolean }): View {
+/**
+ * The table in B21. Only the tripped row pulses, by swapping its glyph for one space. `until`: the
+ * clock at which a stop or an open question continues by itself (2.6).
+ */
+export function badgeView(phase: Phase, i: { reserve: number; test: boolean; mode: Mode; blink: boolean; until?: string }): View {
   const label = badgeLabel(i.reserve, i.test)
+  const until = i.until === undefined ? '' : ` until ${i.until}`
   switch (phase) {
     case 'off':
       return { text: `○ ${label} off`, color: 'inactive', pulse: false }
@@ -26,9 +30,9 @@ export function badgeView(phase: Phase, i: { reserve: number; test: boolean; mod
     case 'consented':
       return { text: `⨯ ${label}`, color: 'warning', pulse: false }
     case 'stopped':
-      return { text: `■ ${label}: stopped`, color: 'warning', pulse: false }
+      return { text: `■ ${label}: stopped${until}`, color: 'warning', pulse: false }
     case 'asking':
-      return { text: `? ${label}: waiting for you`, color: 'warning', pulse: false }
+      return { text: `? ${label}: waiting for you${until}`, color: 'warning', pulse: false }
     case 'told':
       return { text: `⏸ ${label}`, color: 'warning', pulse: false }
     case 'reserve':

@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { SessionMeasureInput } from 'claude-code'
-import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
 
 // The reading through the engine (design section 6, 11.4 reading.test.ts). Written from the spec:
 // every expected text below is built here from the section 2 templates, not from hooks/core/text.ts.
@@ -21,10 +21,16 @@ const until = (at: number | null): string => (at === null ? 'for one hour' : `un
 const pf = (used: number, at: number | null): string => `${one(used)}% used · ${one(left(used))}% left · resets ${resets(at)}`
 const mf = (reserve: number, used: number, at: number | null): string =>
   `into your ${one(reserve)}% reserve · ${one(left(used))}% of quota left · resets ${resets(at)}`
-const loopQuestion = (reserve: number, used: number, at: number | null): string =>
-  `Your ${one(reserve)}% reserve is reached: ${pf(used, at)}. All work is on hold. Continue on the reserve ${until(at)}?`
-const promptQuestion = (reserve: number, used: number, at: number | null): string =>
-  `Your ${one(reserve)}% reserve is reached: ${pf(used, at)}. spare10 holds your prompt and any other work. Continue on the reserve ${until(at)}?`
+// With autoResume on (the 0.2 default) a question says when spare10 continues: {at}, the hold end. A
+// reading without resetsAt holds until its first sight plus 5 h (3.1), T0 + 5 h here unless given.
+const holdEnd = (at: number | null, hold?: number): string => clock(hold ?? at ?? T0 + 5 * HOUR)
+const loopQuestion = (reserve: number, used: number, at: number | null, hold?: number): string =>
+  `Your ${one(reserve)}% reserve is reached: ${pf(used, at)}. All work is on hold. Continue on the reserve ${until(at)}? ` +
+  `If you choose Stop here or do not answer, the work waits until ${holdEnd(at, hold)}. Then spare10 continues it, unless a reserve is still reached.`
+const promptQuestion = (reserve: number, used: number, at: number | null, hold?: number): string =>
+  `Your ${one(reserve)}% reserve is reached: ${pf(used, at)}. spare10 holds your prompt and any other work. Continue on the reserve ${until(at)}? ` +
+  `If you do not answer, all of it continues after ${holdEnd(at, hold)}, unless a reserve is still reached. ` +
+  `Stop here gives your prompt back and pauses other work until ${holdEnd(at, hold)}.`
 const stopText = (reserve: number, used: number, at: number | null): string =>
   `spare10: the user stopped work at the quota reserve (${mf(reserve, used, at)}). Stop now and wait for the user. Do not call any further tools.`
 
@@ -36,6 +42,9 @@ const reading = (value: string): RegExp => new RegExp(`· reading +${value.repla
 
 const seedOf = (pct: number, resetsAtMs: number = RESETS_MS): { pct: number; resetsAtMs: number } => ({ pct, resetsAtMs })
 const iso = (ms: number): string => new Date(ms).toISOString()
+// {clock} of a weekly reset (2.1): the en-GB short weekday, then HH:MM.
+const weekClock = (at: string): string =>
+  `${new Intl.DateTimeFormat('en-GB', { weekday: 'short' }).format(Date.parse(at))} ${clock(Date.parse(at))}`
 
 // The footer badge (B21), mounted as the terminal draws it. The badge is the Text that names spare10.
 async function badge($: Engine): Promise<() => Promise<{ text: string; color: unknown }>> {
@@ -159,7 +168,7 @@ test('a live reading without resetsAt is used as read and never remembered', asy
   expect((await bash($)).deny).toBe(stopText(10, 93, null))
   expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 93, null)])
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${T0 + HOUR} ${T0}`) // 6.2: now + FALLBACK_MS
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', T0 + 5 * HOUR, T0, 'five_hour,work,auto')) // 3.1: the first sight plus 5 h
   await $.session.measure(measure(93, ['rateLimits', 'cost'], null))
   await w.clock.settle()
   expect(w.store.get('seed')).toBeUndefined()
@@ -287,6 +296,7 @@ test('a failed seed load on a tripped first call still holds it: the live readin
 
 test('only the five_hour entry is the live basis, whatever other limits say', async ($, on) => {
   const w = world(on, {
+    env: { SPARE10_WEEKLY_RESERVE: '0' }, // the weekly guard off: spare10 reads the seven_day window but never acts on it
     extraLimits: [
       { kind: 'seven_day', percentUsed: 99, resetsAt: LATER },
       { kind: 'spend_limit', percentUsed: 120 },
@@ -305,6 +315,24 @@ test('only the five_hour entry is the live basis, whatever other limits say', as
   expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 93, RESETS_MS)])
   w.release('Stop here')
   expect((await held).deny).toBe(stopText(10, 93, RESETS_MS))
+})
+
+test('a seven_day entry of 99 trips by default, with the weekly wording', async ($, on) => {
+  const w = world(on, { pct: 50, extraLimits: [{ kind: 'seven_day', percentUsed: 99, resetsAt: LATER }] })
+  await begin($, w)
+  const held = bash($)
+  await w.clock.settle()
+  expect(w.asked.map((a) => a.question)).toEqual([
+    `Your 10% weekly reserve is reached: 99% used · 1% left · resets ${weekClock(LATER)}. All work is on hold. ` +
+      `Continue on the weekly reserve until ${weekClock(LATER)}? If you choose Stop here or do not answer, the work waits until ${weekClock(LATER)}. ` +
+      'Then spare10 continues it, unless a reserve is still reached.',
+  ])
+  expect(w.ran).toEqual([])
+  w.release('Resume')
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBe(`S1 ${LATER}`)
+  expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
 })
 
 test('the stored seed is read once per activation', async ($, on) => {
@@ -348,11 +376,11 @@ for (const [raw, r, below, at] of [
 }
 
 test('without resetsAt the fallback window end stays fixed for the episode', async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: null, answer: 'dismiss' })
+  const w = world(on, { pct: 93, resetsAt: null, answer: 'dismiss', env: { SPARE10_AUTO_RESUME: 'off' } }) // 0.1: the stop has the 1 h bound
   await begin($, w)
   expect((await bash($)).deny).toBe(stopText(10, 93, null))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${T0 + HOUR} ${T0}`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', T0 + HOUR, T0, 'five_hour,work'))
   await w.clock.advance(10 * MIN)
   expect((await bash($)).deny).toBe(stopText(10, 93, null)) // still stopped, no new question
   expect(w.asked).toHaveLength(1)
@@ -363,16 +391,16 @@ test('without resetsAt the fallback window end stays fixed for the episode', asy
 })
 
 test('without resetsAt a new fallback window starts once the old one passes, and the question comes back', async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: null, answer: 'dismiss' })
+  const w = world(on, { pct: 93, resetsAt: null, answer: 'dismiss', env: { SPARE10_AUTO_RESUME: 'off' } }) // 0.1: the stop has the 1 h bound
   await begin($, w)
   expect((await bash($)).deny).toBe(stopText(10, 93, null))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${T0 + HOUR} ${T0}`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', T0 + HOUR, T0, 'five_hour,work'))
   await w.clock.set(T0 + HOUR) // stopped lasts until the window end, and that end has come
   expect((await bash($)).deny).toBe(stopText(10, 93, null))
   expect(w.asked).toHaveLength(2)
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${T0 + 2 * HOUR} ${T0 + HOUR}`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', T0 + 2 * HOUR, T0 + HOUR, 'five_hour,work'))
 })
 
 test('in tell mode without resetsAt each loop is told once, not on every event', async ($, on) => {
@@ -405,9 +433,10 @@ test('a measure writes the seed only when the rate limits moved and the window h
   await $.session.measure(measure(91, ['context', 'cost'])) // rateLimits did not move
   await $.session.measure(measure(91, ['rateLimits', 'cost'], null)) // no reset time
   await $.session.measure(measure(undefined, ['rateLimits', 'cost'])) // no five-hour window
-  await $.session.measure(weekOnly) // only the seven-day window
+  await $.session.measure(weekOnly) // only the seven-day window: its own seed (0.2)
   await w.clock.settle()
   expect(w.store.get('seed')).toBeUndefined()
+  expect(w.store.get('seed-weekly')).toEqual(seedOf(97, Date.parse(LATER)))
   await $.session.measure(measure(91))
   await w.clock.settle()
   expect(w.store.get('seed')).toEqual(seedOf(91))

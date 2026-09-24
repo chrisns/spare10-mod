@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "spare10",
-  "version": "0.1.0",
-  "description": "Keeps the last part of your 5-hour quota for you. At the reserve, spare10 holds all work and asks you whether to continue.",
+  "version": "0.2.0",
+  "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. After the reset, it continues by itself.",
   "author": {
     "name": "Chris Nesbitt-Smith"
   },
@@ -25,21 +25,36 @@
       "min": 1,
       "max": 99
     },
+    "weeklyReserve": {
+      "type": "number",
+      "title": "Weekly reserve (%)",
+      "description": "Keep this much of the weekly window for yourself. 1 to 99, one decimal at most. 0 switches the weekly guard off. SPARE10_WEEKLY_RESERVE overrides it for one run.",
+      "default": 10,
+      "min": 0,
+      "max": 99
+    },
     "pausePrompt": {
       "type": "string",
       "title": "Pause prompt",
       "description": "Leave empty to stop and ask you. Or write an instruction, and spare10 gives it to every agent instead of stopping. SPARE10_PAUSE_PROMPT overrides it for one run.",
       "default": ""
     },
+    "autoResume": {
+      "type": "boolean",
+      "title": "Continue at the reset",
+      "description": "On: a few minutes after the reset of the window that tripped, spare10 continues held and stopped work by itself. Stop here then means stop until the reset. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
+      "default": true
+    },
     "headless": {
       "type": "string",
       "title": "Unattended runs (-p, SDK)",
-      "description": "What spare10 does inside the reserve when nobody can answer: off (watch only), prompt (tell every agent to wind down), stop (refuse tools and further requests). SPARE10_HEADLESS overrides it for one run.",
+      "description": "What spare10 does inside the reserve when nobody can answer: off (watch only), prompt (tell every agent to wind down), stop (refuse tools and further requests), wait (hold, then continue at the reset). SPARE10_HEADLESS overrides it for one run.",
       "default": "off",
       "options": [
         "off",
         "prompt",
-        "stop"
+        "stop",
+        "wait"
       ]
     },
     "scope": {

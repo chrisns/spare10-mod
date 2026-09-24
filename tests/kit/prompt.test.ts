@@ -1,10 +1,11 @@
 import { test, expect } from 'claude-code/testing'
-import { factsOf, notStarted, notice, questionText, resumeContext } from '../../hooks/core/text.ts'
-import { RESETS, bash, begin, drain, step, typed, world } from '../helpers/world.ts'
+import { atText, factsOf, notStarted, notice, questionText, resumeContext } from '../../hooks/core/text.ts'
+import { RESETS, bash, begin, drain, step, stopRe, typed, world } from '../helpers/world.ts'
 
 // The person's prompts in hold mode (design B8 to B11, 11.4 prompt.test.ts).
 
 const F93 = factsOf({ kind: 'live', pct: 93, resetsAtMs: Date.parse(RESETS) }, 10)
+const AT = atText(Date.parse(RESETS), ['five_hour']) // {at}: the clock at which spare10 continues (autoResume on)
 const transcript = (w: { logs: Array<{ text: string; to?: string }> }) => w.logs.filter((l) => l.to !== 'debug').map((l) => l.text)
 
 test('a typed prompt inside the reserve asks the prompt question before it enters', async ($, on) => {
@@ -12,7 +13,7 @@ test('a typed prompt inside the reserve asks the prompt question before it enter
   await begin($, w)
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
-  expect(w.asked.map((a) => a.question)).toEqual([questionText(F93, 'prompt', 'hold')])
+  expect(w.asked.map((a) => a.question)).toEqual([questionText(F93, 'prompt', 'hold', true)])
   expect(w.prompts).toEqual([])
   w.release('Resume')
   expect(await p).toMatchObject({ text: 'hello' })
@@ -26,8 +27,8 @@ test('Stop here drops the prompt with the reason, leaves the session stopped, an
   expect(r).toEqual({ drop: notStarted(F93) })
   await w.clock.settle()
   expect(w.prompts).toEqual([])
-  expect(w.env.get('SPARE10_STOPPED')).toMatch(/^S1 \d+ \d+$/)
-  expect(transcript(w)).toContain(notice.stopped(F93))
+  expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', 'five_hour,auto'))
+  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: false }))
   expect(w.fills).toEqual(['hello'])
   await drain($, step())
   expect(w.requests).toBe(0)
@@ -64,7 +65,7 @@ test('after Stop, a typed prompt asks again, and Resume adds the resume note', a
   w.answer = 'Resume'
   const r = await $.prompt.submit(typed('carry on'))
   expect(r).toMatchObject({ text: 'carry on' })
-  expect(w.asked.map((a) => a.question)).toEqual([questionText(F93, 'loop', 'hold'), questionText(F93, 'prompt', 'hold')])
+  expect(w.asked.map((a) => a.question)).toEqual([questionText(F93, 'loop', 'hold', true), questionText(F93, 'prompt', 'hold', true)])
   expect(w.prompts[0]?.context).toEqual([resumeContext(F93)])
   await w.clock.settle()
   expect(w.env.get('SPARE10_STOPPED')).toBeUndefined()
@@ -106,7 +107,7 @@ test('a prompt from a remote surface (the bridge) asks, Stop drops it, and the l
   await begin($, w)
   const p = $.prompt.submit(typed('from my phone', 'bridge'))
   await w.clock.settle()
-  expect(w.asked.map((a) => a.question)).toEqual([questionText(F93, 'prompt', 'hold')])
+  expect(w.asked.map((a) => a.question)).toEqual([questionText(F93, 'prompt', 'hold', true)])
   expect(w.prompts).toEqual([])
   w.release('Stop here')
   expect(await p).toEqual({ drop: notStarted(F93) })
@@ -114,7 +115,7 @@ test('a prompt from a remote surface (the bridge) asks, Stop drops it, and the l
   expect(w.prompts).toEqual([])
   expect(w.fills).toEqual([]) // the text was typed on another surface: it never lands in this box
   // Stopped now: a bridge prompt still asks, and Resume lets it in with the resume note.
-  expect(w.env.get('SPARE10_STOPPED')).toMatch(/^S1 \d+ \d+$/)
+  expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', 'five_hour,auto'))
   w.answer = 'Resume'
   expect(await $.prompt.submit(typed('go on', 'bridge'))).toMatchObject({ text: 'go on' })
   expect(w.asked).toHaveLength(2)

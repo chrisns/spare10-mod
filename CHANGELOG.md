@@ -6,6 +6,27 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Weekly window.** spare10 also watches the weekly window. The new option Weekly reserve (%) sets its reserve, 10 by default. 0 switches it off. `SPARE10_WEEKLY_RESERVE` overrides it for one run.
+- **Continue at the reset.** A few minutes after the reset of the window that tripped, spare10 continues held work and stopped work by itself. A stopped session gets a short resume prompt. The new option Continue at the reset is on by default. `SPARE10_AUTO_RESUME=off` switches it off for one run.
+- **Unattended wait.** The unattended policy `wait` holds a `-p` or SDK run at the reserve and continues it at the reset.
+- **Test windows.** `/spare10 simulate` takes `weekly` and a short test window, such as `/spare10 simulate 95 weekly in 2m`. `SPARE10_SIMULATE` takes the same words.
+- **Weekly consent.** A Resume on a weekly trip goes into `SPARE10_WEEKLY_CONSENT`. `SPARE10_CONSENT` keeps its form and means the 5-hour window.
+- **A prompt after the reset.** A prompt that you send after the reset ends the stop. When the stop held work, the prompt carries a note. The note tells the model to continue the stopped task after your message.
+- **Warnings.** spare10 warns about bad `SPARE10_WEEKLY_RESERVE` and `SPARE10_AUTO_RESUME` values, and about a `SPARE10_WEEKLY_CONSENT` after the weekly window. The background warning also names the two new variables.
+
+### Changed
+
+- **Stop here.** With Continue at the reset on, Stop here stops the work until the reset. The question and the notice say so.
+- **Long holds.** A hold that lasts too long for one hook ends as Stop here. Before, it let the work through.
+- **Badge.** A stopped session shows the time of the reset: `■ spare10: stopped until 15:00`.
+- **Report.** `/spare10` shows the weekly reserve, the weekly reading, the weekly consent and what happens at the reset. Times more than a day away show days.
+- **Child runs.** A guarded session also gives its `claude -p` children `SPARE10_HEADLESS=stop` when its own policy is `wait`.
+- **Stop record.** `SPARE10_STOPPED` has a new form. A value from 0.1 still stops, and never continues by itself.
+- **Unanswered question.** With Continue at the reset on, spare10 closes an unanswered question a few minutes after the reset. Held work then continues, unless a reserve is still reached. Before, the question waited with no time limit.
+- **Question time limits.** With Continue at the reset on, the warning says that spare10 continues the work at the reset.
+
 ## [0.1.0] - 2026-09-24
 
 The first version.

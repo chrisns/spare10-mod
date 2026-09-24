@@ -32,7 +32,8 @@ const UNATTENDED = (used: number, policy: string, resetMs = RESET_MS): string =>
   `spare10: unattended run inside the reserve (${pf(used, resetMs)}), policy ${policy}.`
 const TOLD_NOTICE = 'your 10% reserve is reached. spare10 told the agents to wind down.'
 const LOOP_QUESTION = (used: number): string =>
-  `Your 10% reserve is reached: ${pf(used)}. All work is on hold. Continue on the reserve until ${clockOf(RESET_MS)}?`
+  `Your 10% reserve is reached: ${pf(used)}. All work is on hold. Continue on the reserve until ${clockOf(RESET_MS)}? ` +
+  `If you choose Stop here or do not answer, the work waits until ${clockOf(RESET_MS)}. Then spare10 continues it, unless a reserve is still reached.`
 const NOT_GUARDED = 'this run is not guarded. Nothing changed.'
 const B28 = 'function hooks are on only in this shell.'
 const B29 = 'questions here continue by themselves after a time limit'
@@ -303,7 +304,7 @@ test('a bad SPARE10_HEADLESS is ignored with the B27 warning, and the run keeps 
   const w = world(on, { pct: 93, surfaces: [], env: { SPARE10_HEADLESS: 'halt' } })
   await begin($, w)
   await w.clock.settle()
-  expect(w.logs.map((l) => l.text)).toContain('SPARE10_HEADLESS="halt" is not off, prompt or stop. spare10 uses off.')
+  expect(w.logs.map((l) => l.text)).toContain('SPARE10_HEADLESS="halt" is not off, prompt, stop or wait. spare10 uses off.')
   expect((await bash($)).result).toBe('ran')
   expect(await report($)).toContain('  · unattended     off (from /config)')
 })
@@ -375,7 +376,7 @@ test('a -p run below the reserve is armed and names its policy', async ($, on) =
   const w = world(on, { pct: 50, surfaces: [] })
   await begin($, w)
   const lines = await report($)
-  expect(lines).toContain('  ● armed          spare10 steps in at 90% used.')
+  expect(lines).toContain('  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.')
   expect(lines).toContain('  · at the reserve unattended policy off')
   expect(lines).toContain('  · guarded        no: this session is unattended.')
   expect((await bash($)).result).toBe('ran')
@@ -483,6 +484,7 @@ test('an unreadable consent does not stop the unattended stop policy', async ($,
 })
 
 test('a stopped value in the env never stops an unattended off run', async ($, on) => {
+  // legacy: a 0.1 value (three tokens) does not touch a child run
   const w = world(on, { pct: 93, surfaces: [], env: { SPARE10_STOPPED: `S1 ${RESET_MS} ${T0}` } })
   await begin($, w)
   expect((await bash($)).result).toBe('ran')

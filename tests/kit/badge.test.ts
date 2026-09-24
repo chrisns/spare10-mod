@@ -1,7 +1,8 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, ElementQuery, FoundElement } from 'claude-code/testing'
 import type { RenderSurface } from 'claude-code'
-import { HOUR, LATER, RESETS, T0, above, bash, begin, cmd, measure, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, RESETS, T0, above, bash, begin, cmd, measure, stopRec, typed, world } from '../helpers/world.ts'
+import { atText } from '../../hooks/core/text.ts'
 import type { World } from '../helpers/world.ts'
 
 // The footer badge through the engine (design 11.4 badge.test.ts, B21, section 7). Written from the
@@ -11,6 +12,7 @@ type Ui = { find: (q: ElementQuery) => Promise<FoundElement | undefined>; findAl
 type Shown = { text: string | undefined; color: unknown }
 
 const STOP_PREFIX = 'spare10: the user stopped work at the quota reserve ('
+const AT = atText(Date.parse(RESETS), ['five_hour']) // 2.6: the clock at which spare10 continues (autoResume on)
 
 /** Mounts the SessionMode footer site as the engine does on terminal and desktop. */
 function mountBadge($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
@@ -77,7 +79,7 @@ test('phase walk: waiting, armed, tripped (pulsing), asking, stopped', async ($,
   const held = bash($)
   await w.clock.settle()
   expect(w.asked).toHaveLength(1)
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning'))
   const renders = w.renders
   await w.clock.advance(3000)
   expect(w.renders).toBe(renders) // only the tripped row pulses (7.2)
@@ -85,7 +87,7 @@ test('phase walk: waiting, armed, tripped (pulsing), asking, stopped', async ($,
   w.release('Stop here')
   expect((await held).deny).toContain(STOP_PREFIX)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
 })
 
 test('Resume shows the consented mark', async ($, on) => {
@@ -95,7 +97,7 @@ test('Resume shows the consented mark', async ($, on) => {
   expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
   const held = bash($)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning'))
   w.release('Resume')
   expect((await held).result).toBe('ran')
   await w.clock.settle()
@@ -111,17 +113,17 @@ test('a Stop redraws the badge', async ($, on) => {
   const ui = await mountBadge($)
   const held = [bash($), bash($, 'a1')]
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning'))
   const before = w.invalidations
   w.release('Stop here')
   for (const r of await Promise.all(held)) expect(r.deny).toContain(STOP_PREFIX)
   await w.clock.settle() // no clock move: only the Stop's own redraws can change the drawing
   expect(w.invalidations).toBeGreaterThan(before)
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
   const renders = w.renders
   await w.clock.advance(3000)
   expect(w.renders).toBe(renders) // stopped never pulses
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
 })
 
 test('the pulse redraws once a second only while tripped', async ($, on) => {
@@ -223,15 +225,15 @@ test('a non-default reserve is spelled out in every labelled row', async ($, on)
   expect(await badge(ui)).toEqual(shown(' ⨯ spare10 (40%)', 'warning'))
   await $.command.run(cmd('stop'))
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10 (40%): stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10 (40%): stopped until ${AT}`, 'warning'))
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
   expect(w.asked).toHaveLength(1)
-  expect(await badge(ui)).toEqual(shown(' ? spare10 (40%): waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10 (40%): waiting for you until ${AT}`, 'warning'))
   w.release('Stop here')
   expect(await p).toMatchObject({ drop: expect.stringContaining('spare10: not started.') })
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10 (40%): stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10 (40%): stopped until ${AT}`, 'warning'))
 })
 
 test('a reserve of 10.0 is the default label', async ($, on) => {
@@ -262,7 +264,7 @@ test('tell mode winds down with a pulse, a prompt question shows asking, and a t
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
   expect(w.asked).toHaveLength(1)
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning'))
   w.release('Stop here')
   expect(await p).toMatchObject({ drop: expect.stringContaining('spare10: not started.') })
   await w.clock.settle()
@@ -279,7 +281,7 @@ test('tell mode winds down with a pulse, a prompt question shows asking, and a t
   // B24: /spare10 stop sets stopped in tell mode too, and stopped ranks before told.
   await $.command.run(cmd('stop'))
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
 })
 
 test('an unattended run in the reserve shows the reserve row and never pulses', async ($, on) => {
@@ -322,7 +324,7 @@ test('a test reading is labelled (test) while it applies, and only then', async 
   expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
   const held = bash($)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ? spare10 (test): waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10 (test): waiting for you until ${AT}`, 'warning'))
   w.release('Resume')
   expect((await held).result).toBe('ran')
   await w.clock.settle()
@@ -343,7 +345,7 @@ test('an open question keeps the asking mark while the reading drops below the t
   await $.session.measure(measure(50))
   await w.clock.settle()
   expect(w.ran).toEqual([]) // B6: a lower reading never releases a hold
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning')) // R1: asking ranks before armed
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning')) // R1: asking ranks before armed
   w.release('Resume')
   expect((await held).result).toBe('ran')
   await w.clock.settle()
@@ -351,7 +353,7 @@ test('an open question keeps the asking mark while the reading drops below the t
 })
 
 test('an open question keeps the asking mark past the window end, and a late Resume leaves the waiting mark', async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { pct: 93, env: { SPARE10_AUTO_RESUME: 'off' } }) // the 0.1 rows: no timed release
   await begin($, w)
   const ui = await mountBadge($)
   const held = bash($)
@@ -377,16 +379,16 @@ test('a person prompt in a stopped session shows asking, and Stop here shows sto
   w.release('Stop here')
   await held
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
   expect(w.asked).toHaveLength(2)
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning')) // R1, R5
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning')) // R1, R5
   w.release('Stop here')
   expect(await p).toMatchObject({ drop: expect.stringContaining('spare10: not started.') })
   await w.clock.settle()
   expect(w.prompts).toEqual([])
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
 })
 
 test('a command that writes consent or stopped redraws the badge at once', async ($, on) => {
@@ -396,9 +398,9 @@ test('a command that writes consent or stopped redraws the badge at once', async
   expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
   const steps: Array<[string, Shown]> = [
     ['resume', shown(' ⨯ spare10', 'warning')],
-    ['stop', shown(' ■ spare10: stopped', 'warning')],
+    ['stop', shown(` ■ spare10: stopped until ${AT}`, 'warning')],
     ['resume', shown(' ⨯ spare10', 'warning')],
-    ['stop', shown(' ■ spare10: stopped', 'warning')],
+    ['stop', shown(` ■ spare10: stopped until ${AT}`, 'warning')],
   ]
   for (const [verb, want] of steps) {
     const before = w.invalidations
@@ -415,11 +417,11 @@ test('/spare10 stop while a question is open redraws the stopped row', async ($,
   const ui = await mountBadge($)
   const held = bash($)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning'))
   await $.command.run(cmd('stop'))
   expect((await held).deny).toContain(STOP_PREFIX)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
 })
 
 test('the edge timer redraws a stopped badge at the window end', async ($, on) => {
@@ -428,9 +430,9 @@ test('the edge timer redraws a stopped badge at the window end', async ($, on) =
   const ui = await mountBadge($)
   expect((await bash($)).deny).toContain(STOP_PREFIX)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
   await w.clock.set(Date.parse(RESETS) - 1000)
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
   w.pct = undefined // the engine drops a window once it reset
   const before = w.invalidations
   await w.clock.advance(2000) // no event, no pulse: only the edge timer can redraw
@@ -473,7 +475,7 @@ test('a question closed with no outcome redraws the badge back to tripped', { pl
   const main = bash($, undefined, 'abandon me')
   await w.clock.settle()
   expect(w.asked).toHaveLength(1)
-  expect(await badge(ui)).toEqual(shown(' ? spare10: waiting for you', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ? spare10: waiting for you until ${AT}`, 'warning'))
   await w.clock.advance(1000) // the hook above settles: the raiser's own dispatch is abandoned
   expect((await main).deny).toBe('a hook above settled first')
   w.release() // the host withdraws the dialog of an abandoned dispatch (the kit does not, 11.5 #9)
@@ -511,6 +513,7 @@ test('a consent in the env beyond this window is ignored by the badge', async ($
 })
 
 test('a stopped value in the env shows stopped only for this session id', async ($, on) => {
+  // legacy: a 0.1 value (three tokens) shows the 0.1 row, with no time
   const stamp = `${Date.parse(RESETS)} ${T0 - 60_000}`
   const w = world(on, { pct: 93, env: { SPARE10_STOPPED: `S1 ${stamp}` } })
   await begin($, w)
@@ -582,7 +585,7 @@ test('a failed read keeps the label of the reserve in force', async ($, on) => {
 })
 
 test('an unattended run ignores a stopped value, even one with its own session id', async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], env: { SPARE10_STOPPED: `S1 ${Date.parse(RESETS)} ${T0 - 60_000}` } })
+  const w = world(on, { pct: 93, surfaces: [], env: { SPARE10_STOPPED: stopRec('S1', RESETS, T0 - 60_000) } })
   await begin($, w)
   const ui = await mountBadge($)
   expect(await badge(ui)).toEqual(shown(' ⚠ spare10: in the reserve', 'warning'))
@@ -629,7 +632,7 @@ for (const reason of ['clear', 'resume'] as const) {
     const ui = await mountBadge($)
     expect((await bash($)).deny).toContain(STOP_PREFIX)
     await w.clock.settle()
-    expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+    expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
     const before = w.invalidations
     await $.session.end({ reason, sessionId: 'S1', resume: { id: 'S1' } }) // the id is still S1 here
     await w.clock.settle()
@@ -640,7 +643,7 @@ for (const reason of ['clear', 'resume'] as const) {
     await w.clock.advance(300) // before the first pulse tick: only the end's own timer redraws
     expect(w.invalidations).toBeGreaterThan(switched)
     expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
-    expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${Date.parse(RESETS)} ${T0}`) // the record stays: it names S1
+    expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto')) // the record stays: it names S1
   })
 }
 
@@ -654,5 +657,5 @@ test('a session end for another reason changes nothing on the badge', async ($, 
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'S1', resume: { id: 'S1' } })
   await w.clock.advance(2000)
   expect(w.invalidations).toBe(before)
-  expect(await badge(ui)).toEqual(shown(' ■ spare10: stopped', 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
 })

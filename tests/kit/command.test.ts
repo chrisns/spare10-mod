@@ -24,8 +24,16 @@ const STOP93 = `spare10: the user stopped work at the quota reserve (${mf('10', 
 const PAUSED93 = `spare10: work stopped at the quota reserve (${mf('10', '7')}). No model request was sent, so this task is not finished. Wait for the user.`
 const HEADLESS93 = `spare10 stopped this unattended run at the quota reserve (${mf('10', '7')}). No further model requests were sent. To pick it up later: claude --resume S1`
 const NOT_STARTED = `spare10: not started. This session is inside your 10% reserve ${UNTIL}. Send the prompt again to be asked again, or run /spare10 resume.`
-const loopQuestion = (p: string): string => `Your 10% reserve is reached: ${p}. All work is on hold. Continue on the reserve ${UNTIL}?`
-const tellPromptQuestion = (p: string): string => `Your 10% reserve is reached: ${p}. spare10 holds your prompt. Continue on the reserve ${UNTIL}?`
+// With autoResume on (the 0.2 default) each question says what no answer and Stop here mean (2.2).
+const loopQuestion = (p: string): string =>
+  `Your 10% reserve is reached: ${p}. All work is on hold. Continue on the reserve ${UNTIL}? ` +
+  `If you choose Stop here or do not answer, the work waits ${UNTIL}. Then spare10 continues it, unless a reserve is still reached.`
+const tellPromptQuestion = (p: string): string =>
+  `Your 10% reserve is reached: ${p}. spare10 holds your prompt. Continue on the reserve ${UNTIL}? ` +
+  `If you do not answer, your prompt goes in after ${AT}, unless a reserve is still reached. Stop here gives it back to you.`
+const holdPromptQuestion = (p: string): string =>
+  `Your 10% reserve is reached: ${p}. spare10 holds your prompt and any other work. Continue on the reserve ${UNTIL}? ` +
+  `If you do not answer, all of it continues after ${AT}, unless a reserve is still reached. Stop here gives your prompt back and pauses other work ${UNTIL}.`
 const tellText = (m: string, prompt: string): string =>
   `spare10 budget guard. You have reached the safe usage limit for this session (${m}). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.\n\nUser instructions: ${prompt}`
 
@@ -38,11 +46,13 @@ const nothingToResume = (p: string): string => `nothing to resume. ${p}.`
 const NOTHING_TO_RESUME_NONE = 'nothing to resume. There is no 5-hour reading yet.'
 const NOT_GUARDED = 'this run is not guarded. Nothing changed.'
 
-// B24 replies.
-const STOPPED_ASKING = 'stopped. Held work is refused.'
-const STOPPED_TRIPPED = 'stopped at the reserve. Type a prompt to be asked again, or run /spare10 resume.'
-const ALREADY_STOPPED = 'already stopped.'
-const nothingToStop = (trip: string): string => `nothing to stop. spare10 steps in at ${trip}% used.`
+// B24 replies, with autoResume on (2.8).
+const STOPPED_ASKING = `stopped. Held work is refused. spare10 continues it after ${AT}.`
+const stoppedTripped = (at: string): string =>
+  `stopped at the reserve until ${at}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`
+const STOPPED_TRIPPED = stoppedTripped(AT)
+const ALREADY_STOPPED = `already stopped ${UNTIL}.`
+const nothingToStop = (trip: string): string => `nothing to stop. spare10 steps in at ${trip}% used, or at 90% used of the weekly window.`
 
 // B25 and 12.1.
 const notPerson = (verb: string): string => `only you can run /spare10 ${verb}. Nothing changed.`
@@ -50,17 +60,21 @@ const unknownVerb = (verb: string): string => `unknown command "${verb}". Use /s
 const simulateSet = (used: string, at: string): string =>
   `test reading set to ${used}% used, resets ${at}. It can only raise the real reading. Run /spare10 simulate off to clear it.`
 const SIMULATE_OFF = 'test reading cleared. Consent and stop for this window are cleared too.'
-const SIMULATE_BAD = '/spare10 simulate takes a percentage from 0 to 100, or off.'
+const SIMULATE_BAD =
+  '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 2m for a test window that resets in two minutes.'
 
 // B22: the phase line of the report, as `  {glyph} {phase}  {phase detail}` (R7 for asking).
 const PHASE = {
   off: '  ○ off            spare10 only watches in this run.',
   blind: '  ⚠ blind          Claude Code reports no 5-hour quota. spare10 lets all work through.',
   waiting: '  ⧗ waiting        no reading yet. spare10 lets all work through.',
-  armed: (trip: string): string => `  ● armed          spare10 steps in at ${trip}% used.`,
+  armed: (trip: string): string => `  ● armed          spare10 steps in at ${trip}% used, or at 90% used of the weekly window.`,
   consented: `  ⨯ consented      you chose to continue. spare10 is quiet ${UNTIL}.`,
-  stopped: '  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run /spare10 resume.',
-  asking: '  ? asking         a question is open. Held work waits until you answer. If no dialog shows, run /spare10 resume or /spare10 stop.',
+  // A stop that held or refused a loop (work), and one that did not (2.7, autoResume on).
+  stopped: `  ■ stopped        you chose Stop here. spare10 continues the work after ${AT}. Type a prompt to be asked again, or run /spare10 resume.`,
+  stoppedIdle: `  ■ stopped        you chose Stop here, ${UNTIL}. Type a prompt to be asked again, or run /spare10 resume.`,
+  asking: `  ? asking         a question is open. Held work waits until you answer, or ${UNTIL}. If no dialog shows, run /spare10 resume or /spare10 stop.`,
+  askingNoAuto: '  ? asking         a question is open. Held work waits until you answer. If no dialog shows, run /spare10 resume or /spare10 stop.',
   told: (n: number): string => `  ⏸ told           the wind-down went to ${n} agent(s).`,
   reserve: (policy: string): string => `  ⚠ tripped        unattended run, policy ${policy}.`,
   trippedHold: '  ⚠ tripped        spare10 holds the next step and asks you.',
@@ -80,7 +94,17 @@ async function report($: Engine): Promise<string[]> {
 
 const field = (lines: string[], label: string): string | undefined => lines.find((l) => l.startsWith(`  · ${label} `))
 const phaseLine = (lines: string[]): string | undefined => lines[2]
-const stoppedRe = (sid: string): RegExp => new RegExp(`^${sid} ${R} \\d+$`)
+const stoppedRe = (sid: string): RegExp => new RegExp(`^${sid} ${R} \\d+ [a-z_,]+$`) // 0.2: the tags follow
+
+/** 2.7: the four 0.2 rows, with the weekly window watched and no weekly reading. `at the reset` is attended only. */
+const with02 = (lines: string[], attended = true): string[] =>
+  lines.flatMap((l) => {
+    if (l.startsWith('  · reserve ')) return [l, '  · weekly reserve 10% of the weekly window (from /config)']
+    if (l.startsWith('  · at the reserve ') && attended) return [l, '  · at the reset   continue by itself (from /config)']
+    if (l.startsWith('  · reading ')) return [l, '  · weekly reading none: no reading yet']
+    if (l.startsWith('  · consent ')) return [l, '  · weekly consent none']
+    return [l]
+  })
 const nothingDecided = (w: World): void => {
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.env.get('SPARE10_STOPPED')).toBeUndefined()
@@ -111,19 +135,21 @@ test('/spare10 reports the phase, reserve, reading, consent and guarded lines', 
   const w = world(on, { pct: 50 })
   await begin($, w)
   await w.clock.advance(46 * 60_000) // 2 h 14 min before the reset
-  expect(await report($)).toEqual([
-    `version ${VERSION}`,
-    '',
-    PHASE.armed('90'),
-    '  · reserve        10% of the 5-hour window (from /config)',
-    '  · at the reserve stop and ask you',
-    `  · reading        live · ${pf('50', '50')} (in 2 h 14 min)`,
-    '  · consent        none',
-    '  · guarded        yes (scope all)',
-    '  · claude -p      runs started here: stop', // B16 set SPARE10_HEADLESS=stop at session start
-    '',
-    ...FOOTER,
-  ])
+  expect(await report($)).toEqual(
+    with02([
+      `version ${VERSION}`,
+      '',
+      PHASE.armed('90'),
+      '  · reserve        10% of the 5-hour window (from /config)',
+      '  · at the reserve stop and ask you',
+      `  · reading        live · ${pf('50', '50')} (in 2 h 14 min)`,
+      '  · consent        none',
+      '  · guarded        yes (scope all)',
+      '  · claude -p      runs started here: stop', // B16 set SPARE10_HEADLESS=stop at session start
+      '',
+      ...FOOTER,
+    ]),
+  )
   // {duration}: '2 h 14 min', '14 min' or 'under 1 min'
   await w.clock.advance(2 * HOUR)
   expect(field(await report($), 'reading')).toBe(`  · reading        live · ${pf('50', '50')} (in 14 min)`)
@@ -148,7 +174,7 @@ test('/spare10 shows env sources, every start-up warning, and ignores a consent 
   expect(lines).toContain('  ⚠ SPARE10="maybe" is not on or off. spare10 uses the scope option (all).')
   expect(lines).toContain(`  ⚠ ${W_FLAG}`)
   expect(lines).toContain(
-    '  ⚠ questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here.',
+    '  ⚠ questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the reset.',
   )
   expect(lines).toContain(`  ⚠ SPARE10_CONSENT="${FAR}" names a time after this 5-hour window. spare10 ignores it.`) // B30, R13
   expect(lines.slice(-3)).toEqual(['', ...FOOTER])
@@ -172,7 +198,7 @@ test('/spare10 shows env sources, every start-up warning, and ignores a consent 
   await w.clock.settle()
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.env.get('SPARE10_STOPPED')).toMatch(stoppedRe('S1'))
-  expect(phaseLine(await report($))).toBe(PHASE.stopped)
+  expect(phaseLine(await report($))).toBe(PHASE.stoppedIdle)
   expect(await run($, 'stop')).toBe(ALREADY_STOPPED)
 })
 
@@ -319,7 +345,7 @@ test('/spare10 stop in tell mode sets stopped, and the phase shows stopped, not 
   await w.clock.settle()
   expect(w.env.get('SPARE10_STOPPED')).toMatch(stoppedRe('S1'))
   lines = await report($)
-  expect(phaseLine(lines)).toBe(PHASE.stopped)
+  expect(phaseLine(lines)).toBe(PHASE.stoppedIdle)
   expect(lines.some((l) => l.includes('⏸'))).toBe(false)
   // row 7 comes before row 8: a stopped tell-mode session refuses like hold mode
   expect((await bash($)).deny).toBe(STOP93)
@@ -345,7 +371,7 @@ test('/spare10 stop on an open tell-mode prompt question drops the prompt and se
   expect(w.fills).toEqual(['hello'])
   expect(w.dialogAborted).not.toBe('no')
   expect(w.env.get('SPARE10_STOPPED')).toMatch(stoppedRe('S1')) // B24: stopped in tell mode too
-  expect(phaseLine(await report($))).toBe(PHASE.stopped)
+  expect(phaseLine(await report($))).toBe(PHASE.stoppedIdle)
   expect((await bash($)).deny).toBe(STOP93)
 })
 
@@ -486,19 +512,24 @@ test('an unattended run is not guarded: resume and stop change nothing and the r
   const w = world(on, { pct: 93, surfaces: [], env: { SPARE10_HEADLESS: 'stop' } })
   await begin($, w)
   await w.clock.advance(46 * 60_000)
-  expect(await report($)).toEqual([
-    `version ${VERSION}`,
-    '',
-    PHASE.reserve('stop'),
-    '  · reserve        10% of the 5-hour window (from /config)',
-    '  · at the reserve unattended policy stop',
-    `  · reading        live · ${pf('93', '7')} (in 2 h 14 min)`,
-    '  · consent        none',
-    '  · guarded        no: this session is unattended.',
-    '  · unattended     stop (from SPARE10_HEADLESS)', // unattended only, and no claude -p line
-    '',
-    ...FOOTER,
-  ])
+  expect(await report($)).toEqual(
+    with02(
+      [
+        `version ${VERSION}`,
+        '',
+        PHASE.reserve('stop'),
+        '  · reserve        10% of the 5-hour window (from /config)',
+        '  · at the reserve unattended policy stop',
+        `  · reading        live · ${pf('93', '7')} (in 2 h 14 min)`,
+        '  · consent        none',
+        '  · guarded        no: this session is unattended.',
+        '  · unattended     stop (from SPARE10_HEADLESS)', // unattended only, and no claude -p line
+        '',
+        ...FOOTER,
+      ],
+      false,
+    ),
+  )
   expect(await run($, 'resume')).toBe(NOT_GUARDED)
   expect(await run($, 'stop')).toBe(NOT_GUARDED)
   await w.clock.settle()
@@ -565,7 +596,7 @@ test('in a stopped session an open prompt question takes the open-question row o
   expect((await bash($)).deny).toBe(STOP93)
   await w.clock.settle()
   w.answer = 'hang'
-  const holdPrompt = `Your 10% reserve is reached: ${pf('93', '7')}. spare10 holds your prompt and any other work. Continue on the reserve ${UNTIL}?`
+  const holdPrompt = holdPromptQuestion(pf('93', '7'))
   const first = $.prompt.submit(typed('first'))
   await w.clock.settle()
   expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(pf('93', '7')), holdPrompt])
@@ -600,7 +631,7 @@ test('without resetsAt the replies say for one hour, and the fallback window end
   expect(phaseLine(await report($))?.startsWith('  ⨯ consented      you chose to continue. spare10 is quiet ')).toBe(true)
   await w.clock.advance(30 * 60_000)
   expect(await run($, 'resume')).toBe('already resumed for one hour.')
-  expect(await run($, 'stop')).toBe(STOPPED_TRIPPED)
+  expect(await run($, 'stop')).toBe(stoppedTripped(hhmm(T0 + 5 * HOUR))) // 3.1: the hold end is the first sight plus 5 h
   expect(await run($, 'resume')).toBe('resumed. You can use the reserve for one hour. Type a prompt to continue.')
   await w.clock.settle()
   expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${new Date(T0 + HOUR).toISOString()}`) // R11: the same end, not now + 1 h
@@ -672,7 +703,7 @@ test('a /clear while a question is open: /spare10 stop stamps the new session id
 })
 
 test('/spare10 resume after the window end releases the held work and writes no consent', async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { pct: 93, env: { SPARE10_AUTO_RESUME: 'off' } }) // the 0.1 path: no timed release
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -681,7 +712,7 @@ test('/spare10 resume after the window end releases the held work and writes no 
   w.pct = 5
   w.resetsAt = LATER // the new window
   expect(w.ran).toEqual([]) // B6: the window end releases nothing
-  expect(phaseLine(await report($))).toBe(PHASE.asking)
+  expect(phaseLine(await report($))).toBe(PHASE.askingNoAuto)
   expect(await run($, 'resume')).toBe(RESUMED_ASKING) // B23 row 1, the question's own figures
   expect((await held).result).toBe('ran')
   await w.clock.settle()

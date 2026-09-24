@@ -34,16 +34,29 @@ import type {
 //   coreContext  context that core adds to a 'ran' or 'error' tool result, as a hook beneath would (w.coreContext)
 //   box          the prompt box text $.prompt.read returns (w.box)
 //   usageFails   session.usage answers { deny }, so $.session.usage() rejects (w.usageFails)
+//   usageFailsAfter  session.usage answers this many more calls, then denies each one (w.usageFailsAfter
+//                counts down, undefined never denies): to fail the read that follows a given one
+//   usageDelayMs  session.usage answers this many mock ms late (w.usageDelayMs), to keep a sense in flight
 //   envGetFails  env names whose env.get answers { deny } (w.envGetFails)
 //   envGetDelayMs  per env name: env.get reads the value at once and answers this many mock ms late
 //                (w.envGetDelayMs), to keep a read in flight while other work runs
 //   envSetDelayMs  env.set answers this many mock ms late (w.envSetDelayMs), to open a write window
 //   storeGetFails  store.get answers { deny }, so $.store.get() rejects (w.storeGetFails)
 //   extraLimits  more rate limits listed beside five_hour, such as seven_day (w.extraLimits)
+//   weekPct      live seven_day percentUsed, undefined for no weekly entry: the 0.1 world (mutable as w.weekPct)
+//   weekResetsAt default WEEK_RESETS, null for a weekly reading without resetsAt (mutable as w.weekResetsAt)
+//   keepExpired  session.usage keeps listing a window past its resetsAt (w.keepExpired). By default it
+//                drops it, as the engine does at its local now (0.2 gap-6 2.2). An entry without
+//                resetsAt always stays listed
+//   submitDrop   core answers a plugin prompt with { drop: submitDrop } (w.submitDrop)
+//   afterRefusals  a hook above spare10 refuses its first N $.clock.after dispatches, so those timers
+//                never run (w.afterRefusals counts down)
 //
 // The world records: asked (each dialog), ran, requests, prompts, fills, aborts, logs, invalidations,
-// renders, commands (names), commandSpecs (whole) and parkCalls. w.release(label?) ends every hung dialog with that label, or as
-// gone without one. w.cap() rejects every pending $.spare10.park call, as the host does at 10 s.
+// renders, commands (names), commandSpecs (whole) and parkCalls. submitted holds the texts of the prompts
+// that reach core with no origin or a plugin origin: spare10's resume prompt at the reset (the kit does
+// not stamp a plugin prompt, and no spare10 hook is in its path). They are in prompts too, unless
+// dropped. w.release(label?) ends every hung dialog with that label, or as gone without one. w.cap() rejects every pending $.spare10.park call, as the host does at 10 s.
 // A dialog whose dispatch aborts records the reason in w.dialogAborted ('no' until then).
 // "Chat about this" and Esc reject live: act them out with answer 'dismiss'.
 // ui.invalidate is counted and passed on to the kit, which redraws a mounted badge:
@@ -52,7 +65,10 @@ import type {
 // Helpers: begin($, w) raises session.start (attended per w.surfaces). clear($, w, id, reason?) acts
 // out a /clear (or an in-session /resume): session.end for the old id, then the new id. bash($, agentId?, command?)
 // makes a Bash call. step(agentId?, turnId?) builds a TurnStepInput and drain($, input) runs it to
-// { chunks, text }. measure(pct?, changed?, resetsAt?) builds a SessionMeasureInput. typed(text,
+// { chunks, text }. measure(pct?, changed?, resetsAt?, week?) builds a SessionMeasureInput, with a
+// seven_day entry when week has a pct. pastDue(w, iso, margin?) moves the clock one tick past the due time of a
+// window that resets at iso. advanceChunked(w, ms) moves in steps of at most 80 h. stopRec(sid, until,
+// at, tags?) is a 0.2 SPARE10_STOPPED value, stopRe(sid, tags?) the same as a RegExp. typed(text,
 // kind?, turnId?) builds a whole PromptSubmitInput, cmd(args, kind?) a whole CommandRunInput.
 // Inline plugins: `above` (prepend) settles above a Bash call whose command starts with `abandon`
 // after 1000 mock ms. `stepAbove` (prepend) does the same to a model request whose turn id starts
@@ -68,6 +84,13 @@ import type {
 // - The auditor proves the origin exemption only when a held step raised the dialog (a raise from the
 //   tool gate skips the gate's own registration).
 // - A mounted badge in the tripped phase pulses every 1000 mock ms, so a long advance runs many redraws.
+//
+// The reset clock (0.2): the ticker exists only after begin($, w). It steps every TICK (30 s) from the
+// session.start, so every reset test calls begin. A held question continues MARGIN (5 min) after a real
+// reset, and TEST_MARGIN (60 s) after a test window. Move there with pastDue(w, RESETS). One advance or
+// set resolves at most 10 000 waits and throws past that: about 83 h of ticks, about 2.7 h while a
+// tripped badge pulses. So keep resets near T0 (weekly tests use weekResetsAt: SOON), never mount a
+// tripped badge across a long move, and use advanceChunked past a date days ahead.
 
 export const T0 = Date.parse('2026-09-24T12:00:00Z')
 export const RESETS = '2026-09-24T15:00:00.000Z' // 3 h after T0
@@ -75,6 +98,13 @@ export const LATER = '2026-09-24T20:00:00.000Z' // a later window
 export const TZ = 'UTC' // pass to text functions in pure tests
 export const HOUR = 3_600_000
 export const CAP = '$.spare10.park: spare10 did not answer within 10000ms'
+export const WEEK_RESETS = '2026-09-28T09:00:00.000Z' // Monday 09:00, T0 is Thursday 12:00
+export const SOON = '2026-09-24T13:00:00.000Z' // 1 h after T0: a weekly reset near T0
+export const MIN = 60_000
+export const DAY = 86_400_000
+export const MARGIN = 300_000 // a release waits this long after a real reset
+export const TEST_MARGIN = 60_000 // and this long after a test window
+export const TICK = 30_000 // one step of the reset clock
 
 export type Core = 'ran' | 'deny' | 'error'
 export type SettingsWorld = {
@@ -107,6 +137,13 @@ export type WorldOptions = {
   envSetDelayMs?: number
   storeGetFails?: boolean
   extraLimits?: SessionRateLimit[]
+  weekPct?: number
+  weekResetsAt?: string | null
+  keepExpired?: boolean
+  submitDrop?: string
+  afterRefusals?: number
+  usageFailsAfter?: number
+  usageDelayMs?: number
 }
 
 export type Asked = { question: string; header?: string; labels: string[] }
@@ -129,6 +166,13 @@ export type World = {
   envSetDelayMs: number
   storeGetFails: boolean
   extraLimits: SessionRateLimit[]
+  weekPct: number | undefined
+  weekResetsAt: string | null
+  keepExpired: boolean
+  submitDrop: string | undefined // core drops a plugin prompt with this reason
+  afterRefusals: number // $.clock.after dispatches of spare10 still to refuse
+  usageFailsAfter: number | undefined // session.usage calls still answered before it denies
+  usageDelayMs: number // session.usage answers this many mock ms late
   settings: SettingsWorld
   env: Map<string, string>
   store: Map<string, unknown>
@@ -139,6 +183,7 @@ export type World = {
   ran: string[] // `${tool}:${agentId ?? 'main'}` that reached core
   requests: number // model requests that reached core
   prompts: PromptSubmitInput[] // prompts that reached core
+  submitted: string[] // texts of prompts that reached core with no origin or a plugin origin
   fills: string[] // $.prompt.fill texts
   aborts: string[] // $.turn.abort turn ids
   logs: Array<{ text: string; to?: string }> // $.ui.log lines
@@ -152,6 +197,11 @@ export type World = {
 type AskInput = { questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string }> }> }
 
 export function world(on: On, opts: WorldOptions = {}): World {
+  // afterRefusals: registered before mock.clock, so it sits above the clock's own clock.after hook.
+  let refuse = (): boolean => false
+  on('clock.after', { ms: /\d/ }, (_$, e, next) =>
+    next.origin.plugin === 'spare10' && refuse() ? { deny: 'a hook above refused the timer' } : next(e),
+  )
   const clock = mock.clock(on, { now: T0 })
   const hung: Array<(label: string | undefined) => void> = []
   const pending = new Set<() => void>()
@@ -174,6 +224,13 @@ export function world(on: On, opts: WorldOptions = {}): World {
     envSetDelayMs: opts.envSetDelayMs ?? 0,
     storeGetFails: opts.storeGetFails ?? false,
     extraLimits: opts.extraLimits ?? [],
+    weekPct: opts.weekPct,
+    weekResetsAt: opts.weekResetsAt === undefined ? WEEK_RESETS : opts.weekResetsAt,
+    keepExpired: opts.keepExpired ?? false,
+    submitDrop: opts.submitDrop,
+    afterRefusals: opts.afterRefusals ?? 0,
+    usageFailsAfter: opts.usageFailsAfter,
+    usageDelayMs: opts.usageDelayMs ?? 0,
     settings: opts.settings ?? {},
     env: new Map(Object.entries(opts.env ?? {})),
     store: new Map(Object.entries(opts.store ?? {})),
@@ -189,6 +246,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     ran: [],
     requests: 0,
     prompts: [],
+    submitted: [],
     fills: [],
     aborts: [],
     logs: [],
@@ -199,17 +257,28 @@ export function world(on: On, opts: WorldOptions = {}): World {
     parkCalls: 0,
   }
 
-  const five = (): SessionRateLimit[] => [
-    ...w.extraLimits,
-    ...(w.pct === undefined
-      ? []
-      : [{ kind: 'five_hour', percentUsed: w.pct, ...(w.resetsAt === null ? {} : { resetsAt: w.resetsAt }) }]),
-  ]
+  const entry = (kind: 'five_hour' | 'seven_day', pct: number | undefined, resetsAt: string | null): SessionRateLimit[] =>
+    pct === undefined ? [] : [{ kind, percentUsed: pct, ...(resetsAt === null ? {} : { resetsAt }) }]
+  // The engine drops a window once its resetsAt is not after its local now (gap-6 2.2).
+  const open = (r: SessionRateLimit): boolean =>
+    w.keepExpired || r.resetsAt === undefined || !(Date.parse(r.resetsAt) <= clock.now()) // a junk resetsAt stays listed
+  const limits = (): SessionRateLimit[] =>
+    [...w.extraLimits, ...entry('five_hour', w.pct, w.resetsAt), ...entry('seven_day', w.weekPct, w.weekResetsAt)].filter(open)
+
+  refuse = () => {
+    if (w.afterRefusals <= 0) return false
+    w.afterRefusals -= 1
+    return true
+  }
 
   // Session and reading.
-  on('session.usage', () =>
-    w.usageFails ? { deny: 'usage unavailable' } : { value: { startedAt: T0, context: { window: 200_000 }, rateLimits: five() } },
-  )
+  const usage = () => {
+    if (w.usageFailsAfter !== undefined && w.usageFailsAfter <= 0) return { deny: 'usage unavailable' }
+    if (w.usageFailsAfter !== undefined) w.usageFailsAfter -= 1
+    return w.usageFails ? { deny: 'usage unavailable' } : { value: { startedAt: T0, context: { window: 200_000 }, rateLimits: limits() } }
+  }
+  // Without a delay the answer stays synchronous, as before usageDelayMs existed. A delayed one reads the limits late.
+  on('session.usage', () => (w.usageDelayMs > 0 ? clock.sleep(w.usageDelayMs).then(usage) : usage()))
   on('session.id', () => ({ value: w.sessionId }))
   on('session.surfaces', () => ({ value: [...w.surfaces] }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -314,6 +383,9 @@ export function world(on: On, opts: WorldOptions = {}): World {
     return { turnId: e.turnId, index: e.index, answer: 'hi', toolUses: [], stopReason: 'end_turn', usage: null }
   })
   on('prompt.submit', (_$, e) => {
+    const plugin = (e.origin as PromptOrigin | undefined) === undefined || e.origin.kind === 'plugin'
+    if (plugin) w.submitted.push(e.text)
+    if (plugin && w.submitDrop !== undefined) return { drop: w.submitDrop }
     w.prompts.push(e)
     return e.context === undefined ? { text: e.text } : { text: e.text, context: e.context }
   })
@@ -371,15 +443,46 @@ export async function drain($: Engine, s: TurnStepInput): Promise<{ chunks: unkn
   return { chunks, text }
 }
 
-/** A session.measure: the five_hour window at pct (none when undefined), with what changed. */
+/**
+ * A session.measure: the five_hour window at pct (none when undefined), with what changed, and a
+ * seven_day entry when week has a pct (its resetsAt WEEK_RESETS unless given, null for none).
+ */
 export function measure(
   pct?: number,
   changed: SessionMeasureInput['changed'] = ['rateLimits', 'cost'],
   resetsAt: string | null = RESETS,
+  week: { pct?: number; resetsAt?: string | null } = {},
 ): SessionMeasureInput {
-  const rateLimits: SessionRateLimit[] =
-    pct === undefined ? [] : [{ kind: 'five_hour', percentUsed: pct, ...(resetsAt === null ? {} : { resetsAt }) }]
+  const at = (r: string | null) => (r === null ? {} : { resetsAt: r })
+  const rateLimits: SessionRateLimit[] = [
+    ...(pct === undefined ? [] : [{ kind: 'five_hour', percentUsed: pct, ...at(resetsAt) }]),
+    ...(week.pct === undefined ? [] : [{ kind: 'seven_day', percentUsed: week.pct, ...at(week.resetsAt === undefined ? WEEK_RESETS : week.resetsAt) }]),
+  ]
   return { context: { window: 200_000 }, rateLimits, cost: { usd: 0.1 }, changed }
+}
+
+/** Moves the clock one tick past the due time of a window that resets at iso: its reset plus the margin. */
+export function pastDue(w: World, iso: string, margin = MARGIN): Promise<void> {
+  return w.clock.set(Date.parse(iso) + margin + TICK)
+}
+
+/** Moves the clock on in steps of at most 80 h, under the cap of 10 000 waits per move. */
+export async function advanceChunked(w: World, ms: number): Promise<void> {
+  const step = 80 * HOUR
+  for (let left = ms; left > 0; left -= step) await w.clock.advance(Math.min(step, left))
+}
+
+const msOf = (t: number | string): number => (typeof t === 'number' ? t : Date.parse(t))
+
+/** A 0.2 SPARE10_STOPPED value: `<sid> <untilMs> <atMs> <tags>`. until and at take ms or an ISO time. */
+export function stopRec(sid: string, until: number | string, at: number | string, tags = 'five_hour,auto'): string {
+  return `${sid} ${msOf(until)} ${msOf(at)} ${tags}`
+}
+
+/** A 0.2 SPARE10_STOPPED value of this session as a RegExp: any times, these tags (any when not given). */
+export function stopRe(sid: string, tags?: string): RegExp {
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${esc(sid)} \\d+ \\d+ ${tags === undefined ? '\\S+' : esc(tags)}$`)
 }
 
 /** Where a prompt or a command came from, whole. */

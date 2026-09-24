@@ -2,7 +2,7 @@ import { test, expect } from 'claude-code/testing'
 import { badgeLabel, badgeView } from '../../hooks/core/badge.ts'
 import type { Mode, Phase } from '../../hooks/core/decide.ts'
 
-const view = (phase: Phase, over: { reserve?: number; test?: boolean; mode?: Mode; blink?: boolean } = {}) =>
+const view = (phase: Phase, over: { reserve?: number; test?: boolean; mode?: Mode; blink?: boolean; until?: string } = {}) =>
   badgeView(phase, { reserve: 10, test: false, mode: 'hold', blink: true, ...over })
 
 const LABELLED: Phase[] = ['off', 'waiting', 'armed', 'consented', 'stopped', 'asking', 'told', 'reserve']
@@ -79,4 +79,20 @@ test('labels a test reading', () => {
   expect(view('stopped', { test: true }).text).toBe('■ spare10 (test): stopped')
   expect(view('asking', { reserve: 40, test: true }).text).toBe('? spare10 (40%) (test): waiting for you')
   for (const phase of LABELLED) expect(view(phase, { test: true }).text).toContain('(test)')
+})
+
+test('stopped shows until when given, and the 0.1 text without', () => {
+  expect(view('stopped', { until: '15:00' })).toEqual({ text: '■ spare10: stopped until 15:00', color: 'warning', pulse: false })
+  expect(view('stopped', { until: 'Mon 09:00', reserve: 40, test: true }).text).toBe('■ spare10 (40%) (test): stopped until Mon 09:00')
+  expect(view('stopped')).toEqual({ text: '■ spare10: stopped', color: 'warning', pulse: false })
+})
+
+test('asking shows until when given', () => {
+  expect(view('asking', { until: '15:00' })).toEqual({ text: '? spare10: waiting for you until 15:00', color: 'warning', pulse: false })
+  expect(view('asking', { until: 'Thu 1 Oct 11:00' }).text).toBe('? spare10: waiting for you until Thu 1 Oct 11:00')
+  expect(view('asking')).toEqual({ text: '? spare10: waiting for you', color: 'warning', pulse: false })
+  // Every other row ignores until.
+  for (const phase of ['off', 'blind', 'waiting', 'armed', 'consented', 'told', 'reserve', 'tripped'] as Phase[]) {
+    expect(view(phase, { until: '15:00' })).toEqual(view(phase))
+  }
 })
