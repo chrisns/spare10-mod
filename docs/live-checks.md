@@ -936,13 +936,15 @@ Keep the old rows.
 | LC6 Unattended stop, 0.2 | | | | |
 | LC7 Tell mode, 0.2 | | | | |
 | LC8 Background agent and parallel loops, 0.2 | | | | |
-| LC17 Weekly question | | | | |
-| LC18 A question continues at the reset | | | | |
+| LC17 Weekly question | 2026-09-24 | 2.1.281 | pass | Real REPL, worker host. The dialog had the weekly wording with a weekday clock. Resume ran the held work. The `weekly consent` line of `/spare10` was as expected. |
+| LC18 A question continues at the reset | 2026-09-24 | 2.1.281 | pass | Real REPL, worker host. Nobody answered the question on a 2-minute test window. spare10 released it 61 s after the test window ended. The dialog left the screen by itself. The transcript showed `the test window ended. Held work continues.` The held tool call ran. The logs had no hook failure and no budget error. |
 | LC18b Behind a permission dialog | | | | Record whether the question leaves the queue at the reset, or stays. |
-| LC19 Stop here, then the resume prompt | | | | Record how the transcript frames the plugin message. Record whether the `prompt.submit` hook of spare10 saw it. |
+| LC19 Stop here, then the resume prompt | 2026-09-24 | 2.1.281 | pass | Real REPL, worker host. After Stop here, the test window ended and its margin passed. Then the ticker sent the resume prompt with `$.prompt.submit`. It started a new turn. The transcript framed it as `This is how Claude Code surfaces a prompt a plugin submits between turns`. The model finished the task. The logs had no hook failure and no budget error. |
 | LC19b The prompt box at the reset | | | | Record whether `new instruction` stays in the prompt box. |
 | LC20 Continue at the reset off | | | | |
-| LC21 Unattended wait | | | | Record the run time and the exit code. |
+| LC21 Unattended wait | 2026-09-24 | 2.1.281 | pass | `-p` run with `SPARE10_HEADLESS=wait`, worker host. The hold lasted about 200 s, with 17 carrier re-arms. spare10 released it after the test window ended. The run ended with exit code 0 and a success result. The logs had no hook failure and no budget error. |
+| LC19 Stop here, then the resume prompt, after the review fixes | 2026-09-24 | 2.1.281 | pass | The stop notice said `until 23:46`. The resume prompt came at 23:48:09, 83 s after the test window ended. The model created all three files. No hook failure, budget error or turn-hold refusal. |
+| LC21 Unattended wait, after the review fixes | 2026-09-24 | 2.1.281 | pass | The run took 199 s with 17 carrier re-arms, released at the test window end plus the margin, and exited 0. The watch timer did not keep the process alive. |
 | LC22 `/clear` and the stop | | | | Record whether a resume prompt reached the new conversation in the second part. |
 | LC23 Reload during a stop | | | | Record the badge after the reload. |
 | LC24 Two windows | | | | Record how you set the weekly test reading in the second part. |

@@ -778,7 +778,8 @@ function newEnginePrefixed(): string[] {
     for (const still of [[F5], [FW], BOTH]) out.push(notice.resetStillHeld(named, still), notice.stopExtended(named, still, 'Mon 09:00'))
   }
   for (const f of [F5, FW, BOTH, NO_RESET]) {
-    out.push(notice.continuing(f), notice.told(f), notice.holdLimit(f), notice.holdLimit(f, { at: '15:00' }))
+    out.push(notice.continuing(f), notice.told(f), notice.holdLimit(f))
+    for (const work of [false, true]) out.push(notice.holdLimit(f, { at: '15:00', work }))
     for (const work of [false, true]) out.push(notice.stopped(f, { at: '15:00', work }))
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off', 'overdue'] as const) out.push(resumeReply(c, f, TWO))
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off', 'overdue'] as const) {
@@ -803,8 +804,12 @@ test('every new notice and reply starts without the engine prefix', () => {
   expect(notice.stopped(BOTH, { at: 'Mon 09:00', work: false })).toBe(
     'stopped at your 10% reserve and your 10% weekly reserve until Mon 09:00. Type a prompt to be asked again, or run /spare10 resume.',
   )
-  expect(notice.holdLimit(F5, { at: '15:00' })).toBe(
+  expect(notice.holdLimit(F5, { at: '15:00', work: true })).toBe(
     'the hold reached its time limit. The work is stopped at your 10% reserve until 15:00. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  // No loop was held (a prompt question): spare10 sends nothing at the reset, so the text promises nothing.
+  expect(notice.holdLimit(FW, { at: 'Mon 09:00', work: false })).toBe(
+    'the hold reached its time limit. The work is stopped at your 10% weekly reserve until Mon 09:00. Type a prompt to be asked again, or run /spare10 resume.',
   )
   expect(notice.holdLimit(F5)).toBe(
     'the hold reached its time limit. The work is stopped at your 10% reserve. Type a prompt to be asked again, or run /spare10 resume.',

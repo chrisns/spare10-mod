@@ -150,6 +150,14 @@ const tripAt = (reserve: number): number => Math.round((100 - reserve) * 10) / 1
 /** The first point of the reserve trips: reserve 10 trips at 90.0 and passes at 89.9. */
 export const isTripped = (b: Basis, reserve: number): boolean => b.kind !== 'none' && b.pct >= tripAt(reserve)
 
+/**
+ * 4.8: the last real reading of a kind was in the reserve, and its window reset less than
+ * RESET_MARGIN_MS ago. The local clock may run ahead of the server, so spare10 releases nothing by
+ * itself yet, also when a test window ends first.
+ */
+export const inResetMargin = (seed: Anchored | undefined, reserve: number, now: number): boolean =>
+  seed !== undefined && seed.resetsAtMs <= now && now - seed.resetsAtMs < RESET_MARGIN_MS && seed.pct >= tripAt(reserve)
+
 export const pctOf = (b: Basis): number | undefined => (b.kind === 'none' ? undefined : b.pct)
 
 /** The window end that bounds consent and stopped. Never a release time for held work. */

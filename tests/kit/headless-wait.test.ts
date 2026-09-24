@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, Plugin } from 'claude-code/testing'
-import { LATER, MARGIN, MIN, RESETS, T0, TEST_MARGIN, TICK, above, bash, begin, cmd, drain, measure, pastDue, step, typed, world } from '../helpers/world.ts'
+import { LATER, MARGIN, MIN, RESETS, SOON, T0, TEST_MARGIN, TICK, above, bash, begin, cmd, drain, measure, pastDue, step, typed, world } from '../helpers/world.ts'
 
 // Unattended wait through the engine (design 0.2: 8.3 headless.test.ts additions, B36, B37, 5.3, 5.5).
 // Every expected text is spelled out from design section 2 here, not taken from hooks/core/text.ts,
@@ -210,7 +210,8 @@ test(
   },
 )
 
-test('-p wait: a lost hold with no waiter is forgotten, and the next call holds again', { plugins: [above] }, async ($, on) => {
+// A held waiter across 8 h of mock time checks on every tick: allow more than the 5 s default.
+test('-p wait: a lost hold with no waiter is forgotten, and the next call holds again', { plugins: [above], timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on, { pct: 93, surfaces: [], env: WAIT })
   await begin($, w)
   const lost = bash($, undefined, 'abandon me')
@@ -306,4 +307,17 @@ test('a guarded session with headless wait sets SPARE10_HEADLESS=stop for childr
   const lines = await report($)
   expect(lines).toContain('  · claude -p      runs started here: stop')
   expect(lines).toContain('  · guarded        yes (scope all)')
+})
+
+test('-p wait holds a step when a live reading gates beside a seed, and releases it at the reset', { timeoutMs: 20_000 }, async ($, on) => {
+  // The weekly window rests on a seed from another session, the 5-hour window on a live reading.
+  const w = world(on, { pct: 93, surfaces: [], env: WAIT, store: { 'seed-weekly': { pct: 95, resetsAtMs: Date.parse(SOON) } } })
+  await begin($, w)
+  const req = drain($, step(undefined, 'T1'))
+  await w.clock.settle()
+  expect(w.requests).toBe(0) // row 6a lets a step go only when every gating kind rests on a seed
+  expect(w.asked).toEqual([])
+  await pastDue(w, RESETS)
+  expect((await req).text).toBe('hi')
+  expect(w.requests).toBe(1)
 })

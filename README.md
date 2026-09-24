@@ -73,6 +73,10 @@ Type `/spare10 simulate off` to clear the test reading.
 
 ## Screenshots
 
+These screenshots show spare10-mod 0.1. The screenshots for 0.2 are not ready yet.
+In 0.2, the report also has the weekly rows and the `at the reset` row.
+After **Stop here**, the badge and the notice also show the time of the reset.
+
 The badge at the right of the prompt footer, and the `/spare10` report:
 
 ![The /spare10 report](docs/images/status.png)
@@ -179,8 +183,10 @@ Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used
 
 The question names the windows that are in the reserve when it opens.
 Another window can reach its reserve while the question waits.
-Your answer does not apply to that window.
-After your answer, spare10 asks you again about it.
+**Resume** does not apply to that window.
+After a **Resume**, spare10 asks you again about it.
+**Stop here** also stops the work on that window.
+With **Continue at the reset** on, the stop then lasts until that window resets too.
 
 **Stop here** has the focus, so a stray Enter never spends the reserve.
 Only the exact label `Resume` continues.
@@ -235,6 +241,7 @@ The transcript shows `spare10: the quota is no longer in the reserve. Held work 
 
 **A stop.**
 After a **Stop here** that stopped work, spare10 continues that work.
+A **Stop here** on a later question keeps the work of an earlier stop that spare10 did not continue yet.
 The transcript shows `spare10: the 5-hour window reset. spare10 continues the stopped work.`
 Then spare10 sends Claude this message, and a new turn starts:
 
@@ -335,7 +342,7 @@ The rows without a label, such as `⚠ Pausing at next step`, show no ` (test)`.
 | `● spare10` | Usage is below each reserve. |
 | `⨯ spare10` | You chose to continue. spare10 is quiet until the window resets. |
 | `■ spare10: stopped until 14:00` | You chose **Stop here**. The stop ends at the reset at 14:00. Then spare10 continues any stopped work. |
-| `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself, because **Continue at the reset** is off, or was off at the stop. |
+| `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself. **Continue at the reset** is off, or was off at the stop. |
 | `⏸ spare10` | At least one agent got the pause prompt. |
 | `⚠ spare10: in the reserve` | An unattended run is inside the reserve. |
 | `⚠ Pausing at next step` | Usage reached a reserve. spare10 holds the next step and asks you. The glyph blinks. |
@@ -678,6 +685,8 @@ The answer then releases or refuses all held steps.
 Nothing in Claude Code fires at a quota reset, so spare10 keeps its own clock.
 At the start of a session, spare10 starts a timer that runs every 30 s.
 The timer continues a stop after the reset, with a short message to Claude.
+A second timer runs every 5 minutes.
+If a hook of another plugin stops one timer, the other timer starts it again.
 Each held step also checks the time on each cycle of its wait.
 So an open question ends after the reset, also after a reload.
 Before it releases work by itself, spare10 reads the quota again.
@@ -741,7 +750,7 @@ After the reading trips, a failure holds or refuses the step.
 22. **An installed copy and a `--plugin-dir` copy cannot run together.** One of them unloads.
 23. **spare10 guards every interactive session by default**, and this includes your important sessions. Use `SPARE10=off`, or `scope: opt-in` with `SPARE10=on`.
 24. **There is no list of stopped runs across sessions.** spare10 doctor listed each stopped background run. Use `claude agents`.
-25. **spare10 continues 5 minutes after a real reset, not at the exact time.** After a test window, it waits 60 s. The release uses the clock of your computer.
+25. **spare10 continues 5 minutes after a real reset, not at the exact time.** After a test window, it waits 60 s. A test window can end less than 5 minutes after the reset of a real reading in the reserve. Then spare10 waits until 5 minutes after that reset. The release uses the clock of your computer.
 26. **A held loop continues within about 10 s after that time.** A stopped session waits for the next 30 s check.
 27. **The message at the reset starts a new turn.** While the prompt box holds new text, the message waits up to 5 minutes. Then it goes.
 28. **A hold ends as Stop here when it has used most of its hook budget.** The estimate is more than a day. With **Continue at the reset** on, the work then continues at the reset. Under `wait`, the run ends with the `stop` answer.
@@ -840,6 +849,7 @@ The command takes this form:
 - A 2-minute test window lets you see the reset.
   spare10 waits 60 s after the end of a test window, so `in 2m` continues about 3 minutes later.
 - Without `in`, the test window ends at the reset of the live reading.
+  If that live reading is in the reserve, spare10 waits 5 minutes after the reset, not 60 s.
   Without a live reading, it ends 5 hours from now, or 7 days for the weekly window.
 - Each window has one test reading.
   A new value for a window also clears the consent and the stop.

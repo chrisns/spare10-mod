@@ -2,6 +2,7 @@ import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import {
   HOUR,
+  LATER,
   MARGIN,
   MIN,
   RESETS,
@@ -31,6 +32,7 @@ import type { World } from '../helpers/world.ts'
 const RESETS_MS = Date.parse(RESETS)
 const SOON_MS = Date.parse(SOON)
 const WEEK_MS = Date.parse(WEEK_RESETS)
+const LATER_MS = Date.parse(LATER)
 const DUE = RESETS_MS + MARGIN // the due time of a stop or question on the 5-hour window at RESETS
 
 // {clock}: HH:MM in the machine's zone, and for the weekly window the en-GB short weekday first (2.1).
@@ -193,6 +195,9 @@ test('a loop Stop, then a prompt question answered with Esc: the reset sends one
   expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(), promptQuestion()])
   // The merge rule keeps the work of the earlier loop Stop (3.2): the later Stop gives the time.
   expect(rec(w)).toEqual(want('S1', RESETS_MS, T0 + MIN, 'five_hour,work,auto'))
+  // The notice follows the merged record: it says that spare10 continues the work (2.4).
+  expect(count(transcript(w), stoppedWork(clock(RESETS_MS)))).toBe(2)
+  expect(count(transcript(w), stoppedNoWork(clock(RESETS_MS)))).toBe(0)
   await pastDue(w, RESETS)
   expect(w.submitted).toEqual([resumePrompt()])
   expect(count(transcript(w), resetResumes())).toBe(1)
@@ -860,8 +865,8 @@ test('without resetsAt a hold ends one window after the first sight, not at the 
 
 // ---- 4.2: arming the ticker, and the watchdog ----
 
-test('a refused clock.after leaves no ticker: /spare10 warns, and the next measure re-arms it', async ($, on) => {
-  const w = world(on, { pct: 50, afterRefusals: 1 }) // the ticker's first timer never runs
+test('a refused clock.after and a refused watch period leave no ticker: /spare10 warns, and the next measure re-arms it', async ($, on) => {
+  const w = world(on, { pct: 50, afterRefusals: 1, everyRefusals: 1 }) // the ticker's first timer and the watch never run
   await begin($, w)
   await w.clock.advance(2 * MIN)
   expect(await status($)).toContain(TICKER_WARNING)
@@ -890,3 +895,425 @@ test('session.start arms the ticker even when a start-up read fails (envGetFails
   expect(count(transcript(w), resetContinues())).toBe(1)
   expect(await status($)).not.toContain(TICKER_WARNING)
 })
+
+// ---- 3.2: a Stop after an earlier stop's reset, and the texts of the merged stop ----
+
+test('Stop here on a prompt question inside the margin keeps the work of the earlier loop Stop, and the reset continues it', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  await loopStop($, w)
+  await w.clock.set(RESETS_MS - 2 * MIN)
+  const p = $.prompt.submit(typed('carry on'))
+  await w.clock.settle()
+  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(), promptQuestion()])
+  await w.clock.set(RESETS_MS + MIN) // past the stop's until, inside the margin: the dialog is still up
+  expect(w.dialogAborted).toBe('no')
+  w.release('Stop here')
+  expect(await p).toEqual({ drop: notStarted() })
+  await w.clock.settle()
+  // The earlier stop is past its until, but nobody released it: its work stays (3.2).
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, RESETS_MS + MIN, 'five_hour,work,auto'))
+  expect(count(transcript(w), stoppedWork(clock(RESETS_MS)))).toBe(2)
+  expect(count(transcript(w), stoppedNoWork(clock(RESETS_MS)))).toBe(0)
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt()])
+  expect(count(transcript(w), resetResumes())).toBe(1)
+  expect(count(transcript(w), resetStopOver())).toBe(0)
+  expect(w.env.has('SPARE10_STOPPED')).toBe(false)
+})
+
+test('Stop here on a prompt question that names the weekly window too, after the 5-hour stop ended: the work stays, and the weekly reset continues it', { timeoutMs: 20_000 }, async ($, on) => {
+  const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: LATER })
+  await begin($, w)
+  await loopStop($, w)
+  w.weekPct = 95 // another session reaches the weekly reserve while the 5-hour stop lasts
+  await w.clock.set(RESETS_MS - 2 * MIN)
+  const p = $.prompt.submit(typed('carry on'))
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(2)
+  await w.clock.set(RESETS_MS + 10 * MIN) // the 5-hour stop is past its due time: the held prompt keeps the ticker away
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,work,auto'))
+  w.release('Stop here')
+  expect(typeof ((await p) as { drop?: unknown }).drop).toBe('string') // not started: the prompt goes back
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', LATER_MS, RESETS_MS + 10 * MIN, 'five_hour,seven_day,work,auto'))
+  expect(count(transcript(w), stoppedWork(weekday(LATER_MS)).replace('your 10% reserve', 'your 10% reserve and your 10% weekly reserve'))).toBe(1)
+  await pastDue(w, LATER)
+  expect(w.submitted).toEqual([resumePrompt('the 5-hour and weekly windows reset')])
+  expect(w.env.has('SPARE10_STOPPED')).toBe(false)
+})
+
+test('Stop here after the named window reset, while another window gates now: the stop names it and lasts until its reset', async ($, on) => {
+  const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: LATER })
+  await begin($, w)
+  await w.clock.set(RESETS_MS - 2 * MIN)
+  const p = $.prompt.submit(typed('carry on'))
+  await w.clock.settle()
+  expect(w.asked.map((a) => a.question)).toEqual([promptQuestion()])
+  await w.clock.set(RESETS_MS + MIN) // the 5-hour window reset, inside the margin
+  w.weekPct = 95 // the weekly window, which the dialog does not name, gates now
+  w.release('Stop here')
+  expect(await p).toEqual({ drop: notStarted() })
+  await w.clock.settle()
+  // Not written already over: the stop also names the weekly window, until its reset.
+  expect(rec(w)).toEqual(want('S1', LATER_MS, RESETS_MS + MIN, 'five_hour,seven_day,auto'))
+  expect(count(transcript(w), `stopped at your 10% reserve and your 10% weekly reserve until ${weekday(LATER_MS)}. Type a prompt to be asked again, or run /spare10 resume.`)).toBe(1)
+  w.answer = 'Stop here'
+  expect((await bash($)).deny).toContain('spare10: the user stopped work at the quota reserve (into your 10% weekly reserve')
+  expect(w.asked).toHaveLength(1) // refused as stopped: no new question
+})
+
+test('a prompt question in a weekly stop: the Stop notice gives the end and the work of the merged stop', async ($, on) => {
+  const w = world(on, { pct: 50, weekPct: 92 })
+  await begin($, w)
+  const held = bash($)
+  await w.clock.settle()
+  w.release('Stop here')
+  expect((await held).deny).toContain('into your 10% weekly reserve')
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', WEEK_MS, T0, 'seven_day,work,auto'))
+  w.weekPct = 50 // a limit-reset grant: the weekly window leaves its reserve, and the stop still applies
+  w.pct = 93
+  w.answer = 'dismiss'
+  expect(await $.prompt.submit(typed('carry on'))).toEqual({ drop: notStarted() })
+  await w.clock.settle()
+  expect(w.asked.map((a) => a.question).at(-1)).toBe(promptQuestion())
+  expect(rec(w)).toEqual(want('S1', WEEK_MS, T0, 'five_hour,seven_day,work,auto'))
+  expect(count(transcript(w), stoppedWork(weekday(WEEK_MS)))).toBe(1)
+  expect(count(transcript(w), stoppedNoWork(clock(RESETS_MS)))).toBe(0)
+})
+
+test('a loop that joins a prompt question counts as work: Stop here keeps it, and the reset continues it', async ($, on) => {
+  const w = world(on, { pct: 93, agents: ['a1'] })
+  await begin($, w)
+  const p = $.prompt.submit(typed('hello'))
+  await w.clock.settle()
+  expect(w.asked.map((a) => a.question)).toEqual([promptQuestion()])
+  const sub = bash($, 'a1') // a background agent's call joins the open question
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  w.release('Stop here')
+  expect(await p).toEqual({ drop: notStarted() })
+  expect((await sub).deny).toBe(STOP())
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,work,auto'))
+  expect(count(transcript(w), stoppedWork(clock(RESETS_MS)))).toBe(1)
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt()])
+})
+
+// ---- 4.8: the margin after a real reset, also for a test reading ----
+
+test('simulate 95 on a real reading in the reserve borrows its reset: an unanswered question waits the 5-minute margin, not 60 s', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  expect((await $.command.run(cmd('simulate 95'))).text).toContain(`test reading set to 95% used, resets ${clock(RESETS_MS)}`)
+  const held = bash($)
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  await w.clock.set(RESETS_MS + TEST_MARGIN + TICK) // the test margin has passed, the real one has not
+  expect(w.ran).toEqual([])
+  await w.clock.set(DUE - 1)
+  expect(w.ran).toEqual([])
+  expect(w.dialogAborted).toBe('no')
+  await pastDue(w, RESETS)
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(count(transcript(w), resetContinues('the test window ended'))).toBe(1)
+})
+
+test('a Stop on a test reading that borrowed the reset of a real reading in the reserve continues after the 5-minute margin', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  expect((await $.command.run(cmd('simulate 95'))).text).toContain(`test reading set to 95% used, resets ${clock(RESETS_MS)}`)
+  const held = bash($)
+  await w.clock.settle()
+  w.release('Stop here')
+  expect((await held).deny).toContain('spare10: the user stopped work at the quota reserve (')
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,work,auto,test'))
+  await w.clock.set(RESETS_MS + TEST_MARGIN + TICK)
+  expect(w.submitted).toEqual([])
+  await w.clock.set(DUE - 1)
+  expect(w.submitted).toEqual([])
+  expect(rec(w)?.sid).toBe('S1')
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt('the test window ended')])
+})
+
+test('Stop here on a real 5-hour trip plus a weekly test window: no test tag, and the release waits the 5-minute margin', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  expect((await $.command.run(cmd('simulate 95 weekly in 2m'))).text).toContain('test reading set to 95% used of the weekly window')
+  const held = bash($)
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  w.release('Stop here')
+  expect((await held).deny).toContain('spare10: the user stopped work at the quota reserve (')
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,seven_day,work,auto')) // a real kind: no test tag
+  await w.clock.set(RESETS_MS + MARGIN - TICK)
+  expect(w.submitted).toEqual([])
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt('the 5-hour and weekly windows reset')])
+})
+
+test('/spare10 stop on a real 5-hour trip plus a weekly test window: no test tag, and the release waits the 5-minute margin', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  expect((await $.command.run(cmd('simulate 95 weekly in 2m'))).text).toContain('test reading set to 95% used of the weekly window')
+  expect((await $.command.run(cmd('stop'))).text).toBe(stopTripped(weekday(RESETS_MS)))
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,seven_day,auto'))
+  expect((await drain($, step(undefined, 'T1'))).text).toContain('spare10: work stopped at the quota reserve (')
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,seven_day,work,auto'))
+  await w.clock.set(RESETS_MS + MARGIN - TICK)
+  expect(w.submitted).toEqual([])
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt('the 5-hour and weekly windows reset')])
+})
+
+// ---- 4.6: the extension, and the person paths against the ticker ----
+
+test('an extension over two gating kinds lasts until the later reset, and refuses after the earlier one', { timeoutMs: 20_000 }, async ($, on) => {
+  const w = world(on, { pct: 50, weekPct: 50, weekResetsAt: LATER })
+  await begin($, w)
+  expect((await $.command.run(cmd('simulate 95 in 2m'))).text).toContain('test reading set to 95% used')
+  const end = T0 + 2 * MIN
+  const held = bash($)
+  await w.clock.settle()
+  w.release('Stop here')
+  expect((await held).deny).toContain('spare10: the user stopped work at the quota reserve (')
+  await w.clock.settle()
+  expect(rec(w)).toEqual(want('S1', end, T0, 'five_hour,work,auto,test'))
+  w.pct = 93 // both real windows reach their reserve under the test reading
+  w.weekPct = 92
+  await pastDue(w, new Date(end).toISOString(), TEST_MARGIN)
+  expect(w.submitted).toEqual([])
+  expect(rec(w)).toEqual(want('S1', LATER_MS, T0, 'five_hour,seven_day,work,auto'))
+  expect(
+    count(transcript(w), `the test window ended, but your 10% reserve and your 10% weekly reserve are reached. The stop lasts until ${weekday(LATER_MS)}.`),
+  ).toBe(1)
+  await w.clock.set(RESETS_MS + MIN) // the 5-hour window reset: the weekly window still gates
+  w.answer = 'Stop here'
+  expect((await bash($)).deny).toBe(
+    `spare10: the user stopped work at the quota reserve (into your 10% weekly reserve · 8% of weekly quota left · resets ${weekday(LATER_MS)}). Stop now and wait for the user. Do not call any further tools.`,
+  )
+  expect(w.asked).toHaveLength(1) // refused as stopped: no new question
+})
+
+for (const verb of ['resume', 'stop'] as const) {
+  for (const offset of [500, 1500]) {
+    test(`/spare10 ${verb} while the tick extends the stop (envGetDelayMs, ${offset} ms after the due tick): the stop stays over`, async ($, on) => {
+      const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: LATER })
+      await begin($, w)
+      await loopStop($, w)
+      w.weekPct = 95 // at the due time the weekly window gates: the tick extends the stop
+      await w.clock.set(DUE - 1)
+      w.envGetDelayMs = { SPARE10_STOPPED: 1000 }
+      await w.clock.advance(1) // the tick at the due time reads the stop
+      await w.clock.advance(offset) // 500: before its extension starts. 1500: during its extension's read
+      const reply = $.command.run(cmd(verb))
+      for (let i = 0; i < 10; i += 1) await w.clock.advance(500)
+      expect((await reply).text).toBe(verb === 'stop' ? STOP_OVERDUE : RESUME_OVERDUE)
+      w.envGetDelayMs = {}
+      await w.clock.advance(10 * TICK)
+      expect(w.env.has('SPARE10_STOPPED')).toBe(false) // the person was told the stop is over: it is
+      expect(count(transcript(w), stopTakenOver())).toBe(1)
+      expect(transcript(w).filter((t) => t.includes('The stop lasts until'))).toEqual([])
+      expect(w.submitted).toEqual([])
+    })
+  }
+}
+
+test('/spare10 resume during the extension read: the extension is never written, so a call meanwhile gets a new question, not a refusal', async ($, on) => {
+  const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: LATER })
+  await begin($, w)
+  await loopStop($, w)
+  w.weekPct = 95
+  await w.clock.set(DUE - 1)
+  w.envGetDelayMs = { SPARE10_STOPPED: 1000 }
+  await w.clock.advance(1) // the tick at the due time reads the stop
+  await w.clock.advance(1500) // the extension's read is in flight
+  const reply = $.command.run(cmd('resume'))
+  await w.clock.advance(700) // the extension's read has returned, and the command's clear has not landed yet
+  const call = bash($)
+  for (let i = 0; i < 10; i += 1) await w.clock.advance(500)
+  expect((await reply).text).toBe(RESUME_OVERDUE)
+  expect(w.asked).toHaveLength(2) // the weekly window gates, and nothing is stopped: a new question
+  expect(w.ran).toEqual([])
+  w.envGetDelayMs = {}
+  w.release('Resume')
+  expect((await call).result).toBe('ran')
+  expect(transcript(w).filter((t) => t.includes('The stop lasts until'))).toEqual([])
+})
+
+for (const who of ['stop', 'resume', 'prompt'] as const) {
+  test(`${who === 'prompt' ? 'a person prompt' : `/spare10 ${who}`} that starts after the due tick's first read and before its release: no resume prompt, one takeover`, async ($, on) => {
+    const w = world(on, { pct: 93 })
+    await begin($, w)
+    await loopStop($, w)
+    await w.clock.set(DUE - 1)
+    w.envGetDelayMs = { SPARE10_STOPPED: 1000 }
+    await w.clock.advance(1) // the tick at the due time passed its first check and reads the stop
+    await w.clock.advance(500) // its read is still in flight: the person path starts now
+    const p = who === 'prompt' ? $.prompt.submit(typed('what next')) : $.command.run(cmd(who))
+    for (let i = 0; i < 10; i += 1) await w.clock.advance(500)
+    const out = await p
+    if (who === 'prompt') {
+      expect(out).toMatchObject({ text: 'what next' })
+      expect(w.prompts.map((e) => e.context)).toEqual([[resetNote()]])
+    } else expect((out as { text?: string }).text).toBe(who === 'stop' ? STOP_OVERDUE : RESUME_OVERDUE)
+    w.envGetDelayMs = {}
+    await w.clock.advance(10 * TICK)
+    expect(w.submitted).toEqual([])
+    expect(w.env.has('SPARE10_STOPPED')).toBe(false)
+    expect(count(transcript(w), stopTakenOver())).toBe(1)
+    expect(count(transcript(w), resetResumes())).toBe(0)
+  })
+}
+
+test('/clear during the release before the engine answers the new id (D3): no resume prompt, and the debug line', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  await loopStop($, w)
+  await w.clock.set(DUE - 1)
+  w.envGetDelayMs = { SPARE10_STOPPED: 1000 }
+  await w.clock.advance(1) // the tick at the due time reads the stop
+  await w.clock.advance(1000) // and goes on to its release: its second read is in flight
+  // /clear ends S1, and session.id still answers S1: w.sessionId stays (D3).
+  await $.session.end({ reason: 'clear', sessionId: 'S1', resume: { id: 'S1' } })
+  for (let i = 0; i < 10; i += 1) await w.clock.advance(500)
+  await w.clock.advance(10 * TICK)
+  expect(w.submitted).toEqual([])
+  expect(count(debug(w), SKIPPED)).toBe(1)
+  expect(count(transcript(w), resetResumes())).toBe(0)
+})
+
+test('markWork does not bring back a stop that another copy cleared while it reads (envGetDelayMs)', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  expect((await $.command.run(cmd('stop'))).text).toBe(stopTripped(clock(RESETS_MS)))
+  await w.clock.settle()
+  w.envGetDelayMs = { SPARE10_STOPPED: 1000 }
+  const refused = drain($, step(undefined, 'T1'))
+  await w.clock.advance(1500) // the step is refused, and markWork's first read is in flight
+  // Another copy (after a reload) takes a Resume: it writes the world's env, and this copy's epoch stays.
+  w.env.delete('SPARE10_STOPPED')
+  w.env.set('SPARE10_CONSENT', `S1 ${RESETS}`)
+  for (let i = 0; i < 10; i += 1) await w.clock.advance(500)
+  expect((await refused).text).toBe(PAUSED())
+  expect(w.env.has('SPARE10_STOPPED')).toBe(false)
+  w.envGetDelayMs = {}
+  expect((await bash($)).result).toBe('ran')
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([])
+})
+
+// ---- 4.2: the watch timer, 4.6.2: the typing defers ----
+
+test('a refused tick in an idle stopped session: the watch timer re-arms the ticker, and the resume prompt still comes', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  await loopStop($, w)
+  w.afterRefusals = 1 // the next tick's timer never runs: that chain ends
+  await w.clock.advance(10 * MIN) // no turn, no measure, no badge, no /spare10
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt()])
+  expect(count(transcript(w), resetResumes())).toBe(1)
+  expect(w.env.has('SPARE10_STOPPED')).toBe(false)
+})
+
+test('a refused first tick: the watch timer that session.start arms re-arms the ticker, and a held question still continues', async ($, on) => {
+  const w = world(on, { pct: 93, afterRefusals: 1 }) // the ticker's first timer never runs
+  await begin($, w)
+  const held = bash($)
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  await pastDue(w, RESETS) // no measure, no badge, no /spare10: only the ticker wakes the waiter in the kit
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(count(transcript(w), resetContinues())).toBe(1)
+})
+
+test('a refused watch period: the ticker re-arms the watch, and a refused tick after that is still healed', async ($, on) => {
+  const w = world(on, { pct: 93, everyRefusals: 1 }) // the watch interval ends at its first period
+  await begin($, w)
+  await loopStop($, w)
+  await w.clock.advance(20 * MIN) // the ticker sees the watch is dead and starts it again
+  w.afterRefusals = 1 // now the tick chain ends too
+  await w.clock.advance(20 * MIN)
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt()])
+})
+
+test('a stop that ended another way leaves no typing defers: the next stop gets all ten', { timeoutMs: 20_000 }, async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  const defers = (): string[] => debug(w).filter((t) => t.startsWith('spare10: the prompt box has text.'))
+  await loopStop($, w)
+  w.box = 'half typed'
+  await w.clock.set(DUE + 3 * TICK) // four defers
+  expect(defers()).toEqual([1, 2, 3, 4].map(boxDefer))
+  w.box = ''
+  expect(await $.prompt.submit(typed('half typed'))).toMatchObject({ text: 'half typed' }) // B35 takes the release over
+  await w.clock.settle()
+  expect(w.env.has('SPARE10_STOPPED')).toBe(false)
+  expect(w.submitted).toEqual([])
+  // A new window in the reserve, and a second Stop here.
+  w.resetsAt = LATER
+  const held = bash($)
+  await w.clock.settle()
+  w.release('Stop here')
+  expect((await held).deny).toBe(STOP(93, LATER_MS))
+  await w.clock.settle()
+  expect(rec(w)?.until).toBe(LATER_MS)
+  w.box = 'new draft'
+  await w.clock.set(LATER_MS + MARGIN + 9 * TICK) // ten ticks from the due time on
+  expect(defers()).toEqual([1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(boxDefer))
+  expect(w.submitted).toEqual([])
+  await w.clock.advance(TICK)
+  expect(w.submitted).toEqual([resumePrompt()])
+})
+
+test('a prompt box that holds only white space does not delay the resume prompt', async ($, on) => {
+  const w = world(on, { pct: 93 })
+  await begin($, w)
+  await loopStop($, w)
+  w.box = ' \n'
+  await pastDue(w, RESETS)
+  expect(w.submitted).toEqual([resumePrompt()])
+  expect(debug(w).filter((t) => t.startsWith('spare10: the prompt box has text.'))).toEqual([])
+})
+
+// ---- 4.3: the redraw edges ----
+
+test('a full edge list holds each time once: a later edge stays beside many copies of a nearer one', async ($, on) => {
+  const w = world(on, { pct: 50, weekPct: 50 })
+  await begin($, w)
+  for (let i = 0; i < 70; i += 1) {
+    expect((await $.command.run(cmd('simulate 95 in 5m'))).text).toContain('test reading set to 95% used, resets') // the same end each time
+  }
+  expect((await $.command.run(cmd('simulate 95 weekly in 10m'))).text).toContain('test reading set to 95% used of the weekly window')
+  await w.clock.set(T0 + 10 * MIN - 1)
+  const before = w.invalidations
+  await w.clock.set(T0 + 10 * MIN + TICK) // across the end of the weekly test window
+  expect(w.invalidations).toBeGreaterThan(before)
+})
+
+for (const far of ['many copies of one far edge', 'many far edges'] as const) {
+  test(`a full edge list keeps the nearest edge (${far}): the ticker redraws at a test window end`, async ($, on) => {
+    const w = world(on, { pct: 50, weekPct: 50 })
+    await begin($, w)
+    for (let i = 0; i < 70; i += 1) {
+      const args = far === 'many far edges' ? `simulate 95 weekly in ${10 + i}m` : 'simulate 95 weekly' // the live weekly reset each time
+      expect((await $.command.run(cmd(args))).text).toContain('test reading set to 95% used of the weekly window')
+    }
+    expect((await $.command.run(cmd('simulate 95 in 2m'))).text).toContain('test reading set to 95% used, resets')
+    await w.clock.set(T0 + 2 * MIN - 1)
+    const before = w.invalidations
+    await w.clock.set(T0 + 2 * MIN + TICK) // across the end of the 5-hour test window
+    expect(w.invalidations).toBeGreaterThan(before)
+  })
+}

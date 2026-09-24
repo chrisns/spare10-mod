@@ -14,6 +14,7 @@ import {
   basis,
   fiveHour,
   holdEndOf,
+  inResetMargin,
   inWindow,
   initialMemory,
   isTripped,
@@ -143,6 +144,18 @@ test('the test reading only ever raises the basis', () => {
   expect(basis(undefined, blind, T0, t(95)).kind).toBe('test')
   expect(basis(five(40), initialMemory(), R, t(95))).toEqual({ kind: 'none', why: 'window-reset' })
   expect(basis(five(40, LATER), initialMemory(), R + 1, t(95))).toEqual({ kind: 'live', pct: 40, resetsAtMs: Date.parse(LATER) })
+})
+
+test('inResetMargin: a real reading in the reserve that reset less than 5 minutes ago (4.8)', () => {
+  const seed = { pct: 93, resetsAtMs: R }
+  expect(inResetMargin(seed, 10, R - 1)).toBe(false) // not reset yet: the gate still sees the reading
+  expect(inResetMargin(seed, 10, R)).toBe(true)
+  expect(inResetMargin(seed, 10, R + RESET_MARGIN_MS - 1)).toBe(true)
+  expect(inResetMargin(seed, 10, R + RESET_MARGIN_MS)).toBe(false) // the margin has passed
+  expect(inResetMargin({ pct: 89.9, resetsAtMs: R }, 10, R + 1)).toBe(false) // below the reserve at its last reading
+  expect(inResetMargin({ pct: 85, resetsAtMs: R }, 15, R + 1)).toBe(true) // the reserve of the kind
+  expect(inResetMargin(undefined, 10, R + 1)).toBe(false)
+  expect(TEST_MARGIN_MS).toBeLessThan(RESET_MARGIN_MS) // so a test window that ends near a real reset waits for this
 })
 
 test('isTripped trips at the first point of the reserve', () => {

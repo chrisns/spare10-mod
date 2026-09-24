@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { VERSION } from '../../hooks/core/text.ts'
-import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
 // Session set-up, scope, per-run overrides, start-up warnings, env consent and stopped, and /clear
@@ -917,6 +917,21 @@ test('/clear keeps consent at once, and then moves its stamp to the new session 
   expect((await bash($)).result).toBe('ran') // the ended id is this process's: its consent counts
   await w.clock.advance(300)
   expect(w.env.get('SPARE10_CONSENT')).toBe(`S2 ${RESETS}`) // a reload after this still finds it
+  expect((await bash($)).result).toBe('ran')
+  expect(w.asked).toHaveLength(1)
+})
+
+test('/clear moves the stamp of a weekly consent too', async ($, on) => {
+  const w = world(on, { pct: 93, weekPct: 92, answer: 'Resume' })
+  await begin($, w)
+  expect((await bash($)).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${RESETS}`)
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBe(`S1 ${WEEK_RESETS}`)
+  await clear($, w, 'S2')
+  await w.clock.advance(300)
+  expect(w.env.get('SPARE10_CONSENT')).toBe(`S2 ${RESETS}`)
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBe(`S2 ${WEEK_RESETS}`) // a reload after this still finds it
   expect((await bash($)).result).toBe('ran')
   expect(w.asked).toHaveLength(1)
 })

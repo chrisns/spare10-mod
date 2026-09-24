@@ -6,6 +6,7 @@ import {
   MARGIN,
   MIN,
   RESETS,
+  SOON,
   T0,
   TEST_MARGIN,
   TICK,
@@ -30,6 +31,7 @@ import type { World } from '../helpers/world.ts'
 const RESET_MS = Date.parse(RESETS)
 const LATER_MS = Date.parse(LATER)
 const WEEK_MS = Date.parse(WEEK_RESETS)
+const SOON_MS = Date.parse(SOON)
 
 // {clock}: HH:MM for the 5-hour window, `ddd HH:MM` for the weekly one, in the machine's zone (2.1)
 const hhmm = (ms: number): string =>
@@ -431,4 +433,24 @@ test('a bad SPARE10_AUTO_RESUME value warns, and autoResume stays on', SLOW, asy
   await w.clock.settle()
   expect((await held).result).toBe('ran')
   expect(count(transcript(w), RESET_CONTINUES)).toBe(1)
+})
+
+test('a question that names both windows stays up until the later due time', SLOW, async ($, on) => {
+  const w = world(on, { pct: 93, resetsAt: SOON, weekPct: 92, weekResetsAt: RESETS })
+  await begin($, w)
+  const held = bash($)
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  expect(w.asked[0]?.question).toContain('Continue on both reserves until they reset')
+  await w.clock.set(SOON_MS + MARGIN + 2 * TICK) // past the 5-hour due time: the weekly window still gates
+  expect(w.ran).toEqual([])
+  expect(w.dialogAborted).toBe('no') // not withdrawn and asked again
+  expect(w.asked).toHaveLength(1)
+  expect(transcript(w).some((t) => t.endsWith('Held work still waits.'))).toBe(false)
+  await w.clock.set(RESET_MS + MARGIN - 1)
+  expect(w.ran).toEqual([])
+  await pastDue(w, RESETS)
+  expect((await held).result).toBe('ran')
+  expect(w.asked).toHaveLength(1)
+  noConsent(w)
 })

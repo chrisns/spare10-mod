@@ -48,6 +48,8 @@ const NOT_GUARDED = 'this run is not guarded. Nothing changed.'
 
 // B24 replies, with autoResume on (2.8).
 const STOPPED_ASKING = `stopped. Held work is refused. spare10 continues it after ${AT}.`
+// A question that held no loop (a prompt question): the stop has no work, so the reply promises nothing (3.2).
+const STOPPED_ASKING_NO_WORK = 'stopped. Held work is refused.'
 const stoppedTripped = (at: string): string =>
   `stopped at the reserve until ${at}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`
 const STOPPED_TRIPPED = stoppedTripped(AT)
@@ -364,7 +366,7 @@ test('/spare10 stop on an open tell-mode prompt question drops the prompt and se
   await w.clock.settle()
   expect(w.asked.map((a) => a.question)).toEqual([tellPromptQuestion(pf('93', '7'))]) // R7 tell wording
   expect(phaseLine(await report($))).toBe(PHASE.asking) // R1: asking ranks before told
-  expect(await run($, 'stop')).toBe(STOPPED_ASKING)
+  expect(await run($, 'stop')).toBe(STOPPED_ASKING_NO_WORK)
   expect(await p).toEqual({ drop: NOT_STARTED })
   await w.clock.settle()
   expect(w.prompts).toEqual([])
@@ -835,4 +837,13 @@ test('/spare10 resume on a test reading also stays in this copy', async ($, on) 
   expect(phaseLine(await report($))).toBe(PHASE.consented)
   expect((await bash($)).result).toBe('ran')
   expect(w.asked).toEqual([])
+})
+
+test('/spare10 stop with Continue at the reset off and no reset time stops for the one-hour fallback (0.1)', async ($, on) => {
+  const w = world(on, { pct: 93, resetsAt: null, env: { SPARE10_AUTO_RESUME: 'off' } })
+  await begin($, w)
+  expect(await run($, 'stop')).toBe('stopped at the reserve. Type a prompt to be asked again, or run /spare10 resume.')
+  await w.clock.settle()
+  // The consent bound (the one-hour fallback), not the hold end (the first sight plus 5 h).
+  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${T0 + HOUR} ${T0} five_hour`)
 })

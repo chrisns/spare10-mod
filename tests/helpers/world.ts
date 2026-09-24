@@ -51,6 +51,8 @@ import type {
 //   submitDrop   core answers a plugin prompt with { drop: submitDrop } (w.submitDrop)
 //   afterRefusals  a hook above spare10 refuses its first N $.clock.after dispatches, so those timers
 //                never run (w.afterRefusals counts down)
+//   everyRefusals  the same for $.clock.every periods: a refused period ends that interval (the watch
+//                timer, the badge pulse) (w.everyRefusals counts down)
 //
 // The world records: asked (each dialog), ran, requests, prompts, fills, aborts, logs, invalidations,
 // renders, commands (names), commandSpecs (whole) and parkCalls. submitted holds the texts of the prompts
@@ -67,7 +69,7 @@ import type {
 // makes a Bash call. step(agentId?, turnId?) builds a TurnStepInput and drain($, input) runs it to
 // { chunks, text }. measure(pct?, changed?, resetsAt?, week?) builds a SessionMeasureInput, with a
 // seven_day entry when week has a pct. pastDue(w, iso, margin?) moves the clock one tick past the due time of a
-// window that resets at iso. advanceChunked(w, ms) moves in steps of at most 80 h. stopRec(sid, until,
+// window that resets at iso. advanceChunked(w, ms) moves in steps of at most 48 h. stopRec(sid, until,
 // at, tags?) is a 0.2 SPARE10_STOPPED value, stopRe(sid, tags?) the same as a RegExp. typed(text,
 // kind?, turnId?) builds a whole PromptSubmitInput, cmd(args, kind?) a whole CommandRunInput.
 // Inline plugins: `above` (prepend) settles above a Bash call whose command starts with `abandon`
@@ -86,11 +88,13 @@ import type {
 // - A mounted badge in the tripped phase pulses every 1000 mock ms, so a long advance runs many redraws.
 //
 // The reset clock (0.2): the ticker exists only after begin($, w). It steps every TICK (30 s) from the
-// session.start, so every reset test calls begin. A held question continues MARGIN (5 min) after a real
-// reset, and TEST_MARGIN (60 s) after a test window. Move there with pastDue(w, RESETS). One advance or
-// set resolves at most 10 000 waits and throws past that: about 83 h of ticks, about 2.7 h while a
-// tripped badge pulses. So keep resets near T0 (weekly tests use weekResetsAt: SOON), never mount a
-// tripped badge across a long move, and use advanceChunked past a date days ahead.
+// session.start, so every reset test calls begin. Its watch timer ($.clock.every, 5 min) starts with it.
+// A held question continues MARGIN (5 min) after a real reset, and TEST_MARGIN (60 s) after a test
+// window, but never less than MARGIN after the reset of a real reading that was in the reserve. Move
+// there with pastDue(w, RESETS). One advance or set resolves at most 10 000 waits and throws past that:
+// about 75 h of ticks and watch periods, about 2.7 h while a tripped badge pulses. So keep resets near
+// T0 (weekly tests use weekResetsAt: SOON), never mount a tripped badge across a long move, and use
+// advanceChunked past a date days ahead.
 
 export const T0 = Date.parse('2026-09-24T12:00:00Z')
 export const RESETS = '2026-09-24T15:00:00.000Z' // 3 h after T0
@@ -142,6 +146,7 @@ export type WorldOptions = {
   keepExpired?: boolean
   submitDrop?: string
   afterRefusals?: number
+  everyRefusals?: number
   usageFailsAfter?: number
   usageDelayMs?: number
 }
@@ -171,6 +176,7 @@ export type World = {
   keepExpired: boolean
   submitDrop: string | undefined // core drops a plugin prompt with this reason
   afterRefusals: number // $.clock.after dispatches of spare10 still to refuse
+  everyRefusals: number // $.clock.every periods of spare10 still to refuse
   usageFailsAfter: number | undefined // session.usage calls still answered before it denies
   usageDelayMs: number // session.usage answers this many mock ms late
   settings: SettingsWorld
@@ -197,10 +203,14 @@ export type World = {
 type AskInput = { questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string }> }> }
 
 export function world(on: On, opts: WorldOptions = {}): World {
-  // afterRefusals: registered before mock.clock, so it sits above the clock's own clock.after hook.
+  // afterRefusals and everyRefusals: registered before mock.clock, so they sit above the clock's own hooks.
   let refuse = (): boolean => false
+  let refuseEvery = (): boolean => false
   on('clock.after', { ms: /\d/ }, (_$, e, next) =>
     next.origin.plugin === 'spare10' && refuse() ? { deny: 'a hook above refused the timer' } : next(e),
+  )
+  on('clock.every', { ms: /\d/ }, (_$, e, next) =>
+    next.origin.plugin === 'spare10' && refuseEvery() ? { deny: 'a hook above refused the period' } : next(e),
   )
   const clock = mock.clock(on, { now: T0 })
   const hung: Array<(label: string | undefined) => void> = []
@@ -229,6 +239,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     keepExpired: opts.keepExpired ?? false,
     submitDrop: opts.submitDrop,
     afterRefusals: opts.afterRefusals ?? 0,
+    everyRefusals: opts.everyRefusals ?? 0,
     usageFailsAfter: opts.usageFailsAfter,
     usageDelayMs: opts.usageDelayMs ?? 0,
     settings: opts.settings ?? {},
@@ -268,6 +279,11 @@ export function world(on: On, opts: WorldOptions = {}): World {
   refuse = () => {
     if (w.afterRefusals <= 0) return false
     w.afterRefusals -= 1
+    return true
+  }
+  refuseEvery = () => {
+    if (w.everyRefusals <= 0) return false
+    w.everyRefusals -= 1
     return true
   }
 
@@ -466,9 +482,9 @@ export function pastDue(w: World, iso: string, margin = MARGIN): Promise<void> {
   return w.clock.set(Date.parse(iso) + margin + TICK)
 }
 
-/** Moves the clock on in steps of at most 80 h, under the cap of 10 000 waits per move. */
+/** Moves the clock on in steps of at most 48 h, under the cap of 10 000 waits per move (ticks and watch periods). */
 export async function advanceChunked(w: World, ms: number): Promise<void> {
-  const step = 80 * HOUR
+  const step = 48 * HOUR
   for (let left = ms; left > 0; left -= step) await w.clock.advance(Math.min(step, left))
 }
 

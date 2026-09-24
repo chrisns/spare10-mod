@@ -270,31 +270,42 @@ test('a joiner whose kinds a settled Resume did not name opens a new question, a
   expect(w.asked).toHaveLength(2)
 })
 
-test('a Resume answers only the round after it: when a later weekly question ends, a new 5-hour window in the reserve asks again', { timeoutMs: 20_000 }, async ($, on) => {
-  const weekEnd = '2026-09-24T18:00:00.000Z' // after the 5-hour reset, so a new 5-hour window starts during the weekly hold
-  const weekEndMs = Date.parse(weekEnd)
-  const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: weekEnd })
-  await begin($, w)
-  const held = bash($)
-  await w.clock.settle()
-  w.weekPct = 92
-  w.release('Resume')
-  await w.clock.settle()
-  expect(questions(w)).toEqual([loopQ([F5(93)]), loopQ([FW(92, weekEndMs)])])
-  expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${RESETS}`)
-  await pastDue(w, RESETS)
-  w.pct = 95 // the new 5-hour window is in the reserve too, and the Resume named only the old one
-  w.resetsAt = LATER
-  await pastDue(w, weekEnd)
-  await w.clock.settle()
-  expect(w.ran).toEqual([])
-  expect(transcript(w)).toContain(`the weekly window reset, but ${Rs([F5(95, Date.parse(LATER))])} is reached. Held work still waits.`)
-  expect(questions(w)).toEqual([loopQ([F5(93)]), loopQ([FW(92, weekEndMs)]), loopQ([F5(95, Date.parse(LATER))])])
-  w.release('Resume')
-  expect((await held).result).toBe('ran')
-  await w.clock.settle()
-  expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${LATER}`)
-})
+// The rule holds in each gate: a Resume answers only the round after it (5.3).
+for (const gate of ['tool', 'step', 'prompt'] as const) {
+  test(`a Resume answers only the round after it (${gate} gate): when a later weekly question ends, a new 5-hour window in the reserve asks again`, { timeoutMs: 20_000 }, async ($, on) => {
+    const weekEnd = '2026-09-24T18:00:00.000Z' // after the 5-hour reset, so a new 5-hour window starts during the weekly hold
+    const weekEndMs = Date.parse(weekEnd)
+    const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: weekEnd })
+    await begin($, w)
+    const q = gate === 'prompt' ? promptQ : loopQ
+    const held: Promise<boolean> =
+      gate === 'tool'
+        ? bash($).then((r) => r.result === 'ran')
+        : gate === 'step'
+          ? drain($, step(undefined, 'T1')).then((r) => r.text === 'hi')
+          : $.prompt.submit(typed('hello')).then((r) => (r as { text?: string }).text === 'hello')
+    await w.clock.settle()
+    w.weekPct = 92
+    w.release('Resume')
+    await w.clock.settle()
+    expect(questions(w)).toEqual([q([F5(93)]), q([FW(92, weekEndMs)])])
+    expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${RESETS}`)
+    await pastDue(w, RESETS)
+    w.pct = 95 // the new 5-hour window is in the reserve too, and the Resume named only the old one
+    w.resetsAt = LATER
+    await pastDue(w, weekEnd)
+    await w.clock.settle()
+    expect(w.ran).toEqual([])
+    expect(w.requests).toBe(0)
+    expect(w.prompts).toEqual([])
+    expect(transcript(w)).toContain(`the weekly window reset, but ${Rs([F5(95, Date.parse(LATER))])} is reached. Held work still waits.`)
+    expect(questions(w)).toEqual([q([F5(93)]), q([FW(92, weekEndMs)]), q([F5(95, Date.parse(LATER))])])
+    w.release('Resume')
+    expect(await held).toBe(true)
+    await w.clock.settle()
+    expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${LATER}`)
+  })
+}
 
 test('a real 5-hour trip at 93 and simulate 95 weekly: Resume writes SPARE10_CONSENT only, and the next call passes without a second question', async ($, on) => {
   const w = world(on, { pct: 93, weekPct: 50, answer: 'Resume' })
@@ -699,4 +710,53 @@ test('autoResume off: a weekly question waits past its reset, says so once, and 
   expect(transcript(w)).toContain('held work continues on the new weekly window.')
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined() // an ended window gets no consent
   expect(w.submitted).toEqual([])
+})
+
+test('/spare10 stop after a weekly Resume clears the weekly consent, and the next call is refused', async ($, on) => {
+  const w = world(on, { pct: 50, weekPct: 92, answer: 'Resume' })
+  await begin($, w)
+  expect((await bash($)).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBe(`S1 ${WEEK_RESETS}`)
+  expect(await run($, 'stop')).toBe(
+    `stopped at the reserve until ${weekClock(WEEK_MS)}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
+  )
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined()
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,auto'))
+  expect((await bash($)).deny).toBe(STOP([FW(92)]))
+  expect(w.asked).toHaveLength(1)
+})
+
+test('/spare10 simulate off clears a real weekly consent too', async ($, on) => {
+  const w = world(on, { pct: 50, weekPct: 92, answer: 'Resume' })
+  await begin($, w)
+  expect((await bash($)).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBe(`S1 ${WEEK_RESETS}`)
+  expect(await run($, 'simulate off')).toBe(SIMULATE_OFF)
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined()
+  w.answer = 'Stop here'
+  expect((await bash($)).deny).toBe(STOP([FW(92)]))
+  expect(questions(w)).toEqual([loopQ([FW(92)]), loopQ([FW(92)])])
+})
+
+test('a question that names both windows is not settled by another copy\'s consent for one of them', async ($, on) => {
+  const w = world(on, { pct: 91, weekPct: 92 })
+  await begin($, w)
+  const held = bash($)
+  await w.clock.settle()
+  expect(questions(w)).toEqual([loopQ([F5(91), FW(92)])])
+  // Another copy of this process (a 0.1 copy that retires, or a Resume of a 5-hour question) writes SPARE10_CONSENT only.
+  w.env.set('SPARE10_CONSENT', `S1 ${RESETS}`)
+  w.cap() // the carrier cycles, and the waiter reads the env
+  await w.clock.settle()
+  expect(w.ran).toEqual([])
+  expect(w.dialogAborted).toBe('no') // the dialog stays up
+  expect(w.asked).toHaveLength(1)
+  w.env.set('SPARE10_WEEKLY_CONSENT', `S1 ${WEEK_RESETS}`) // now both windows have consent
+  w.cap()
+  expect((await held).result).toBe('ran')
+  expect(w.asked).toHaveLength(1)
 })

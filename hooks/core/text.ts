@@ -304,9 +304,11 @@ export const notice = {
     if (!auto.work) return `stopped at ${rs} until ${auto.at}. ${again}`
     return `stopped at ${rs} until ${auto.at}. Then spare10 continues the work, unless a reserve is still reached. ${again}`
   },
-  holdLimit: (f: Facts | readonly Facts[], auto?: { at: string }): string => {
+  holdLimit: (f: Facts | readonly Facts[], auto?: { at: string; work: boolean }): string => {
     const rs = yourReserves(listOf(f))
-    if (auto === undefined) return `the hold reached its time limit. The work is stopped at ${rs}. Type a prompt to be asked again, or run /spare10 resume.`
+    const again = 'Type a prompt to be asked again, or run /spare10 resume.'
+    if (auto === undefined) return `the hold reached its time limit. The work is stopped at ${rs}. ${again}`
+    if (!auto.work) return `the hold reached its time limit. The work is stopped at ${rs} until ${auto.at}. ${again}`
     return `the hold reached its time limit. The work is stopped at ${rs} until ${auto.at}. Then spare10 continues it, unless a reserve is still reached.`
   },
   resetWaiting: 'the 5-hour window reset. Held work still waits for your answer.',

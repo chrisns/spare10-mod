@@ -283,7 +283,7 @@ test('parseStopped refuses a record without a kind, or with an unknown tag', () 
   }
 })
 
-test('mergeStopped keeps work, joins kinds, takes the later end, and ignores another session or an ended stop', () => {
+test('mergeStopped keeps work, joins kinds, takes the later end, and ignores another session or a stop that ended by time', () => {
   const prev: StoppedRecord = { sessionId: 'S1', windowEnd: R + HOUR, at: T0, kinds: ['seven_day'], work: true, auto: false, test: true }
   const next: StoppedRecord = { sessionId: 'S1', windowEnd: R, at: T0 + 60_000, kinds: ['five_hour'], work: false, auto: true, test: true }
   expect(mergeStopped(prev, next, T0 + 60_000)).toEqual({
@@ -300,7 +300,19 @@ test('mergeStopped keeps work, joins kinds, takes the later end, and ignores ano
   expect(mergeStopped(prev, { ...next, auto: false }, T0).auto).toBe(false) // auto from the new Stop
   expect(mergeStopped(undefined, next, T0)).toEqual(next)
   expect(mergeStopped({ ...prev, sessionId: 'S0' }, next, T0)).toEqual(next) // another session
-  expect(mergeStopped(prev, next, R + HOUR)).toEqual(next) // the old stop ended
+  expect(mergeStopped(prev, next, R + HOUR)).toEqual(next) // the old stop ended by time: it had no auto tag
+  // An auto stop past its until that nobody released yet (it is still in the env) keeps its work and kinds (F1).
+  const overdue: StoppedRecord = { ...prev, windowEnd: R, auto: true }
+  expect(mergeStopped(overdue, { ...next, at: R + 60_000 }, R + 60_000)).toEqual({
+    sessionId: 'S1',
+    windowEnd: R,
+    at: R + 60_000,
+    kinds: ['five_hour', 'seven_day'],
+    work: true,
+    auto: true,
+    test: true,
+  })
+  expect(mergeStopped({ ...overdue, sessionId: 'S0' }, next, R + 60_000)).toEqual(next) // another session
   expect(mergeStopped({ sessionId: 'S1', windowEnd: R + HOUR, at: T0 }, next, T0)).toEqual(next) // a 0.1 value
 })
 

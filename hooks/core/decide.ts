@@ -144,12 +144,15 @@ export function formatStopped(s: StoppedRecord): string {
 }
 
 /**
- * 3.2: a new stop keeps what an earlier 0.2 stop of the same session that still applies knew. Kinds
- * join, the later end wins, work if either had it, test only if both had it, auto and at are new.
+ * 3.2: a new stop keeps what an earlier 0.2 stop of the same session knew, while that stop still
+ * applies, or while it is an auto stop past its end that nobody released yet (it is still in the env,
+ * so its work still waits for the reset). Kinds join, the later end wins, work if either had it, test
+ * only if both had it, auto and at are new.
  */
 export function mergeStopped(prev: StoppedRecord | undefined, next: StoppedRecord, now: number): StoppedRecord {
   if (prev?.kinds === undefined || next.kinds === undefined) return next
-  if (prev.sessionId !== next.sessionId || now >= prev.windowEnd) return next
+  if (prev.sessionId !== next.sessionId) return next
+  if (now >= prev.windowEnd && prev.auto !== true) return next // it ended by time, and nothing continues it
   const joined = [...prev.kinds, ...next.kinds]
   return {
     ...next,

@@ -41,6 +41,7 @@ import {
   asAnchored,
   basis,
   holdEndOf,
+  inResetMargin,
   initialMemory,
   isTripped,
   limitOf,
@@ -166,6 +167,7 @@ const FAST_LIMIT = 3
 const PULSE_MS = 1000
 const BUDGET_LOG_MS = 600_000 // one budget debug line per 10 minutes per question (B40)
 const EDGE_LIMIT = 64
+const WATCH_MS = 300_000 // the period of the watch timer, the ticker's slow second clock (4.2)
 const BOX_DEFER_LIMIT = 10 // ticks the resume prompt waits for the prompt box (4.6.2)
 const STALE_TICK_MS = 90_000 // /spare10 warns when the last tick is older (2.7)
 
@@ -219,6 +221,9 @@ let stopEpoch = 0 // writeStopped and clearStopped in this copy
 let workMarked = false // markWork ran for the current stop
 let lastRestored: string | undefined // the draft restoreDraft put back
 let resumeDefers = 0 // ticks the resume prompt waited for the prompt box
+let deferFor: string | undefined // the SPARE10_STOPPED value that resumeDefers counts for
+let watch: Timer | undefined // the second clock: it re-arms a dead ticker (4.2)
+let lastWatch = 0 // clock time of the last watch period (the ticker reads it)
 let pulse: Timer | undefined
 let blink = true
 let viewKey = ''
@@ -415,12 +420,12 @@ async function stoppedNow($: EngineInterface, now: number): Promise<StoppedRecor
   return st !== undefined && st.sessionId === sid && st.sessionId !== endedSid && now < st.windowEnd ? st : undefined
 }
 
-/** 5.7: the 0.2 record, merged with an earlier stop of this session that still applies (3.2). */
+/** 5.7: the 0.2 record, merged with an earlier stop of this session (3.2). Returns what it wrote, for the texts. */
 async function writeStopped(
   $: EngineInterface,
   n: { kinds: Kind[]; windowEnd: number; work: boolean; auto: boolean; test: boolean },
   now: number,
-): Promise<void> {
+): Promise<StoppedRecord> {
   sid = await $.session.id() // R3: a fresh id, a /clear may have run since the last read
   const prev = parseStopped(await $.env.get('SPARE10_STOPPED').catch(() => undefined))
   const r = mergeStopped(prev, { ...n, sessionId: sid, at: now }, now)
@@ -429,6 +434,7 @@ async function writeStopped(
   await $.env.set('SPARE10_STOPPED', formatStopped(r))
   addEdge(r.windowEnd)
   addEdge(stopDue(r))
+  return r
 }
 
 async function clearStopped($: EngineInterface): Promise<void> {
@@ -671,6 +677,7 @@ async function dueCheck($: EngineInterface, key: string): Promise<boolean> {
     const s = await sense($) // throws: nothing is released
     const gatingNow = await gatingOf($, s)
     if (!due && gatingNow.length > 0) return false // still in the reserve before the reset
+    if (gatingNow.length === 0 && resetTooRecent(s)) return false // a test window that ends near a real reset (4.8)
     if (outcomes.has(key)) return false // answered meanwhile
     settleAgain($, key, due ? 'reset' : 'quota', gatingNow, s.now)
     return true
@@ -681,6 +688,12 @@ async function dueCheck($: EngineInterface, key: string): Promise<boolean> {
     q.checking = false
   }
 }
+
+/**
+ * 4.8: a watched kind whose last real reading was in the reserve reset less than the 5-minute margin
+ * ago. A release waits for it: the 60 s margin of a test window never applies at a real reset.
+ */
+const resetTooRecent = (s: Sensed): boolean => s.kinds.some((k) => inResetMargin(mem[k.kind].seed, k.reserve, s.now))
 
 /** 4.5: the question ends without an answer. Synchronous, writes nothing: every held loop decides afresh. */
 function settleAgain($: EngineInterface, key: string, via: 'reset' | 'quota', gatingNow: readonly KindSense[], now: number): void {
@@ -821,8 +834,9 @@ function takeRaising(text: string): string | undefined {
 const questionOf = (e: unknown): string =>
   (e as { questions?: Array<{ question?: string }> }).questions?.[0]?.question ?? ''
 
-async function settle($: EngineInterface, key: string, outcome: Outcome, via: Via): Promise<void> {
-  if (outcomes.has(key)) return
+/** Settles a question. For a Stop that this copy writes, it returns the record as written (merged, 3.2). */
+async function settle($: EngineInterface, key: string, outcome: Outcome, via: Via): Promise<StoppedRecord | undefined> {
+  if (outcomes.has(key)) return undefined
   // Every synchronous cache first, so an event that arrives during the writes sees the decision.
   outcomes.set(key, outcome)
   needsRaise.delete(key)
@@ -836,8 +850,9 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
     }
   }
   wakeAll()
+  let written: StoppedRecord | undefined
   try {
-    if (via === 'elsewhere' || q === undefined) return
+    if (via === 'elsewhere' || q === undefined) return undefined
     const now = await $.clock.now()
     if (outcome === 'resume') {
       for (const kind of q.kinds) {
@@ -855,12 +870,18 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
       }
     } else if (!q.silent && (q.mode === 'hold' || via === 'command')) {
       const auto = await $.spare10.auto().catch(() => autoNow) // the setting in force
-      const work = q.loops > 0
-      const allTest = q.kinds.every((kind) => q.ends[kind]?.test === true)
-      await writeStopped($, { kinds: q.kinds, windowEnd: auto ? q.holdEnd : q.latestEnd, work, auto, test: allTest }, now)
-      const at = atText(q.holdEnd, q.kinds, undefined, now)
-      if (via === 'time limit') $.ui.log(notice.holdLimit(q.facts, auto ? { at } : undefined))
-      else if (via !== 'command') $.ui.log(notice.stopped(q.facts, auto ? { at, work } : undefined))
+      // The named windows reset while the dialog was up (inside the margin): the stop also names the
+      // kinds that gate now, so it is not written already over when one of them gates.
+      const late = auto && q.holdEnd <= now ? await lateGating($) : []
+      const kinds = KINDS.filter((k) => q.kinds.includes(k) || late.some((l) => l.kind === k))
+      const holdEnd = Math.max(q.holdEnd, ...late.map((k) => k.holdEnd))
+      const allTest = q.kinds.every((kind) => q.ends[kind]?.test === true) && late.every((k) => k.test)
+      written = await writeStopped($, { kinds, windowEnd: auto ? holdEnd : q.latestEnd, work: q.loops > 0, auto, test: allTest }, now)
+      // The texts follow the record as written: the merge can add work, kinds and a later end (3.2).
+      const facts = byKind([...q.facts, ...factsFrom(late.filter((k) => !q.kinds.includes(k.kind)), now)])
+      const merged = { at: atText(written.windowEnd, written.kinds ?? kinds, undefined, now), work: written.work === true }
+      if (via === 'time limit') $.ui.log(notice.holdLimit(facts, auto ? merged : undefined))
+      else if (via !== 'command') $.ui.log(notice.stopped(facts, auto ? merged : undefined))
     }
     if (openKey === key) openKey = undefined // the decision is readable in env now
     await $.spare10.poke({ from: ENV }) // wake the newest copy's waiters (3.6)
@@ -871,7 +892,20 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
     if (openKey === key) openKey = undefined
     redraw($)
   }
+  return written
 }
+
+/** The kinds that gate now, for a Stop made after its question's windows reset. A failed read adds none. */
+async function lateGating($: EngineInterface): Promise<KindSense[]> {
+  try {
+    return await gatingOf($, await sense($))
+  } catch {
+    return []
+  }
+}
+
+const byKind = (fs: readonly Facts[]): Facts[] =>
+  [...fs].sort((a, b) => KINDS.indexOf(a.kind ?? 'five_hour') - KINDS.indexOf(b.kind ?? 'five_hour'))
 
 /** This copy's open question, if it is not settled yet. */
 const openQuestion = (): string | undefined => (openKey !== undefined && !outcomes.has(openKey) ? openKey : undefined)
@@ -954,6 +988,29 @@ function armTick($: EngineInterface, gen: number): void {
   }
 }
 
+/**
+ * The ticker's second clock, armed with it in session.start (4.2). A hook that refuses one timer
+ * dispatch ends only that chain, so each clock re-arms the other: the watch re-arms a dead ticker,
+ * and a tick re-arms a dead watch. An idle stopped session has no measure and no redraw that could.
+ */
+function startWatch($: EngineInterface, now: number): void {
+  watch?.cancel()
+  lastWatch = now // a fresh interval counts as alive
+  try {
+    watch = $.clock.every(WATCH_MS, () => {
+      void $.clock.now().then(
+        (t) => {
+          lastWatch = t
+          watchTicker($, t)
+        },
+        () => undefined,
+      )
+    })
+  } catch {
+    watch = undefined // the next tick tries again
+  }
+}
+
 async function tick($: EngineInterface, gen: number): Promise<void> {
   if (gen !== tickGen) return
   armTick($, gen) // the next step first: a hung await below never ends the chain
@@ -963,6 +1020,7 @@ async function tick($: EngineInterface, gen: number): Promise<void> {
     const now = await $.clock.now()
     const seenUpTo = lastTick
     lastTick = now
+    if (now - lastWatch > 3 * WATCH_MS) startWatch($, now) // the watch interval ended
     if (edges.some((t) => t > seenUpTo && t <= now)) redraw($) // consent, stop and question ends, test ends
     pruneEdges(now)
     if (dueQuestion(now)) wakeAll() // the waiters run their checks (4.5)
@@ -974,17 +1032,20 @@ async function tick($: EngineInterface, gen: number): Promise<void> {
   }
 }
 
-/** Re-arms a dead ticker. Called from session.measure and ui.render, which settle at once. */
+/** Re-arms a dead ticker. Called from the watch timer, session.measure and ui.render, which settle at once. */
 function watchTicker($: EngineInterface, now: number): void {
   if (tickerWanted && now - lastTick > 3 * TICK_MS) startTicker($, now)
 }
 
+/** A time at which the badge can change. Each time once. When full, the nearest times stay. */
 function addEdge(ms: number): void {
-  if (!Number.isFinite(ms) || ms <= 0) return
+  if (!Number.isFinite(ms) || ms <= 0 || edges.includes(ms)) return
   edges.push(ms)
   if (edges.length <= EDGE_LIMIT) return
+  pruneEdges(lastTick) // the ticker has passed these
+  if (edges.length <= EDGE_LIMIT) return
   edges.sort((x, y) => x - y)
-  edges.splice(0, edges.length - EDGE_LIMIT)
+  edges.splice(EDGE_LIMIT) // drop the farthest
 }
 
 function pruneEdges(now: number): void {
@@ -1035,12 +1096,14 @@ async function stopTick($: EngineInterface, now: number): Promise<void> {
   if ((await $.spare10.poke({ from: ENV })) !== 'self') return // only the newest copy acts
   const s = await sense($)
   const gatingNow = await gatingOf($, s)
-  if (gatingNow.length > 0) return extendStop($, raw, r, gatingNow, s.now)
+  if (gatingNow.length === 0 && resetTooRecent(s)) return // a test stop that ends near a real reset (4.8)
   if (release !== undefined || taking || personHeld > 0) return // checked again after the awaits
   const rel: Release = { raw, record: r, cancelled: false }
   release = rel
   try {
-    if (r.work === true && (await typingNow($))) return // 4.6.2: wait up to 10 ticks
+    // The extension is a release too: a person path that takes the stop over meanwhile cancels it.
+    if (gatingNow.length > 0) return await extendStop($, rel, gatingNow, s.now)
+    if (r.work === true && (await typingNow($, raw))) return // 4.6.2: wait up to 10 ticks
     if (rel.cancelled) return // the person path cleared it and logged
     if ((await $.env.get('SPARE10_STOPPED')) !== raw) return // a prompt, a command or a copy took it
     const idNow = await $.session.id() // read before the clear: no await after it but one
@@ -1066,14 +1129,25 @@ async function stopTick($: EngineInterface, now: number): Promise<void> {
   }
 }
 
-/** B34: another kind gates at the due time. The stop now names it and lasts until its hold end. */
-async function extendStop($: EngineInterface, raw: string, r: StoppedRecord, gatingNow: readonly KindSense[], now: number): Promise<void> {
-  if ((await $.env.get('SPARE10_STOPPED')) !== raw) return
+/**
+ * B34: another kind gates at the due time. The stop now names it and lasts until its hold end. It runs
+ * inside the ticker's release (4.6.3): a person path that takes the stop over meanwhile sets cancelled,
+ * clears the value and logs, and then the extension never stands.
+ */
+async function extendStop($: EngineInterface, rel: Release, gatingNow: readonly KindSense[], now: number): Promise<void> {
+  const r = rel.record
+  if ((await $.env.get('SPARE10_STOPPED')) !== rel.raw || rel.cancelled) return
   const kinds = gatingNow.map((k) => k.kind)
   const until = Math.max(...gatingNow.map((k) => k.holdEnd))
   // The test tag keeps the short margin only while every kind that gates now is a test reading.
   const longer: StoppedRecord = { ...r, kinds, windowEnd: until, test: r.test === true && gatingNow.every((k) => k.test) }
-  await $.env.set('SPARE10_STOPPED', formatStopped(longer))
+  const value = formatStopped(longer)
+  await $.env.set('SPARE10_STOPPED', value)
+  if (rel.cancelled) {
+    // A person path took it over during the write: its clear came first, so clear this write too.
+    if ((await $.env.get('SPARE10_STOPPED')) === value) await clearStopped($)
+    return
+  }
   addEdge(until)
   addEdge(stopDue(longer))
   $.ui.log(notice.stopExtended(namedStop(r), factsFrom(gatingNow, now), atText(until, kinds, undefined, now)))
@@ -1087,8 +1161,16 @@ async function dropStop($: EngineInterface, raw: string): Promise<void> {
   redraw($)
 }
 
-/** 4.6.2: new text in the prompt box delays the resume prompt one tick, up to 10 ticks. */
-async function typingNow($: EngineInterface): Promise<boolean> {
+/**
+ * 4.6.2: new text in the prompt box delays the resume prompt one tick, up to 10 ticks per stop. The
+ * count belongs to the stop value it waits for, so a stop that ended another way (a takeover, a
+ * command, another copy) leaves no count for the next stop.
+ */
+async function typingNow($: EngineInterface, raw: string): Promise<boolean> {
+  if (deferFor !== raw) {
+    deferFor = raw
+    resumeDefers = 0
+  }
   const text = (await $.prompt.read()).text
   if (text.trim() === '' || text === lastRestored || resumeDefers >= BOX_DEFER_LIMIT) return false
   resumeDefers += 1
@@ -1098,7 +1180,6 @@ async function typingNow($: EngineInterface): Promise<boolean> {
 
 /** 4.6.1: one attempt, never awaited in the tick. */
 function submitResume($: EngineInterface, r: StoppedRecord): void {
-  resumeDefers = 0
   try {
     void $.prompt.submit({ text: resumePrompt(namedStop(r)) }).then(
       (out) => {
@@ -1377,9 +1458,14 @@ async function stopCommand($: EngineInterface): Promise<string> {
   const open = openQuestion()
   if (open !== undefined) {
     const q = questions.get(open)
-    await settle($, open, 'stop', 'command') // sets stopped in tell mode too
+    const written = await settle($, open, 'stop', 'command') // sets stopped in tell mode too
+    if (written !== undefined) {
+      // The reply follows the record as written (3.2): it promises to continue only work that the stop has.
+      const cont = written.auto === true && written.work === true && written.kinds !== undefined
+      return stopReply('asking', undefined, undefined, cont ? { at: atText(written.windowEnd, written.kinds ?? [], undefined, now) } : undefined)
+    }
     const auto = await $.spare10.auto().catch(() => cfg.autoResume)
-    return stopReply('asking', undefined, undefined, auto && q !== undefined ? { at: atText(q.holdEnd, q.kinds, undefined, now) } : undefined)
+    return stopReply('asking', undefined, undefined, auto && q !== undefined && q.loops > 0 ? { at: atText(q.holdEnd, q.kinds, undefined, now) } : undefined)
   }
   const s = await sense($)
   const trip = tripOf(cfg.reserve)
@@ -1473,7 +1559,11 @@ export const register: Register = (on, options) => {
     try {
       const eff = await settings($) // never rejects: it has a fallback
       tickerWanted = eff.enabled && (attended || eff.headless === 'wait')
-      if (tickerWanted) startTicker($, await $.clock.now())
+      if (tickerWanted) {
+        const now = await $.clock.now()
+        startTicker($, now)
+        startWatch($, now)
+      }
       await rebuildEdges($) // consent ends and the stop's until and due, from the env
     } catch {
       // the watchdog re-arms it
@@ -1517,6 +1607,8 @@ export const register: Register = (on, options) => {
         tickGen += 1
         ticker?.cancel()
         ticker = undefined
+        watch?.cancel()
+        watch = undefined
         pulse?.cancel()
         pulse = undefined
       }
