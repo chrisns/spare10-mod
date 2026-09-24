@@ -28,6 +28,9 @@ The plugin name is `spare10`.
    claude plugin install spare10@spare10
    ```
 
+   The install can say that 5 `userConfig` options are not set yet.
+   You do not have to set them. The defaults apply until you change them in `/config`.
+
 3. Start a new Claude Code session. Type `/spare10` to see the status.
 
 To see the question without spending quota, type `/spare10 simulate 95`, then send a prompt.
