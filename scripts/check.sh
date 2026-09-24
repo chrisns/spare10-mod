@@ -6,4 +6,5 @@ export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 claude plugin validate --strict .
 claude plugin validate --strict .claude-plugin/plugin.json
 claude plugin test .
-npx -y -p typescript@5.9.3 tsc -p .
+[ -x node_modules/.bin/tsc ] || npm ci --silent
+node_modules/.bin/tsc -p .

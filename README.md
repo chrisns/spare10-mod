@@ -577,7 +577,7 @@ The types come from the version that you run, so use this version.
 
 ```sh
 claude -p "/plugin-types"   # writes .claude/types/. A local command, with no model request.
-npm install                 # installs TypeScript 5.9.3
+npm ci                      # installs the TypeScript version in package-lock.json
 scripts/check.sh            # or: npm run check
 ```
 
@@ -590,7 +590,7 @@ All four must pass before a commit:
 1. `claude plugin validate --strict .` checks the marketplace file only.
 2. `claude plugin validate --strict .claude-plugin/plugin.json` checks the plugin and its hooks module.
 3. `claude plugin test .` runs the tests in `tests/`.
-4. `tsc` 5.9.3 checks the types of the hooks and the tests.
+4. `tsc`, at the version in `package-lock.json`, checks the types of the hooks and the tests.
 
 ### Layout
 

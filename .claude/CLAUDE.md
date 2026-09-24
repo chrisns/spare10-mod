@@ -10,7 +10,7 @@ It targets Claude Code 2.1.281, where function hooks are early access (`CLAUDE_C
 - The engine puts `spare10: ` in front of each transcript line (`$.ui.log` without `to`) and each `command.run` reply. So never start those texts with `spare10`. Model texts, drop reasons and debug lines keep their own `spare10: `. A pure test and a kit test guard this.
 - `SPARE10_CONSENT` is `<session id> <iso>`. The process env reaches every descendant, also the `claude daemon` of `--bg` sessions. An attended session takes only its own stamp. A Resume on a test reading never goes into the env.
 - Tests: `tests/core` (pure), `tests/kit` (through the engine), helpers in `tests/helpers` (never `*.test.ts`).
-- Check: `scripts/check.sh` (validate twice, `claude plugin test .`, tsc 5.9.3). It must pass before a commit.
+- Check: `scripts/check.sh` (validate twice, `claude plugin test .`, tsc from package-lock.json). It must pass before a commit.
 - Once per Claude Code version, run `claude -p "/plugin-types"` first. It is local and makes no model request.
 - Static rules the engine enforces at load: README.md, "Rules the engine enforces". Obey them all.
 - No `setTimeout`, `console` or `$.state`, in hooks or tests. Use `$.clock`, `$.ui.log` and `w.clock.settle()`.
