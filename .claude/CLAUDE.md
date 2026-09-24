@@ -1,7 +1,7 @@
 # spare10-mod
 
 spare10 (https://github.com/alesdi/spare10) re-invented as a Claude Code mod: a plugin with a function-hooks module.
-It targets Claude Code 2.1.281, where function hooks are early access (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`).
+It targets Claude Code 2.1.281 and later (tested on 2.1.282), where function hooks are early access (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`).
 
 - The repo root is the plugin root and a one-plugin marketplace (`.claude-plugin/`).
 - `hooks/register.tsx` is the only file that uses `$`. Every hook and every function that gets `$` lives there.

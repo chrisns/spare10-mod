@@ -10,7 +10,7 @@ Many texts and rules come from spare10.
 Thank you, Alessandro.
 
 spare10-mod is early access software.
-It uses function hooks, an early access feature of Claude Code 2.1.281.
+It uses function hooks, an early access feature of Claude Code 2.1.281 and later.
 The plugin name is `spare10`.
 
 ## Quick start
@@ -61,7 +61,7 @@ The plugin name is `spare10`.
 If spare10 does not load:
 
 - Type `/` to see the command list. If `/spare10` is not in the list, spare10 did not load.
-- Make sure that you use Claude Code 2.1.281.
+- Make sure that you use Claude Code 2.1.281 or later.
 - Check step 1 and step 2, then start a new session.
 - Claude Code ignores a settings file that has an error in it.
   Run `claude doctor`. If it shows **Invalid settings**, correct that entry.
@@ -102,8 +102,8 @@ You can switch this off.
 
 ## Before you start
 
-You need Claude Code 2.1.281.
-spare10-mod targets this version only.
+You need Claude Code 2.1.281 or later.
+spare10-mod is tested on 2.1.281 and 2.1.282.
 Function hooks are early access.
 A later version can change their API without notice.
 
@@ -726,7 +726,7 @@ After the reading trips, a failure holds or refuses the step.
 
 ### Known limitations
 
-1. **Early access.** The function-hooks API of 2.1.281 can change without notice. Run `claude -p "/plugin-types"` again after each update.
+1. **Early access.** The function-hooks API can change in any Claude Code version, without notice. Run `claude -p "/plugin-types"` again after each update.
 2. **A worker respawn fails open.** Another plugin can crash the shared hooks worker. Then every held call runs and every held request goes out. spare10 asks again at the next step.
 3. **One response of lag.** spare10 does not hold a request that already streams at the trip. A tool can start before its response ends. spare10 then gates it on the previous reading.
 4. **spare10 does not gate the first `-p` request**, unless the shared reading from another session trips it. Under `wait`, the shared reading alone lets one more request go.
@@ -764,8 +764,9 @@ After the reading trips, a failure holds or refuses the step.
 
 ## Develop
 
-spare10-mod is pinned to Claude Code 2.1.281.
-The types come from the version that you run, so use this version.
+spare10-mod is tested on Claude Code 2.1.281 and 2.1.282.
+The types come from the version that you run.
+After each update of Claude Code, write the types again and run the checks.
 
 ```sh
 claude -p "/plugin-types"   # writes .claude/types/. A local command, with no model request.

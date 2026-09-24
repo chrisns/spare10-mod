@@ -18,6 +18,7 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Claude Code 2.1.282.** spare10-mod passes all its checks on 2.1.282 too. The README now names the tested versions.
 - **Stop here.** With Continue at the reset on, Stop here stops the work until the reset. The question and the notice say so. A later Stop here keeps the work of an earlier stop that spare10 did not continue yet. The notice and the `/spare10 stop` reply promise to continue the work only when the stop holds work.
 - **Long holds.** A hold that lasts too long for one hook ends as Stop here. Before, it let the work through.
 - **Badge.** A stopped session shows the time of the reset: `■ spare10: stopped until 15:00`.
