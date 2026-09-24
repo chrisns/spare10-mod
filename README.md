@@ -15,11 +15,28 @@ The plugin name is `spare10`.
 
 ## Quick start
 
-1. Switch on function hooks. Add this to `~/.claude/settings.json`:
+1. Switch on function hooks.
+   This flag switches them on for every installed plugin that has a hooks module.
+   [Before you start](#before-you-start) tells you more.
+
+   Put this `env` entry in `~/.claude/settings.json`:
 
    ```json
    { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
    ```
+
+   If the file has an `env` block already, add only the `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` line to it.
+
+   Or run this command in bash, zsh or sh. It needs [jq](https://jqlang.org). macOS has jq in `/usr/bin`.
+
+   ```sh
+   sh -c 'f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"; s="$f"; [ -e "$f" ] || s=/dev/null; t=$(mktemp) || exit 1; jq -s "if length > 1 then error(\"more than one JSON value\") else (.[0] // {}) | .env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = \"1\" end" "$s" > "$t" || { rm -f "$t"; exit 1; }; mkdir -p "$(dirname "$f")" && cat "$t" > "$f" || { echo "Could not write $f. The new settings are in $t" >&2; exit 1; }; rm -f "$t"; echo "Function hooks are on in $f"'
+   ```
+
+   The command keeps your other settings. jq rewrites the file with two-space indentation.
+   If jq cannot read or parse the file, the command shows an error and changes nothing.
+   If you export `CLAUDE_CONFIG_DIR`, the command uses that folder, as Claude Code does.
+   Run it once for each config folder that you use.
 
 2. Install the plugin:
 
@@ -31,11 +48,28 @@ The plugin name is `spare10`.
    The install can say that 5 `userConfig` options are not set yet.
    You do not have to set them. The defaults apply until you change them in `/config`.
 
-3. Start a new Claude Code session. Type `/spare10` to see the status.
+3. Start a new Claude Code session in a terminal.
+   spare10 arms itself. You do not need a command.
+   The footer shows `⧗ spare10` until spare10 reads your quota.
+   Then it shows `● spare10`.
+   Type `/spare10` to see the full status.
 
-To see the question without spending quota, type `/spare10 simulate 95`, then send a prompt.
+   The desktop app and the IDE hosts are unattended.
+   There, spare10 only watches by default.
+   See [Unattended runs](#unattended-runs).
+
+If spare10 does not load:
+
+- Type `/` to see the command list. If `/spare10` is not in the list, spare10 did not load.
+- Make sure that you use Claude Code 2.1.281.
+- Check step 1 and step 2, then start a new session.
+- Claude Code ignores a settings file that has an error in it.
+  Run `claude doctor`. If it shows **Invalid settings**, correct that entry.
+- A `"0"` in the `env` block of a project's `.claude/settings.json` switches function hooks off in that project.
+
+To test the question, type `/spare10 simulate 95`, then send a prompt.
+Choose **Stop here**, and the test uses no quota.
 Type `/spare10 simulate off` to clear the test reading.
-[Before you start](#before-you-start) tells you what the settings change does.
 
 ## Screenshots
 
@@ -68,7 +102,7 @@ Function hooks are early access.
 A later version can change their API without notice.
 
 Function hooks are off by default.
-To switch them on, put this block in `~/.claude/settings.json`:
+To switch them on, put this `env` entry in `~/.claude/settings.json`:
 
 ```json
 { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
