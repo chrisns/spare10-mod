@@ -1,0 +1,10 @@
+{
+  "name": "spare10-mod",
+  "private": true,
+  "scripts": {
+    "check": "sh scripts/check.sh"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

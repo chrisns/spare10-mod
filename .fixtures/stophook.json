@@ -1,0 +1,1 @@
+{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "test -f /tmp/s10-block && echo '{\"decision\":\"block\",\"reason\":\"keep going\"}' || true" } ] } ] } }

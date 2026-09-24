@@ -1,0 +1,12 @@
+{
+  "name": "spare10",
+  "description": "spare10 as a Claude Code mod: it keeps the last part of your 5-hour quota for you.",
+  "owner": { "name": "Chris Nesbitt-Smith" },
+  "plugins": [
+    {
+      "name": "spare10",
+      "source": "./",
+      "description": "Holds all work at the quota reserve and asks you whether to continue."
+    }
+  ]
+}

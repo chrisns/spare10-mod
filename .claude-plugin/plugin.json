@@ -1,0 +1,62 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "spare10",
+  "version": "0.1.0",
+  "description": "Keeps the last part of your 5-hour quota for you. At the reserve, spare10 holds all work and asks you whether to continue.",
+  "author": {
+    "name": "Chris Nesbitt-Smith"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/chrisns/spare10-mod",
+  "repository": "https://github.com/chrisns/spare10-mod",
+  "keywords": [
+    "quota",
+    "rate-limit",
+    "circuit-breaker",
+    "function-hooks"
+  ],
+  "types": "./types.d.ts",
+  "userConfig": {
+    "reserve": {
+      "type": "number",
+      "title": "Reserve (%)",
+      "description": "Keep this much of the 5-hour window for yourself. spare10 steps in when this much or less is left. 1 to 99, one decimal at most. SPARE10_RESERVE overrides it for one run.",
+      "default": 10,
+      "min": 1,
+      "max": 99
+    },
+    "pausePrompt": {
+      "type": "string",
+      "title": "Pause prompt",
+      "description": "Leave empty to stop and ask you. Or write an instruction, and spare10 gives it to every agent instead of stopping. SPARE10_PAUSE_PROMPT overrides it for one run.",
+      "default": ""
+    },
+    "headless": {
+      "type": "string",
+      "title": "Unattended runs (-p, SDK)",
+      "description": "What spare10 does inside the reserve when nobody can answer: off (watch only), prompt (tell every agent to wind down), stop (refuse tools and further requests). SPARE10_HEADLESS overrides it for one run.",
+      "default": "off",
+      "options": [
+        "off",
+        "prompt",
+        "stop"
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "title": "Guarded sessions",
+      "description": "all: spare10 guards every interactive session. opt-in: only runs started with SPARE10=on. SPARE10=off switches spare10 off for one run.",
+      "default": "all",
+      "options": [
+        "all",
+        "opt-in"
+      ]
+    },
+    "badge": {
+      "type": "boolean",
+      "title": "Status badge",
+      "description": "Show the spare10 marker at the right of the prompt footer.",
+      "default": true
+    }
+  }
+}
