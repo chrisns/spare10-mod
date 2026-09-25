@@ -8,24 +8,30 @@ import {
   consentCovers,
   decide,
   formatConsent,
+  extendedReal,
   formatStopped,
+  heldPast,
+  holdsPast,
   isOverdue,
+  joinReal,
   joinable,
   mergeStopped,
   parseConsent,
   parseStopped,
   phaseOf,
+  sameWindow,
   shouldAbortTurn,
   skipTag,
   stopAction,
   stopDue,
 } from '../../hooks/core/decide.ts'
-import type { Mode, PhaseInput, Site, Snapshot, StoppedRecord } from '../../hooks/core/decide.ts'
+import type { Holder, Mode, PhaseInput, Site, Snapshot, StoppedRecord } from '../../hooks/core/decide.ts'
 import type { Headless } from '../../hooks/core/config.ts'
 import type { Basis } from '../../hooks/core/reading.ts'
 
 const R = Date.parse('2026-09-24T15:00:00.000Z')
 const HOUR = 3_600_000
+const DAY = 24 * HOUR
 const T0 = Date.parse('2026-09-24T12:00:00Z')
 const SITES: readonly Site[] = ['tool', 'step', 'prompt']
 
@@ -343,14 +349,160 @@ test('stopAction: 0.1 value, no auto, before due, another conversation, off, che
 })
 
 test('isOverdue takes only an auto 0.2 record of this session past its end', () => {
-  expect(isOverdue(REC, 'S1', undefined, R)).toBe(true)
-  expect(isOverdue(REC, 'S1', undefined, R + HOUR)).toBe(true)
-  expect(isOverdue(REC, 'S1', undefined, R - 1)).toBe(false)
-  expect(isOverdue(REC, 'S2', undefined, R)).toBe(false)
-  expect(isOverdue(REC, 'S1', 'S1', R)).toBe(false)
-  expect(isOverdue({ ...REC, auto: false }, 'S1', undefined, R)).toBe(false)
-  expect(isOverdue({ sessionId: 'S1', windowEnd: R, at: T0 }, 'S1', undefined, R)).toBe(false)
-  expect(isOverdue(undefined, 'S1', undefined, R)).toBe(false)
+  expect(isOverdue(REC, 'S1', undefined, R, [])).toBe(true)
+  expect(isOverdue(REC, 'S1', undefined, R + HOUR, [])).toBe(true)
+  expect(isOverdue(REC, 'S1', undefined, R - 1, [])).toBe(false)
+  expect(isOverdue(REC, 'S2', undefined, R, [])).toBe(false)
+  expect(isOverdue(REC, 'S1', 'S1', R, [])).toBe(false)
+  expect(isOverdue({ ...REC, auto: false }, 'S1', undefined, R, [])).toBe(false)
+  expect(isOverdue({ sessionId: 'S1', windowEnd: R, at: T0 }, 'S1', undefined, R, [])).toBe(false)
+  expect(isOverdue(undefined, 'S1', undefined, R, [])).toBe(false)
+})
+
+// TS1 entries: the reset of the real window when the entry was written.
+const F: Holder = { kind: 'five_hour', resetsAtMs: R } // a real 5-hour reading of the window 10:00 to 15:00
+const W: Holder = { kind: 'seven_day', resetsAtMs: R + 3 * DAY }
+
+test('TS1: a skip or test 0.2 stop past its end still holds while a kind with its real tag gates on a real reading of the same window', () => {
+  const skipRec: StoppedRecord = { ...REC, skip: true, real: [F] }
+  const five: Holder = { kind: 'five_hour', resetsAtMs: R } // its real reading gates now, in the window 10:00 to 15:00
+  const week: Holder = { kind: 'seven_day', resetsAtMs: R + 3 * DAY }
+  expect(heldPast(skipRec, [five])).toBe(true)
+  expect(heldPast(skipRec, [five, week])).toBe(true)
+  expect(holdsPast(skipRec, five)).toBe(true)
+  expect(holdsPast(skipRec, week)).toBe(false) // another kind: the ticker extends the stop to it (B34)
+  expect(heldPast({ ...skipRec, kinds: ['five_hour', 'seven_day'] }, [week])).toBe(false) // its real reading was not in the reserve at the stop
+  expect(heldPast({ ...REC, test: true, real: [F] }, [five])).toBe(true) // a test window ended over a real trip
+  expect(heldPast({ ...skipRec, auto: false }, [five])).toBe(true) // autoResume off: a skip start that did not open
+  expect(heldPast(skipRec, [])).toBe(false)
+  expect(heldPast(skipRec, [week])).toBe(false)
+  expect(heldPast({ ...REC, real: [F] }, [five])).toBe(false) // it ended at a reset: a new trip asks again (D0.2)
+  expect(heldPast({ sessionId: 'S1', windowEnd: R, at: T0 }, [five])).toBe(false) // a 0.1 value ends by time
+  expect(isOverdue(skipRec, 'S1', undefined, R + HOUR, [five])).toBe(false)
+  expect(isOverdue(skipRec, 'S1', undefined, R + HOUR, [week])).toBe(true)
+  expect(isOverdue({ ...REC, real: [F] }, 'S1', undefined, R + HOUR, [five])).toBe(true)
+})
+
+test('TS1: the hold past the end is bound to the window of the real entry, by its reset, and to the real tag that the stop wrote', () => {
+  const skipRec: StoppedRecord = { ...REC, skip: true, real: [F] }
+  const five: Holder = { kind: 'five_hour', resetsAtMs: R }
+  // The window of the entry: a reset less than half a window (2.5 h) from the recorded one. The time of the stop plays no part.
+  expect(heldPast(skipRec, [{ ...five, resetsAtMs: R + 1000 }])).toBe(true) // the same window, its reset 1 s later
+  expect(heldPast(skipRec, [{ ...five, resetsAtMs: R - 1000 }])).toBe(true)
+  expect(heldPast(skipRec, [{ ...five, resetsAtMs: R + 2.5 * HOUR - 1 }])).toBe(true)
+  expect(heldPast(skipRec, [{ ...five, resetsAtMs: R + 2.5 * HOUR }])).toBe(false)
+  expect(heldPast(skipRec, [{ ...five, resetsAtMs: R + 5 * HOUR }])).toBe(false) // the next window
+  expect(heldPast({ ...skipRec, at: R - 10 * HOUR }, [five])).toBe(true) // a stop written before the window started: an extension adopted it
+  expect(heldPast({ ...skipRec, real: [{ ...F, resetsAtMs: R + 5 * HOUR }] }, [five])).toBe(false) // an entry of another window
+  // The weekly window is 7 days long: its bound is 3.5 days.
+  const week: Holder = { kind: 'seven_day', resetsAtMs: T0 + 7 * DAY }
+  const weekRec: StoppedRecord = { ...skipRec, kinds: ['seven_day'], real: [{ kind: 'seven_day', resetsAtMs: T0 + 7 * DAY }] }
+  expect(heldPast(weekRec, [week])).toBe(true)
+  expect(heldPast(weekRec, [{ ...week, resetsAtMs: T0 + 7 * DAY + 3 * DAY }])).toBe(true)
+  expect(heldPast(weekRec, [{ ...week, resetsAtMs: T0 + 14 * DAY }])).toBe(false)
+  // Its real reading must be in the reserve at the stop: the real tag. A value without it (0.1, or 0.2 before TS1) keeps nothing.
+  const { real: _real, ...untagged } = skipRec
+  expect(heldPast(untagged, [five])).toBe(false) // a real trip after the stop asks again
+  expect(heldPast({ ...skipRec, real: [W] }, [five])).toBe(false)
+  expect(heldPast({ ...untagged, test: true }, [five])).toBe(false) // a test stop over a real reading below the reserve
+  // An unknown reset, now or in the entry, keeps it while it gates: fail closed.
+  expect(heldPast(skipRec, [{ ...five, resetsAtMs: null }])).toBe(true)
+  expect(heldPast({ ...skipRec, real: [{ kind: 'five_hour', resetsAtMs: null }] }, [{ ...five, resetsAtMs: R + 5 * HOUR }])).toBe(true)
+  expect(heldPast(untagged, [{ ...five, resetsAtMs: null }])).toBe(false)
+  expect(isOverdue(untagged, 'S1', undefined, R + HOUR, [five])).toBe(true)
+  expect(isOverdue(skipRec, 'S1', undefined, R + HOUR, [{ ...five, resetsAtMs: R + 5 * HOUR }])).toBe(true)
+})
+
+test('TS1: sameWindow compares two resets of one kind against half its window, and an unknown reset matches', () => {
+  expect(sameWindow('five_hour', R, R + 2.5 * HOUR - 1)).toBe(true)
+  expect(sameWindow('five_hour', R, R - 2.5 * HOUR)).toBe(false)
+  expect(sameWindow('seven_day', R, R + 3.5 * DAY - 1)).toBe(true)
+  expect(sameWindow('seven_day', R, R + 3.5 * DAY)).toBe(false)
+  expect(sameWindow('five_hour', null, R)).toBe(true)
+  expect(sameWindow('seven_day', R, null)).toBe(true)
+})
+
+test('TS1: parseStopped and formatStopped carry the real tags last with their resets, on a skip or test stop only, and read a value without them as before', () => {
+  const rec: StoppedRecord = { ...REC, kinds: ['five_hour', 'seven_day'], test: true, skip: true, real: [F, W] }
+  expect(formatStopped(rec)).toBe(`S1 ${R} ${T0} five_hour,seven_day,work,auto,test,skip,real_five_hour:${R},real_seven_day:${R + 3 * DAY}`)
+  expect(parseStopped(formatStopped(rec))).toEqual(rec)
+  expect(parseStopped(`S1 ${R} ${T0} real_seven_day:${R + 3 * DAY},skip,seven_day`)).toEqual({ sessionId: 'S1', windowEnd: R, at: T0, kinds: ['seven_day'], work: false, auto: false, test: false, skip: true, real: [W] })
+  expect(formatStopped({ ...REC, test: true, real: [F] })).toBe(`S1 ${R} ${T0} five_hour,work,auto,test,real_five_hour:${R}`)
+  expect(formatStopped({ ...REC, skip: true, real: [F] })).toBe(`S1 ${R} ${T0} five_hour,work,auto,skip,real_five_hour:${R}`)
+  // An unknown reset: a bare tag. A bare tag, as 0.2 before the reset in the tag wrote it, and `:0` read as unknown.
+  const unknown: StoppedRecord = { ...REC, skip: true, real: [{ kind: 'five_hour', resetsAtMs: null }] }
+  expect(formatStopped(unknown)).toBe(`S1 ${R} ${T0} five_hour,work,auto,skip,real_five_hour`)
+  expect(parseStopped(`S1 ${R} ${T0} five_hour,work,auto,skip,real_five_hour`)).toEqual(unknown)
+  expect(parseStopped(`S1 ${R} ${T0} five_hour,work,auto,skip,real_five_hour:0`)).toEqual(unknown)
+  // One entry per kind: the later window, a known reset before an unknown one.
+  expect(parseStopped(`S1 ${R} ${T0} five_hour,skip,real_five_hour:${R},real_five_hour:${R + 5 * HOUR}`)?.real).toEqual([{ kind: 'five_hour', resetsAtMs: R + 5 * HOUR }])
+  expect(parseStopped(`S1 ${R} ${T0} five_hour,skip,real_five_hour,real_five_hour:${R}`)?.real).toEqual([F])
+  expect(formatStopped({ ...REC, skip: true, real: [{ kind: 'five_hour', resetsAtMs: null }, F] })).toBe(`S1 ${R} ${T0} five_hour,work,auto,skip,real_five_hour:${R}`)
+  // A stop that ends at a reset never holds past it: its value stays as in D0.2.
+  expect(formatStopped({ ...REC, real: [F] })).toBe(`S1 ${R} ${T0} five_hour,work,auto`)
+  // A real tag names only a kind of the stop.
+  expect(formatStopped({ ...REC, skip: true, real: [W] })).toBe(`S1 ${R} ${T0} five_hour,work,auto,skip`)
+  expect('real' in (parseStopped(`S1 ${R} ${T0} five_hour,real_seven_day:${R}`) ?? { real: 0 })).toBe(false)
+  expect(formatStopped({ ...REC, real: [] })).toBe(`S1 ${R} ${T0} five_hour,work,auto`)
+  // A 0.1 value and a 0.2 value from before TS1 read as before, with no real field.
+  expect(parseStopped(`S1 ${R} ${T0}`)).toEqual({ sessionId: 'S1', windowEnd: R, at: T0 })
+  expect(parseStopped(`S1 ${R} ${T0} five_hour,work,auto,test,skip`)).toEqual({ ...REC, test: true, skip: true })
+  for (const junk of [
+    `S1 ${R} ${T0} real_five_hour`,
+    `S1 ${R} ${T0} real_five_hour:${R}`,
+    `S1 ${R} ${T0} five_hour,real`,
+    `S1 ${R} ${T0} five_hour,real_5h`,
+    `S1 ${R} ${T0} five_hour,Real_five_hour`,
+    `S1 ${R} ${T0} five_hour,real_five_hour:`,
+    `S1 ${R} ${T0} five_hour,real_five_hour:abc`,
+    `S1 ${R} ${T0} five_hour,real_five_hour:-1`,
+    `S1 ${R} ${T0} five_hour,real_five_hour:1:2`,
+    `S1 ${R} ${T0} five_hour,five_hour:${R}`,
+  ]) {
+    expect(parseStopped(junk)).toBeUndefined()
+  }
+})
+
+test('TS1: mergeStopped joins the real entries of one session by kind, keeps the later window, and drops a window that is over', () => {
+  const prev: StoppedRecord = { sessionId: 'S1', windowEnd: R + HOUR, at: T0, kinds: ['seven_day'], work: true, auto: true, test: false, real: [W] }
+  const next: StoppedRecord = { sessionId: 'S1', windowEnd: R, at: T0 + 60_000, kinds: ['five_hour'], work: false, auto: true, test: false, real: [F] }
+  expect(mergeStopped(prev, next, T0 + 60_000).real).toEqual([F, W])
+  const { real: _p, ...prevUntagged } = prev
+  expect(mergeStopped(prevUntagged, next, T0 + 60_000).real).toEqual([F])
+  const { real: _n, ...nextUntagged } = next
+  expect(mergeStopped(prev, nextUntagged, T0 + 60_000).real).toEqual([W])
+  expect('real' in mergeStopped(prevUntagged, nextUntagged, T0 + 60_000)).toBe(false)
+  expect(mergeStopped({ ...prev, sessionId: 'S0' }, nextUntagged, T0 + 60_000)).toEqual(nextUntagged) // another session: nothing joins
+  // One kind in both: the entry of the later window. A known reset wins over an unknown one.
+  const older: StoppedRecord = { ...prev, kinds: ['five_hour'], real: [{ kind: 'five_hour', resetsAtMs: R - HOUR }] }
+  expect(mergeStopped(older, next, T0 + 60_000).real).toEqual([F])
+  expect(mergeStopped({ ...older, real: [{ kind: 'five_hour', resetsAtMs: R + HOUR }] }, next, T0 + 60_000).real).toEqual([{ kind: 'five_hour', resetsAtMs: R + HOUR }])
+  expect(mergeStopped({ ...older, real: [{ kind: 'five_hour', resetsAtMs: null }] }, next, T0 + 60_000).real).toEqual([F])
+  expect(mergeStopped(next, { ...older, real: [{ kind: 'five_hour', resetsAtMs: null }] }, T0 + 60_000).real).toEqual([F])
+  expect(mergeStopped({ ...older, real: [{ kind: 'five_hour', resetsAtMs: null }] }, nextUntagged, T0 + 60_000).real).toEqual([{ kind: 'five_hour', resetsAtMs: null }])
+  // An entry whose recorded reset has passed: that window is over, so a trip in the next window asks again.
+  const w1: StoppedRecord = { ...prev, windowEnd: R + 40 * 60_000, kinds: ['five_hour'], test: true, skip: true, real: [F] }
+  const w2: StoppedRecord = { ...nextUntagged, windowEnd: R + 40 * 60_000, at: R + 10 * 60_000, test: true, skip: true }
+  expect('real' in mergeStopped(w1, w2, R + 10 * 60_000)).toBe(false)
+  expect(mergeStopped(w1, w2, R - 1).real).toEqual([F])
+  expect(mergeStopped(w1, { ...w2, real: [{ kind: 'five_hour', resetsAtMs: R + 5 * HOUR }] }, R + 10 * 60_000).real).toEqual([{ kind: 'five_hour', resetsAtMs: R + 5 * HOUR }])
+})
+
+test('TS1: joinReal and extendedReal give one entry per kind; an extension writes the current reset of each kind whose real reading gates', () => {
+  expect(joinReal(undefined, undefined, T0)).toEqual([])
+  expect(joinReal([W], [F], T0)).toEqual([F, W]) // KINDS order
+  expect(joinReal([F], [], R)).toEqual([]) // its window is over
+  expect(joinReal([{ kind: 'five_hour', resetsAtMs: null }], [], R + DAY)).toEqual([{ kind: 'five_hour', resetsAtMs: null }]) // unknown: kept
+  const later: Holder = { kind: 'five_hour', resetsAtMs: R + 5 * HOUR }
+  // A kind whose real reading gates now gets its current reset, also over an earlier entry of it.
+  expect(extendedReal([F], [later], ['five_hour'], R + 10 * 60_000)).toEqual([later])
+  expect(extendedReal([F], [later], ['five_hour'], T0)).toEqual([later])
+  expect(extendedReal([W], [later], ['five_hour'], T0)).toEqual([later]) // a kind the extension drops loses its entry
+  expect(extendedReal(undefined, [{ kind: 'five_hour', resetsAtMs: null }], ['five_hour'], T0)).toEqual([{ kind: 'five_hour', resetsAtMs: null }])
+  // Another kind that still gates keeps its entry while that window lasts.
+  expect(extendedReal([F, W], [], ['five_hour', 'seven_day'], T0)).toEqual([F, W])
+  expect(extendedReal([F, W], [], ['five_hour', 'seven_day'], R)).toEqual([W])
+  expect(extendedReal([F], [later], ['seven_day'], T0)).toEqual([]) // only the kinds of the extension
 })
 
 test('joinable: open, stop, resume that covers, resume that does not, again', () => {
@@ -427,7 +579,7 @@ test('stopDue adds no margin to a skip stop, also with the test tag', () => {
   // A skip stop is due, and overdue, from its skip start.
   expect(stopAction({ record: { ...REC, windowEnd: OPENS, skip: true }, now: OPENS, sessionId: 'S1', autoResume: true, enabled: true, attended: true })).toBe('check')
   expect(stopAction({ record: { ...REC, windowEnd: OPENS, skip: true }, now: OPENS - 1, sessionId: 'S1', autoResume: true, enabled: true, attended: true })).toBe('none')
-  expect(isOverdue({ ...REC, windowEnd: OPENS, skip: true }, 'S1', undefined, OPENS)).toBe(true)
+  expect(isOverdue({ ...REC, windowEnd: OPENS, skip: true }, 'S1', undefined, OPENS, [])).toBe(true)
 })
 
 test('skipTag needs a skip start at until, and with auto no later due', () => {

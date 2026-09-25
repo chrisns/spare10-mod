@@ -20,6 +20,8 @@ import {
   cmd,
   drain,
   pastOpen,
+  real5,
+  real7,
   step,
   stopRec,
   typed,
@@ -429,7 +431,7 @@ test('a weekly Stop here ends at the weekly skip start with one open resume prom
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(`into your 10% weekly reserve · 8% of weekly quota left · resets ${wk(NEAR_MS)}`))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_NEAR_OPENS, T0, 'seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_NEAR_OPENS, T0, `seven_day,work,auto,skip,${real7(WEEK_NEAR)}`))
   expect(count(transcript(w), stoppedSkipWork(RW, wk(NEAR_OPENS_MS), WEEK_LEAD))).toBe(1)
   expect(await badgeText($)).toBe(`■ spare10: stopped until ${wk(NEAR_OPENS_MS)}`)
   expect(await report($)).toContain(
@@ -456,7 +458,7 @@ test('a loop Stop, then Esc on a prompt question: the merged stop keeps the skip
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(mf5(93, AT)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(count(transcript(w), stoppedSkipWork(R5, AT_OPEN, LEAD))).toBe(1)
   await w.clock.advance(MIN)
   w.answer = 'dismiss' // Esc counts as Stop here
@@ -464,7 +466,7 @@ test('a loop Stop, then Esc on a prompt question: the merged stop keeps the skip
   await w.clock.settle()
   expect(questions(w)).toEqual([loop5(93, AT, skipAfter(AT_OPEN, LEAD)), promptHold5(93, AT, AT_OPEN, LEAD)])
   // The later stop gives the time, the work of the loop stop stays, and so does the skip tag (3.5).
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + MIN, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + MIN, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(count(transcript(w), stoppedSkipWork(R5, AT_OPEN, LEAD))).toBe(2)
   await w.clock.set(OPENS_MS - TICK)
   expect(w.submitted).toEqual([])
@@ -485,7 +487,7 @@ test('/spare10 stop on the open question before the skip start: the skip reply, 
   expect((await $.command.run(cmd('stop'))).text).toBe(askingSkipReply(AT_OPEN, LEAD))
   expect((await held).deny).toBe(STOP(mf5(93, AT)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 10 * MIN, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 10 * MIN, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(await badgeText($)).toBe(`■ spare10: stopped until ${AT_OPEN}`)
   expect(await report($)).toContain(
     `■ stopped you chose Stop here. spare10 continues the work at ${AT_OPEN}. Type a prompt to be asked again, or run /spare10 resume.`,
@@ -602,7 +604,7 @@ test('autoResume off: Stop here ends at the skip start, nothing is logged or sen
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(mf5(93, AT)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,skip')) // the stop end, no auto
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,skip,${real5(RESETS)}`)) // the stop end, no auto
   expect(count(transcript(w), stoppedSkip(R5, AT_OPEN, LEAD))).toBe(1)
   // A skip stop shows its end in both modes (skip 1.3 item 6).
   expect(await badgeText($)).toBe(`■ spare10: stopped until ${AT_OPEN}`)
@@ -694,12 +696,12 @@ test('a Stop here on a test window over a real trip is extended until the real s
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(mf5(95, hhmm(end))))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', start, T0, 'five_hour,work,auto,test,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', start, T0, `five_hour,work,auto,test,skip,${real5(RESETS)}`))
   // At the test skip start the real reading gates: the stop is extended on the real basis (B45, 4.5).
   await w.clock.set(start + TICK)
   await w.clock.settle()
   expect(w.submitted).toEqual([])
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(count(transcript(w), `your 10% reserve is reached. The stop lasts until ${AT_OPEN}, ${LEAD}.`)).toBe(1)
   expect(transcript(w).filter((t) => t.endsWith('spare10 continues the stopped work.'))).toEqual([])
   await w.clock.set(T0 + HOUR)

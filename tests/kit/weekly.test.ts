@@ -20,6 +20,8 @@ import {
   drain,
   measure,
   pastDue,
+  real5,
+  real7,
   step,
   stopRec,
   typed,
@@ -228,7 +230,7 @@ test('weekly consent does not cover a 5-hour trip', async ($, on) => {
   expect((await bash($)).deny).toBe(STOP([F5(93)]))
   await w.clock.settle()
   expect(questions(w)).toEqual([loopQ([FW(92)]), loopQ([F5(93)])])
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.ran).toEqual(['Bash:main'])
 })
@@ -402,7 +404,7 @@ test('a weekly Stop here writes a stop until the weekly reset', async ($, on) =>
   w.release('Stop here')
   expect((await Promise.all(held)).map((r) => r.deny)).toEqual([STOP(week), STOP(week)])
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,work,auto,skip,${real7(WEEK_RESETS)}`))
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined()
   expect(transcript(w)).toContain(stoppedNotice(week))
   expect((await bash($)).deny).toBe(STOP(week))
@@ -418,7 +420,7 @@ test('a weekly Stop here writes a stop until the weekly reset', async ($, on) =>
   w.resetsAt = LATER
   w.pct = 10
   expect((await bash($)).deny).toBe(STOP([FW(92, WEEK_MS, RESETS_MS + 10 * 60_000)]))
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,work,auto,skip,${real7(WEEK_RESETS)}`))
   expect(w.submitted).toEqual([])
   expect(w.ran).toEqual([])
   expect(w.asked).toHaveLength(1)
@@ -650,11 +652,11 @@ test('/spare10 stop on a weekly trip stops until the weekly reset, and a refused
     `stopped at the reserve until ${weekClock(WEEK_OPENS_MS)}, 8 h before the weekly reset. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
   )
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,auto,skip,${real7(WEEK_RESETS)}`))
   expect(await run($, 'stop')).toBe(`already stopped until ${weekClock(WEEK_OPENS_MS)}.`)
   expect((await bash($)).deny).toBe(STOP(week))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,work,auto,skip,${real7(WEEK_RESETS)}`))
   expect(w.asked).toEqual([])
 })
 
@@ -701,7 +703,7 @@ test('both windows tripped: Stop here stops until the later reset and names both
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(two))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'five_hour,seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `five_hour,seven_day,work,auto,skip,${real5(RESETS)},${real7(WEEK_RESETS)}`))
   expect(transcript(w)).toContain(stoppedNotice(two))
   expect((await drain($, step())).text).toBe(PAUSED(two))
   const ui = await mountBadge($)
@@ -718,7 +720,7 @@ test('/spare10 stop with a weekly question open refuses the held work until the 
   expect(await run($, 'stop')).toBe(`stopped. Held work is refused. spare10 continues it at ${weekClock(WEEK_OPENS_MS)}, 8 h before the weekly reset.`)
   expect((await held).deny).toBe(STOP([FW(92)]))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,work,auto,skip,${real7(WEEK_RESETS)}`))
   expect(w.dialogAborted).not.toBe('no') // the dialog is withdrawn
   expect(w.asked).toHaveLength(1)
 })
@@ -768,7 +770,7 @@ test('/spare10 stop after a weekly Resume clears the weekly consent, and the nex
   )
   await w.clock.settle()
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,auto,skip,${real7(WEEK_RESETS)}`))
   expect((await bash($)).deny).toBe(STOP([FW(92)]))
   expect(w.asked).toHaveLength(1)
 })

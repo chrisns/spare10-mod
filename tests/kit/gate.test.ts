@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { ToolCallResult } from 'claude-code'
 import { atText, debugLine, factsOf, notice, questionText, resumeReply, stopReply, stopText } from '../../hooks/core/text.ts'
-import { HOUR, OPENS, RESETS, SKIP, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, slowAsk, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, OPENS, RESETS, SKIP, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, real5, slowAsk, step, stopRec, typed, world } from '../helpers/world.ts'
 
 // The gate through the engine (design 11.4, gate.test.ts): one question for every held loop,
 // every answer class, the carrier, the hand-off, decisions from another copy, forks and failures.
@@ -73,7 +73,7 @@ test('Stop here: parked loops are denied, later calls denied and steps refused, 
   expect((await bash($, 'a1')).deny).toBe(STOP)
   await w.clock.advance(1000)
   w.envSetDelayMs = 0
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect((await bash($)).deny).toBe(STOP)
   expect((await bash($, 'a1')).deny).toBe(STOP)
   const refused = await drain($, step())
@@ -427,7 +427,7 @@ test('a question stopped by /spare10 stop before its dialog arrives: the late di
   await w.clock.advance(1000)
   await w.clock.settle()
   expect(w.asked).toEqual([]) // no dialog is left whose Stop here or Resume nobody reads
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect((await bash($, 'a1')).deny).toBe(STOP)
 })
 
@@ -496,7 +496,7 @@ test('after five hand-offs the next lost raiser settles the question as Stop her
   expect(w.asked).toHaveLength(6)
   expect(bg?.deny).toBe(STOP) // the live waiter is refused
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 1500, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 1500, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.ran).toEqual([])
   expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true, lead: LEAD }))

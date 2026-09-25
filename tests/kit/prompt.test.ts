@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { atText, factsOf, notStarted, notice, questionText, resumeContext } from '../../hooks/core/text.ts'
-import { OPENS, RESETS, SKIP, bash, begin, drain, step, stopRe, typed, world } from '../helpers/world.ts'
+import { OPENS, RESETS, SKIP, bash, begin, drain, real5, step, stopRe, typed, world } from '../helpers/world.ts'
 
 // The person's prompts in hold mode (design B8 to B11, 11.4 prompt.test.ts).
 
@@ -31,7 +31,7 @@ test('Stop here drops the prompt with the reason, leaves the session stopped, an
   expect(r).toEqual({ drop: notStarted(F93) })
   await w.clock.settle()
   expect(w.prompts).toEqual([])
-  expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', 'five_hour,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', `five_hour,auto,skip,${real5(RESETS)}`))
   expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: false, lead: LEAD }))
   expect(w.fills).toEqual(['hello'])
   await drain($, step())
@@ -119,7 +119,7 @@ test('a prompt from a remote surface (the bridge) asks, Stop drops it, and the l
   expect(w.prompts).toEqual([])
   expect(w.fills).toEqual([]) // the text was typed on another surface: it never lands in this box
   // Stopped now: a bridge prompt still asks, and Resume lets it in with the resume note.
-  expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', 'five_hour,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', `five_hour,auto,skip,${real5(RESETS)}`))
   w.answer = 'Resume'
   expect(await $.prompt.submit(typed('go on', 'bridge'))).toMatchObject({ text: 'go on' })
   expect(w.asked).toHaveLength(2)

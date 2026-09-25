@@ -76,10 +76,6 @@ See [Skip near the reset](#skip-near-the-reset).
 
 ## Screenshots
 
-These screenshots show spare10-mod 0.1. The screenshots for 0.2 are not ready yet.
-In 0.2, the report also has the weekly rows, the `opens` rows and the `at the reset` row.
-After **Stop here**, the badge and the notice also show the time when the stop ends.
-
 The badge at the right of the prompt footer, and the `/spare10` report:
 
 ![The /spare10 report](docs/images/status.png)
@@ -88,9 +84,16 @@ At the reserve, spare10 holds the work and asks you:
 
 ![The question at the reserve](docs/images/question.png)
 
-After **Stop here**, the work ends at its next step and the session stays open:
+After **Stop here**, the work stops until the reserve opens, 20 min before the reset:
 
 ![The session after Stop here](docs/images/stopped.png)
+
+When the reserve opens, spare10 continues the stopped work by itself:
+
+![The work continues when the reserve opens](docs/images/resumed.png)
+
+The last three screenshots use a test reading from `/spare10 simulate`.
+So they show `(test)` and a test window.
 
 ## What spare10 does
 
@@ -508,8 +511,9 @@ spare10: nothing to resume. The reset is near, so your 10% reserve is open until
 
 If the other window is in its reserve and not open, `/spare10 stop` stops that window only.
 
-A stop can be past its end, but not yet continued by spare10.
-Then `/spare10 resume` and `/spare10 stop` end the stop, and spare10 sends no message to Claude.
+A stop can be past its end before spare10 continues it.
+If the stop no longer holds work, `/spare10 resume` ends it, and spare10 sends no message to Claude.
+If no window is in its reserve and not open, `/spare10 stop` does the same.
 After a reset, `/spare10 resume` replies `spare10: the 5-hour window reset, and the stop is over. Type a prompt to continue.`
 After a reset, `/spare10 stop` replies `spare10: the stop ended at the reset. spare10 will not continue the stopped work.`
 When the reserve opened, the replies are these:
@@ -518,6 +522,54 @@ When the reserve opened, the replies are these:
 spare10: the 5-hour window resets at 14:00. Your 10% reserve is open until then, and the stop is over. Type a prompt to continue.
 spare10: the stop is over, because the reset is near. Your 10% reserve is open until 14:00. spare10 will not continue the stopped work.
 ```
+
+A window can be in its reserve again at that time.
+For example, a real reading reached the reserve after the stop.
+Then `/spare10 stop` ends the old stop and stops that window at once, also with a pause prompt.
+The new stop keeps the stopped work of the old stop.
+The reply names no reset and no open reserve, because none came:
+
+```
+spare10: stopped at the reserve until 13:40, 20 min before the reset. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.
+```
+
+During a stop, `/spare10 stop` also adds each window that reached its reserve after the stop.
+
+A stop can reach its end while its window still holds work.
+This happens when a test window ends over a real reading in the reserve.
+It also happens when you lower an open time after the stop, for example to 0.
+Then the stop continues to hold, also with a pause prompt.
+spare10 refuses the calls of Claude, and a prompt asks you first, as during the stop.
+With **Continue at the reset** on, spare10 extends the stop at its next check.
+The extension stops each window that is in its reserve at that time.
+This can be a window that started after the stop, such as the next 5-hour window during a weekly stop.
+With **Continue at the reset** off, the stop holds until the reserve of that window opens, or until the reset.
+`/spare10 resume` ends the stop and lets you continue on the reserve.
+`/spare10 stop` keeps the stop and replies with its end, such as `spare10: already stopped until 13:40.`
+With **Continue at the reset** off, the stop can now last until the reset.
+Then the reply is `spare10: already stopped.`
+
+A stop holds past its end only when all of these are true:
+
+- The stop ends when a reserve opens, or you chose it on a test reading.
+- The real reading of the window was in the reserve when the stop took that window.
+  The stop takes a window when you choose the stop, or when spare10 extends it.
+  A `/spare10 stop` during the stop also takes each window in its reserve.
+  A test reading on top of it does not count.
+- The real reading is still in the same window and in the reserve.
+  Its reserve is not open, and you did not choose **Resume**.
+
+The stop record keeps the reset time of that real reading.
+spare10 compares it with the reset time of the real reading now, so it knows the window.
+If one of the two reset times is not known, spare10 cannot see the window.
+Then the stop holds while that reading is in the reserve.
+
+So the stop still holds after a plugin reload, and after you change an open time.
+A change in `/config` reloads the plugin.
+A trip in a later window asks you again.
+A real reading that reaches the reserve after the stop also asks you again.
+With a pause prompt, spare10 tells Claude again in these two cases.
+To stop that work too, run `/spare10 stop`.
 
 ### How long a choice lasts
 
@@ -664,6 +716,11 @@ spare10 also writes some variables into the process environment:
   The tags name the windows of the stop.
   They also tell spare10 whether the stop held work, and whether to continue it at the reset.
   The tag `skip` tells spare10 that the stop ends when the reserve opens, with no margin.
+  The tags `real_five_hour` and `real_seven_day` say that the real reading of that window was in the reserve when the stop took the window.
+  Each tag also has the reset time of that reading in milliseconds, such as `real_five_hour:1790262000000`.
+  A tag with no time means that spare10 did not know the reset time.
+  Only a stop with the tag `skip` or `test` has them.
+  With them, a stop can hold past its end, as [The `/spare10` command](#the-spare10-command) explains.
   A value from spare10-mod 0.1 still stops, but never continues by itself.
   It holds no work while a reserve is open.
 - `SPARE10_HEADLESS=stop` goes to child processes, as [Scope](#scope) explains.
@@ -909,6 +966,7 @@ After the reading trips, a failure holds or refuses the step.
 42. **Unattended `stop` and `prompt` runs spend an open reserve.** Set `SPARE10_LAST_MINUTES=0` and `SPARE10_WEEKLY_LAST_HOURS=0` for runs that must never spend a reserve.
 43. **The open time uses the clock of your computer.** A clock that runs fast opens the reserve early by the same amount. The work then still uses the reserve of the window that ends.
 44. **spare10 opens a reserve only when it knows the reset time.** A reading without a reset time keeps the guard until the reset.
+45. **With a pause prompt, a stop can end while a window is still in its reserve.** This can happen when a stop covers both windows, or a test window over the real quota. It can also happen after you lower an open time, or when a reset time moves. A quota read that fails as you type `/spare10 stop` can also end it. Without a pause prompt, spare10 then asks you again. With a pause prompt, spare10 tells Claude again to wind down, and the work continues.
 
 ## Develop
 
@@ -956,6 +1014,7 @@ tests/kit/headless-wait.test.ts  kit tests of the unattended wait policy
 tests/kit/skip.test.ts           kit tests of the reserve that opens near the reset
 tests/kit/skip-hold.test.ts      kit tests of held work and questions near the reset
 tests/kit/skip-stop.test.ts      kit tests of stops, commands, the badge and the report near the reset
+tests/kit/stop-past.test.ts      kit tests of a stop that holds past its end, also after a reload, and of /spare10 stop over a stop
 .fixtures/stophook.json          a Stop hook for live check LC3
 docs/live-checks.md              the live checks, as a runbook
 .claude/CLAUDE.md                notes for Claude Code. Not at the root, where validate --strict warns.
@@ -1036,8 +1095,10 @@ spare10: test reading set to 95% used, resets 14:22. It can only raise the real 
 
 ### Live checks
 
-The kit cannot test the dialog, the 10 s host limit, a reload or a `--bg` session.
+The kit cannot test the dialog, the 10 s host limit or a `--bg` session.
 Only a real interactive session can.
+The kit acts out a reload with a fresh world and a preset value, as `tests/kit/stop-past.test.ts` does.
+A real reload is still a live check.
 Run the checks in [docs/live-checks.md](docs/live-checks.md) before each release and after each update of Claude Code.
 
 ## License

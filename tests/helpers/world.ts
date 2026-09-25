@@ -73,7 +73,8 @@ import type {
 // { chunks, text }. measure(pct?, changed?, resetsAt?, week?) builds a SessionMeasureInput, with a
 // seven_day entry when week has a pct. pastDue(w, iso, margin?) moves the clock one tick past the due time of a
 // window that resets at iso. advanceChunked(w, ms) moves in steps of at most 48 h. stopRec(sid, until,
-// at, tags?) is a 0.2 SPARE10_STOPPED value, stopRe(sid, tags?) the same as a RegExp. typed(text,
+// at, tags?) is a 0.2 SPARE10_STOPPED value, stopRe(sid, tags?) the same as a RegExp. real5(reset) and
+// real7(reset) are its real tags, with the reset of the real reading (TS1). typed(text,
 // kind?, turnId?) builds a whole PromptSubmitInput, cmd(args, kind?) a whole CommandRunInput.
 // pastOpen(w, iso?) moves the clock one tick past a skip start (OPENS by default).
 // Inline plugins: `above` (prepend) settles above a Bash call whose command starts with `abandon`
@@ -528,6 +529,12 @@ const msOf = (t: number | string): number => (typeof t === 'number' ? t : Date.p
 export function stopRec(sid: string, until: number | string, at: number | string, tags = 'five_hour,auto'): string {
   return `${sid} ${msOf(until)} ${msOf(at)} ${tags}`
 }
+
+/** TS1: a 5-hour real tag as spare10 writes it: the reset of the real reading when the stop took the entry. */
+export const real5 = (reset: number | string): string => `real_five_hour:${msOf(reset)}`
+
+/** TS1: the same for the weekly window. */
+export const real7 = (reset: number | string): string => `real_seven_day:${msOf(reset)}`
 
 /** A 0.2 SPARE10_STOPPED value of this session as a RegExp: any times, these tags (any when not given). */
 export function stopRe(sid: string, tags?: string): RegExp {

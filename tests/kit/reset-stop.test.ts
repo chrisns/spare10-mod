@@ -18,6 +18,7 @@ import {
   drain,
   measure,
   pastDue,
+  real5,
   step,
   stopRec,
   typed,
@@ -1033,7 +1034,7 @@ test('a Stop on a test reading that borrowed the reset of a real reading in the 
   w.release('Stop here')
   expect((await held).deny).toContain('spare10: the user stopped work at the quota reserve (')
   await w.clock.settle()
-  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, 'five_hour,work,auto,test'))
+  expect(rec(w)).toEqual(want('S1', RESETS_MS, T0, `five_hour,work,auto,test,${real5(RESETS)}`))
   await w.clock.set(RESETS_MS + TEST_MARGIN + TICK)
   expect(w.submitted).toEqual([])
   await w.clock.set(DUE - 1)
@@ -1107,7 +1108,8 @@ test('an extension over two gating kinds lasts until the later reset, and refuse
 
 for (const verb of ['resume', 'stop'] as const) {
   for (const offset of [500, 1500]) {
-    test(`/spare10 ${verb} while the tick extends the stop (envGetDelayMs, ${offset} ms after the due tick): the stop stays over`, async ($, on) => {
+    const outcome = verb === 'resume' ? 'the stop stays over' : 'the extension never stands, and a new stop holds the weekly window'
+    test(`/spare10 ${verb} while the tick extends the stop (envGetDelayMs, ${offset} ms after the due tick): ${outcome}`, async ($, on) => {
       const w = world(on, { spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
       await begin($, w)
       await loopStop($, w)
@@ -1118,11 +1120,24 @@ for (const verb of ['resume', 'stop'] as const) {
       await w.clock.advance(offset) // 500: before its extension starts. 1500: during its extension's read
       const reply = $.command.run(cmd(verb))
       for (let i = 0; i < 10; i += 1) await w.clock.advance(500)
-      expect((await reply).text).toBe(verb === 'stop' ? STOP_OVERDUE : RESUME_OVERDUE)
-      w.envGetDelayMs = {}
-      await w.clock.advance(10 * TICK)
-      expect(w.env.has('SPARE10_STOPPED')).toBe(false) // the person was told the stop is over: it is
-      expect(count(transcript(w), stopTakenOver())).toBe(1)
+      if (verb === 'resume') {
+        expect((await reply).text).toBe(RESUME_OVERDUE)
+        w.envGetDelayMs = {}
+        await w.clock.advance(10 * TICK)
+        expect(w.env.has('SPARE10_STOPPED')).toBe(false) // the person was told the stop is over: it is
+        expect(count(transcript(w), stopTakenOver())).toBe(1)
+      } else {
+        // The weekly window gates now, so /spare10 stop takes the old stop over and stops the weekly
+        // window. The new stop keeps the work of the old one, and no notice says that a stop is over.
+        const at = DUE + offset // the command's sense
+        expect((await reply).text).toBe(
+          `stopped at the reserve until ${weekday(LATER_MS)}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
+        )
+        w.envGetDelayMs = {}
+        await w.clock.advance(10 * TICK)
+        expect(rec(w)).toEqual(want('S1', LATER_MS, at, 'seven_day,work,auto'))
+        expect(count(transcript(w), stopTakenOver())).toBe(0)
+      }
       expect(transcript(w).filter((t) => t.includes('The stop lasts until'))).toEqual([])
       expect(w.submitted).toEqual([])
     })

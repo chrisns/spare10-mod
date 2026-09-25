@@ -2,7 +2,8 @@
 
 This runbook lists the checks that only a real interactive session can settle.
 The kit (`claude plugin test`) runs the engine in one thread.
-It cannot test the dialog on the screen, the 10 s host limit or a reload.
+It cannot test the dialog on the screen, the 10 s host limit or a real reload.
+It acts out a reload with a fresh world and a preset value only.
 It cannot run a full `-p` run or a `--bg` session.
 
 Run the checks in tmux, so that an agent can drive the session and read the screen.

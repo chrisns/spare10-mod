@@ -23,6 +23,8 @@ import {
   newerCopy,
   pastDue,
   pastOpen,
+  real5,
+  real7,
   step,
   stopRec,
   typed,
@@ -180,7 +182,7 @@ test('nothing asks twice in the skip window', SLOW, async ($, on) => {
   await begin($, w)
   expect((await bash($)).deny).toBe(STOP(93, hhmm(R_MS)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   await pastOpen(w)
   await w.clock.settle()
   for (let i = 0; i < 5; i += 1) {
@@ -301,7 +303,7 @@ test('Stop here, then the skip start: one resume prompt with the open wording', 
   await begin($, w)
   expect((await bash($)).deny).toBe(STOP(93, hhmm(R_MS)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect(transcript(w)).toContain(stoppedSkip(`${hhmm(O_MS)}, ${LEAD}`, true))
   expect(await badgeText($)).toBe(` ■ spare10: stopped until ${hhmm(O_MS)}`)
   await w.clock.set(O_MS - TICK)
@@ -321,7 +323,7 @@ test('Stop here on a prompt question: the stop ends at the skip start, nothing i
   expect(await $.prompt.submit(typed('hello'))).toHaveProperty('drop')
   expect(questions(w)).toEqual([promptQ(93, hhmm(R_MS), `${hhmm(O_MS)}, ${LEAD}`, hhmm(O_MS))])
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,auto,skip,${real5(RESETS)}`))
   expect(transcript(w)).toContain(stoppedSkip(`${hhmm(O_MS)}, ${LEAD}`, false))
   await pastOpen(w)
   await w.clock.settle()
@@ -360,7 +362,7 @@ test('a person prompt after the skip start and before the tick takes the stop ov
   const off = at(OFF_TICK)
   expect((await bash($)).deny).toBe(STOP(93, hhmm(off)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OFF_OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OFF_OPENS, T0, `five_hour,work,auto,skip,${real5(OFF_TICK)}`))
   await w.clock.set(at(OFF_OPENS) + 5000)
   expect(await $.prompt.submit(typed('go on'))).toMatchObject({ text: 'go on' })
   expect(w.prompts.map((p) => p.context)).toEqual([[resetNoteOpen(open5(hhmm(off)))]])
@@ -429,14 +431,14 @@ test('a stop that another kind still gates at the skip start is extended until t
   await begin($, w)
   expect((await bash($)).deny).toBe(STOP(93, hhmm(R_MS)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   w.weekPct = 92
   await pastOpen(w)
   await w.clock.settle()
   expect(transcript(w)).toContain(
     `${open5(hhmm(R_MS))}, but your 10% weekly reserve is reached. The stop lasts until ${wk(WEEK_O_MS)}, ${WEEK_LEAD}.`,
   )
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, `seven_day,work,auto,skip,${real7(WEEK_RESETS)}`))
   expect(w.submitted).toEqual([])
   expect((await bash($)).deny).toBe(STOP(92, wk(WEEK_MS), true))
 })
@@ -496,7 +498,7 @@ test('autoResume off: Stop here ends at the skip start, and the next prompt goes
   await begin($, w)
   expect((await bash($)).deny).toBe(STOP(93, hhmm(R_MS)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,skip,${real5(RESETS)}`))
   expect(transcript(w)).toContain(stoppedSkip(`${hhmm(O_MS)}, ${LEAD}`, false))
   expect(await badgeText($)).toBe(` ■ spare10: stopped until ${hhmm(O_MS)}`) // a skip stop shows its end with autoResume off too
   expect((await report($))[2]).toBe(`  ■ stopped        you chose Stop here, until ${hhmm(O_MS)}. ${AGAIN}`)
@@ -554,7 +556,7 @@ test('autoResume off, a test reading over a real trip: Stop here after the test 
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(95, hhmm(T0 + 22 * MIN)))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 3 * MIN, 'five_hour,work,skip')) // the real kind, no test tag
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 3 * MIN, `five_hour,work,skip,${real5(RESETS)}`)) // the real kind, no test tag
   expect(transcript(w)).toContain(stoppedSkip(`${hhmm(O_MS)}, ${LEAD}`, false))
   expect((await bash($)).deny).toBe(STOP(92, hhmm(R_MS))) // refused on the real reading, no new question
   expect(w.asked).toHaveLength(1)
@@ -629,7 +631,7 @@ test('/spare10 stop inside the 5-hour skip window with the weekly window in the 
   expect(await run($, 'stop')).toBe(
     `stopped at the reserve until ${wk(WEEK_O_MS)}, ${WEEK_LEAD}. Then spare10 continues any stopped work. ${AGAIN}`,
   )
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, now, 'seven_day,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, now, `seven_day,auto,skip,${real7(WEEK_RESETS)}`))
   expect((await bash($)).deny).toBe(STOP(92, wk(WEEK_MS), true))
 })
 
@@ -645,7 +647,7 @@ test('/spare10 stop inside the 5-hour skip window with a weekly consent stops th
   expect(await run($, 'stop')).toBe(
     `stopped at the reserve until ${wk(WEEK_O_MS)}, ${WEEK_LEAD}. Then spare10 continues any stopped work. ${AGAIN}`,
   )
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, now, 'seven_day,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, now, `seven_day,auto,skip,${real7(WEEK_RESETS)}`))
   expect(w.env.has('SPARE10_WEEKLY_CONSENT')).toBe(false)
   expect((await bash($)).deny).toBe(STOP(92, wk(WEEK_MS), true))
 })

@@ -104,7 +104,7 @@ async function report($: Engine): Promise<string[]> {
 
 const field = (lines: string[], label: string): string | undefined => lines.find((l) => l.startsWith(`  · ${label} `))
 const phaseLine = (lines: string[]): string | undefined => lines[2]
-const stoppedRe = (sid: string): RegExp => new RegExp(`^${sid} ${O} \\d+ [a-z_,]+$`) // 0.2: the tags follow. An auto stop ends at the skip start
+const stoppedRe = (sid: string): RegExp => new RegExp(`^${sid} ${O} \\d+ [a-z_,:0-9]+$`) // 0.2: the tags follow. An auto stop ends at the skip start
 
 /**
  * 2.7: the four 0.2 rows, with the weekly window watched and no weekly reading, and the two span rows of

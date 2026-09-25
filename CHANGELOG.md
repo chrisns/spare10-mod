@@ -6,6 +6,8 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
 ### Added
 
 - **Open reserve near the reset.** Shortly before a window resets, spare10 lets all work use its reserve and asks nothing, because the quota refreshes soon. By default this is the last 20 minutes of the 5-hour window and the last 8 hours of the weekly window. Each window has its own time. A weekly trip still holds work in the last 20 minutes of the 5-hour window. The new options Open reserve before 5-hour reset (min) and Open weekly reserve before weekly reset (h) set these times. 0 switches each one off. `SPARE10_LAST_MINUTES` and `SPARE10_WEEKLY_LAST_HOURS` override them for one run. A reading without a reset time keeps the guard.
@@ -28,9 +30,11 @@ The project uses [Semantic Versioning](https://semver.org/).
 - **Badge.** A stopped session shows the time when the stop ends: `■ spare10: stopped until 14:40`. A new row `↻ spare10: reserve open until 15:00` shows while a reserve is open.
 - **Report.** `/spare10` shows the weekly reserve, the weekly reading, the weekly consent and what happens at the reset. It also shows the open times and where they come from. It has a new phase `open`. Times more than a day away show days.
 - **Child runs.** A guarded session also gives its `claude -p` children `SPARE10_HEADLESS=stop` when its own policy is `wait`.
-- **Stop record.** `SPARE10_STOPPED` has a new form. The tag `skip` marks a stop that ends when the reserve opens. A value from 0.1 still stops, and never continues by itself. It holds no work while a reserve is open.
+- **Stop record.** `SPARE10_STOPPED` has a new form. The tag `skip` marks a stop that ends when the reserve opens. The tags `real_five_hour` and `real_seven_day` mark a real reading that was in the reserve when the stop took that window. Each tag keeps the reset time of that reading, such as `real_five_hour:1790262000000`. A tag with no time has an unknown reset time. A value from 0.1 still stops, and never continues by itself. It holds no work while a reserve is open.
 - **Unanswered question.** With Continue at the reset on, spare10 closes an unanswered question when the reserve opens or shortly after the reset. Held work then continues, unless a reserve is still reached. Before, the question waited with no time limit.
 - **Question time limits.** With Continue at the reset on, the warning says that spare10 continues the work at the time in the question.
+- **A stop that ends too early.** A test window can end over a real reading in the reserve. You can also lower an open time after a stop. If the stop then ends while its window still holds work, the stop continues to hold. This also applies with a pause prompt. spare10 refuses the calls of Claude, and a prompt asks you first. With Continue at the reset on, spare10 extends the stop at its next check. The extension stops each window that is in its reserve then, also a window that started after the stop. With Continue at the reset off, the stop holds until the reserve of that window opens, or until the reset. `/spare10 resume` ends it and continues on the reserve. `/spare10 stop` keeps it. The stop holds only while the real reading is in the reserve, in the window of the stop. A stop takes a window when you choose it, when spare10 extends it, or at a later `/spare10 stop`. spare10 knows the window from the reset time in the stop record. So the stop still holds after a plugin reload or a change of an open time. A trip in a later window asks again, and so does a later trip. With a pause prompt, spare10 tells Claude again.
+- **`/spare10 stop` after the end of a stop.** A stop can be past its end before spare10 continues it. If a window is in its reserve then, `/spare10 stop` stops that window at once, also with a pause prompt. The new stop keeps the stopped work of the old stop. During a stop, `/spare10 stop` adds each window that reached its reserve after the stop. The reply names a reset or an open reserve only when one came.
 
 ## [0.1.0] - 2026-09-24
 
@@ -92,5 +96,6 @@ These parts of spare10 v0.5.0 are not in spare10-mod, because the mod runs insid
 - the `--refresh` option, bundle pinning and status-line chaining
 - the list of stopped background runs. Use `claude agents` instead.
 
-[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/chrisns/spare10-mod/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chrisns/spare10-mod/releases/tag/v0.1.0

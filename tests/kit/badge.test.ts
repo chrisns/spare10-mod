@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, ElementQuery, FoundElement } from 'claude-code/testing'
 import type { RenderSurface } from 'claude-code'
-import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, real5, stopRec, typed, world } from '../helpers/world.ts'
 import { atText } from '../../hooks/core/text.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -646,7 +646,7 @@ for (const reason of ['clear', 'resume'] as const) {
     await w.clock.advance(300) // before the first pulse tick: only the end's own timer redraws
     expect(w.invalidations).toBeGreaterThan(switched)
     expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
-    expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip')) // the record stays: it names S1
+    expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`)) // the record stays: it names S1
   })
 }
 

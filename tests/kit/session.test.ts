@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { VERSION } from '../../hooks/core/text.ts'
-import { HOUR, LATER, OPENS, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, real5, step, stopRec, typed, world } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
 // Session set-up, scope, per-run overrides, start-up warnings, env consent and stopped, and /clear
@@ -433,7 +433,7 @@ test('stopped is stamped with the session id, so a new id after /clear asks agai
   await begin($, w)
   expect((await bash($)).deny).toBe(stopText(10, 93))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   expect((await bash($)).deny).toBe(stopText(10, 93))
   expect(w.asked).toHaveLength(1)
   expect(await status($)).toContain(
@@ -532,7 +532,7 @@ test('/clear while a question is open keeps the question, and its Stop is stampe
   w.release('Stop here')
   expect((await held).deny).toBe(stopText(10, 93))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
   // Stopped applies to the new conversation: refused at once, no second question.
   expect((await bash($)).deny).toBe(stopText(10, 93))
   expect(w.asked).toHaveLength(1)
@@ -552,7 +552,7 @@ test('/clear while a question is open: a loop of the new conversation joins it',
   expect((await first).deny).toBe(stopText(10, 93))
   expect((await second).deny).toBe(stopText(10, 93))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0, 'five_hour,work,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
 })
 
 test('/clear while a question is open: Resume still applies to the held loops', async ($, on) => {
@@ -970,7 +970,7 @@ test('/spare10 stop right after /clear is never undone by the move of the stamp'
   w.envGetDelayMs = {}
   await w.clock.advance(2000) // the stale read returns, and the second move runs
   expect(w.env.has('SPARE10_CONSENT')).toBe(false)
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0 + 300, 'five_hour,auto,skip'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0 + 300, `five_hour,auto,skip,${real5(RESETS)}`))
 })
 
 test('after a reload and then /clear, the consent of this process counts before its stamp moves', async ($, on) => {
