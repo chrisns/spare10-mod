@@ -13,7 +13,8 @@ export function badgeLabel(reserve: number, test: boolean): string {
 
 /**
  * The table in B21. Only the tripped row pulses, by swapping its glyph for one space. `until`: the
- * clock at which a stop or an open question continues by itself (2.6).
+ * clock at which a stop or an open question continues by itself, or, in the open row, the reset that
+ * ends the open reserve first (2.6).
  */
 export function badgeView(phase: Phase, i: { reserve: number; test: boolean; mode: Mode; blink: boolean; until?: string }): View {
   const label = badgeLabel(i.reserve, i.test)
@@ -29,6 +30,8 @@ export function badgeView(phase: Phase, i: { reserve: number; test: boolean; mod
       return { text: `● ${label}`, color: 'success', pulse: false }
     case 'consented':
       return { text: `⨯ ${label}`, color: 'warning', pulse: false }
+    case 'open':
+      return { text: `↻ ${label}: reserve open${until}`, color: 'warning', pulse: false }
     case 'stopped':
       return { text: `■ ${label}: stopped${until}`, color: 'warning', pulse: false }
     case 'asking':

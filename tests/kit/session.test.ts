@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { VERSION } from '../../hooks/core/text.ts'
-import { HOUR, LATER, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
 // Session set-up, scope, per-run overrides, start-up warnings, env consent and stopped, and /clear
@@ -20,13 +20,21 @@ const until = (ms = RESETS_MS): string => `until ${clock(ms)}`
 const pf = (used: number, ms = RESETS_MS): string => `${num(used)}% used · ${num(Math.max(0, 100 - used))}% left · resets ${clock(ms)}`
 const mf = (reserve: number, used: number, ms = RESETS_MS): string =>
   `into your ${num(reserve)}% reserve · ${num(Math.max(0, 100 - used))}% of quota left · resets ${clock(ms)}`
-// With autoResume on (the 0.2 default) a question says what Stop here and no answer mean (2.2).
-const loopQuestion = (reserve: number, used: number, ms = RESETS_MS, auto = true): string =>
+// With autoResume on (the 0.2 default) a question says what Stop here and no answer mean (2.2). With the
+// shipped spans that is the skip start, 20 min before the reset, with its lead (skip 2.2).
+const SPAN = 20 * 60_000
+const OPENS_MS = Date.parse(OPENS)
+const opens = (ms: number, end = 'the reset'): string => `${clock(ms - SPAN)}, 20 min before ${end}`
+const loopQuestion = (reserve: number, used: number, ms = RESETS_MS, auto = true, end = 'the reset'): string =>
   `Your ${num(reserve)}% reserve is reached: ${pf(used, ms)}. All work is on hold. Continue on the reserve ${until(ms)}?` +
-  (auto ? ` If you choose Stop here or do not answer, the work waits ${until(ms)}. Then spare10 continues it, unless a reserve is still reached.` : '')
+  (auto ? ` If you choose Stop here or do not answer, the work waits until ${opens(ms, end)}. Then spare10 continues it, unless a reserve is still reached.` : '')
+// The D0.2 question: spans of 0 (a failed env read, B47) continue at the reset.
+const resetQuestion = (reserve: number, used: number, ms = RESETS_MS): string =>
+  `Your ${num(reserve)}% reserve is reached: ${pf(used, ms)}. All work is on hold. Continue on the reserve ${until(ms)}? ` +
+  `If you choose Stop here or do not answer, the work waits ${until(ms)}. Then spare10 continues it, unless a reserve is still reached.`
 const promptQuestion = (reserve: number, used: number, ms = RESETS_MS): string =>
   `Your ${num(reserve)}% reserve is reached: ${pf(used, ms)}. spare10 holds your prompt and any other work. Continue on the reserve ${until(ms)}? ` +
-  `If you do not answer, all of it continues after ${clock(ms)}, unless a reserve is still reached. Stop here gives your prompt back and pauses other work ${until(ms)}.`
+  `If you do not answer, all of it continues at ${opens(ms)}, unless a reserve is still reached. Stop here gives your prompt back and pauses other work ${until(ms - SPAN)}.`
 const ARMED = '● armed spare10 steps in at 90% used, or at 90% used of the weekly window.'
 const AUTO_OFF = { SPARE10_AUTO_RESUME: 'off' } // the 0.1 behaviour: no release at the reset
 const stopText = (reserve: number, used: number, ms = RESETS_MS): string =>
@@ -44,7 +52,7 @@ const NOT_GUARDED = 'this run is not guarded. Nothing changed.'
 const W_FLAG =
   'function hooks are on only in this shell. Background sessions and pane teammates start without spare10. Put CLAUDE_CODE_ENABLE_FUNCTION_HOOKS in the env block of ~/.claude/settings.json.'
 const timeoutWarning = (name: string): string =>
-  `questions here continue by themselves after a time limit (${name}). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the reset.`
+  `questions here continue by themselves after a time limit (${name}). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the time that the question names.`
 const consentWarning = (raw: string): string =>
   `SPARE10_CONSENT="${raw}" names a time after this 5-hour window. spare10 ignores it.`
 const iso = (ms: number): string => new Date(ms).toISOString()
@@ -71,9 +79,9 @@ async function badgeOf($: Engine): Promise<{ text: string; color: unknown }> {
 // ---- the 11.4 session table ----
 
 test('options arrive typed and frozen with the defaults', async ($, on) => {
-  // The kit loads the plugin with the manifest defaults (reserve 10, weeklyReserve 10, pausePrompt "",
-  // autoResume true, headless off, scope all, badge true). A default that did not fit its field would
-  // fail this load (gap-10 1.5).
+  // The kit loads the plugin with the manifest defaults (reserve 10, weeklyReserve 10, lastMinutes 20,
+  // weeklyLastHours 8, pausePrompt "", autoResume true, headless off, scope all, badge true). A default
+  // that did not fit its field would fail this load (gap-10 1.5).
   const w = world(on, { pct: 89.9 })
   await begin($, w)
   expect((await bash($)).result).toBe('ran')
@@ -84,6 +92,8 @@ test('options arrive typed and frozen with the defaults', async ($, on) => {
   expect(lines).toContain(ARMED)
   expect(lines).toContain('· reserve 10% of the 5-hour window (from /config)')
   expect(lines).toContain('· weekly reserve 10% of the weekly window (from /config)')
+  expect(lines).toContain('· reserve opens in the last 20 min of the 5-hour window (from /config)')
+  expect(lines).toContain('· weekly opens in the last 8 h of the weekly window (from /config)')
   expect(lines).toContain('· at the reserve stop and ask you')
   expect(lines).toContain('· at the reset continue by itself (from /config)')
   expect(lines).toContain('· consent none')
@@ -98,6 +108,11 @@ test('options arrive typed and frozen with the defaults', async ($, on) => {
   w.pct = 90
   const held = bash($)
   await w.clock.settle()
+  // Skip 2.2, the kit default verbatim: 90% used at T0, reset 15:00 UTC.
+  expect(loopQuestion(10, 90)).toBe(
+    `Your 10% reserve is reached: 90% used · 10% left · resets ${clock(RESETS_MS)}. All work is on hold. Continue on the reserve until ${clock(RESETS_MS)}? ` +
+      `If you choose Stop here or do not answer, the work waits until ${clock(OPENS_MS)}, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.`,
+  )
   expect(w.asked).toEqual([{ question: loopQuestion(10, 90), header: 'spare10', labels: ['Stop here', 'Resume'] }])
   expect(w.ran).toEqual(['Bash:main'])
   w.release('Resume')
@@ -125,7 +140,7 @@ test('SPARE10_RESERVE=15 moves the trip point for this run', async ($, on) => {
   expect((await held).deny).toBe(stopText(15, 85))
   await w.clock.settle()
   expect(transcript(w)).toContain(
-    `stopped at your 15% reserve ${until()}. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.`,
+    `stopped at your 15% reserve until ${opens(RESETS_MS)}. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.`,
   )
 })
 
@@ -418,15 +433,15 @@ test('stopped is stamped with the session id, so a new id after /clear asks agai
   await begin($, w)
   expect((await bash($)).deny).toBe(stopText(10, 93))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS_MS, T0, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
   expect((await bash($)).deny).toBe(stopText(10, 93))
   expect(w.asked).toHaveLength(1)
   expect(await status($)).toContain(
-    `■ stopped you chose Stop here. spare10 continues the work after ${clock(RESETS_MS)}. Type a prompt to be asked again, or run /spare10 resume.`,
+    `■ stopped you chose Stop here. spare10 continues the work at ${clock(OPENS_MS)}. Type a prompt to be asked again, or run /spare10 resume.`,
   )
   await clear($, w, 'S2')
   expect(await status($)).toContain('⚠ tripped spare10 holds the next step and asks you.')
-  expect(await badgeOf($)).not.toEqual({ text: ` ■ spare10: stopped ${until()}`, color: 'warning' })
+  expect(await badgeOf($)).not.toEqual({ text: ` ■ spare10: stopped ${until(OPENS_MS)}`, color: 'warning' })
   // The next prompt asks again, with the prompt wording, and Resume lets it in without the resume
   // note: this conversation was never stopped.
   w.answer = 'hang'
@@ -517,7 +532,7 @@ test('/clear while a question is open keeps the question, and its Stop is stampe
   w.release('Stop here')
   expect((await held).deny).toBe(stopText(10, 93))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', RESETS_MS, T0, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0, 'five_hour,work,auto,skip'))
   // Stopped applies to the new conversation: refused at once, no second question.
   expect((await bash($)).deny).toBe(stopText(10, 93))
   expect(w.asked).toHaveLength(1)
@@ -537,7 +552,7 @@ test('/clear while a question is open: a loop of the new conversation joins it',
   expect((await first).deny).toBe(stopText(10, 93))
   expect((await second).deny).toBe(stopText(10, 93))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', RESETS_MS, T0, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0, 'five_hour,work,auto,skip'))
 })
 
 test('/clear while a question is open: Resume still applies to the held loops', async ($, on) => {
@@ -584,13 +599,13 @@ test('a test reading set before /clear still trips after it', async ($, on) => {
   await $.command.run(cmd('simulate 95'))
   await clear($, w, 'S2')
   expect((await bash($)).deny).toBe(stopText(10, 95))
-  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95)])
+  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, RESETS_MS, true, 'the test window ends')])
 })
 
 // ---- 2.5: window end ----
 
 test('stopped ends at the window end, and the next window asks again', async ($, on) => {
-  const w = world(on, { pct: 93, answer: 'Stop here', env: AUTO_OFF })
+  const w = world(on, { pct: 93, answer: 'Stop here', env: AUTO_OFF, spans: 'off' }) // the D0.2 reset timing
   await begin($, w)
   expect((await bash($)).deny).toBe(stopText(10, 93))
   await w.clock.settle()
@@ -825,7 +840,7 @@ test('after /clear in tell mode a person prompt asks again until the new main lo
   })
   expect(w.asked.map((a) => a.question)).toEqual([
     `Your 10% reserve is reached: ${pf(93)}. spare10 holds your prompt. Continue on the reserve ${until()}? ` +
-      `If you do not answer, your prompt goes in after ${clock(RESETS_MS)}, unless a reserve is still reached. Stop here gives it back to you.`,
+      `If you do not answer, your prompt goes in at ${opens(RESETS_MS)}, unless a reserve is still reached. Stop here gives it back to you.`,
   ])
   await w.clock.settle()
   expect(w.env.has('SPARE10_STOPPED')).toBe(false) // B13: a tell-mode Stop sets no stop
@@ -841,8 +856,12 @@ test('an unreadable SPARE10_* value falls back to the options, and the gate stil
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
-  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 93)]) // the reserve of the options
+  // The reserve of the options. B47: the fallback has spans of 0, so the question continues at the reset.
+  expect(w.asked.map((a) => a.question)).toEqual([resetQuestion(10, 93)])
   expect(w.ran).toEqual([])
+  const lines = await status($)
+  expect(lines).toContain('· reserve opens only at the reset (spare10 could not read the env)')
+  expect(lines).toContain('· weekly opens only at the reset (spare10 could not read the env)')
   w.release('Resume')
   expect((await held).result).toBe('ran')
 })
@@ -945,13 +964,13 @@ test('/spare10 stop right after /clear is never undone by the move of the stamp'
   w.envGetDelayMs = { SPARE10_CONSENT: 200 } // the move reads the old stamp, and gets the answer late
   await w.clock.advance(300)
   expect((await $.command.run(cmd('stop'))).text).toBe(
-    `stopped at the reserve ${until()}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
+    `stopped at the reserve until ${opens(RESETS_MS)}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
   )
   expect(w.env.has('SPARE10_CONSENT')).toBe(false)
   w.envGetDelayMs = {}
   await w.clock.advance(2000) // the stale read returns, and the second move runs
   expect(w.env.has('SPARE10_CONSENT')).toBe(false)
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', RESETS_MS, T0 + 300, 'five_hour,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S2', OPENS, T0 + 300, 'five_hour,auto,skip'))
 })
 
 test('after a reload and then /clear, the consent of this process counts before its stamp moves', async ($, on) => {

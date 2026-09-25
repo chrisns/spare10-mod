@@ -1,5 +1,5 @@
 import type { Headless } from './config.ts'
-import { KINDS, RESET_MARGIN_MS, TEST_MARGIN_MS } from './reading.ts'
+import { KINDS, marginOf } from './reading.ts'
 import type { Basis, Kind } from './reading.ts'
 
 // The gate's decision table (design 4.2) and the phase precedence (3.1), written once. No $ here.
@@ -30,6 +30,8 @@ export type Snapshot = {
   mainTold: boolean
   seedOnly?: boolean // every gating kind rests on a seed (row 6a)
 }
+// consented (row 3): tripped, and no kind gates. A kind gates when it is tripped, not consented and
+// not open (B41), so a kind in its skip window passes here too.
 
 export type Verdict =
   | { kind: 'pass'; trip: boolean } // trip: inside the reserve, let through
@@ -117,10 +119,20 @@ export function consentCounts(
  * A stop. No `kinds`: a 0.1 value, which stops the 5-hour window until `windowEnd` and is never
  * continued. `windowEnd` is the `until` of 3.2. `work`: the stop held or refused a loop. `auto`:
  * autoResume was on when the stop was made. `test`: every kind of the stop was a test reading.
+ * `skip`: the until is a skip start and the stop is a skip owner, so it has no margin (skip 3.5).
  */
-export type StoppedRecord = { sessionId: string; windowEnd: number; at: number; kinds?: Kind[]; work?: boolean; auto?: boolean; test?: boolean }
+export type StoppedRecord = {
+  sessionId: string
+  windowEnd: number
+  at: number
+  kinds?: Kind[]
+  work?: boolean
+  auto?: boolean
+  test?: boolean
+  skip?: boolean
+}
 
-const TAGS = new Set(['five_hour', 'seven_day', 'work', 'auto', 'test'])
+const TAGS = new Set(['five_hour', 'seven_day', 'work', 'auto', 'test', 'skip'])
 
 /** SPARE10_STOPPED is `${sessionId} ${untilMs} ${atMs} ${tags}`, or the 0.1 `${sessionId} ${windowEndMs} ${atMs}`. Anything else is not stopped. */
 export function parseStopped(raw: string | undefined): StoppedRecord | undefined {
@@ -132,39 +144,62 @@ export function parseStopped(raw: string | undefined): StoppedRecord | undefined
   if (tags.some((t) => !TAGS.has(t))) return undefined
   const kinds = KINDS.filter((k) => tags.includes(k))
   if (kinds.length === 0) return undefined
-  return { ...rec, kinds, work: tags.includes('work'), auto: tags.includes('auto'), test: tags.includes('test') }
+  const out: StoppedRecord = { ...rec, kinds, work: tags.includes('work'), auto: tags.includes('auto'), test: tags.includes('test') }
+  if (tags.includes('skip')) out.skip = true
+  return out
 }
 
 export function formatStopped(s: StoppedRecord): string {
   const head = `${s.sessionId} ${s.windowEnd} ${s.at}`
   const kinds = KINDS.filter((k) => s.kinds?.includes(k) === true)
   if (kinds.length === 0) return head
-  const tags = [...kinds, ...(s.work === true ? ['work'] : []), ...(s.auto === true ? ['auto'] : []), ...(s.test === true ? ['test'] : [])]
+  const tags = [
+    ...kinds,
+    ...(s.work === true ? ['work'] : []),
+    ...(s.auto === true ? ['auto'] : []),
+    ...(s.test === true ? ['test'] : []),
+    ...(s.skip === true ? ['skip'] : []),
+  ]
   return `${head} ${tags.join(',')}`
 }
 
 /**
  * 3.2: a new stop keeps what an earlier 0.2 stop of the same session knew, while that stop still
  * applies, or while it is an auto stop past its end that nobody released yet (it is still in the env,
- * so its work still waits for the reset). Kinds join, the later end wins, work if either had it, test
- * only if both had it, auto and at are new.
+ * so its work still waits for the reset). Kinds join, the later end wins (a tie: the new record), work
+ * if either had it, test only if both had it, auto and at are new. `skip` is the later record's, and
+ * with `auto` only while the earlier record's due time is not after the later end (skip 3.5): a kind
+ * whose release rests on a reset never loses its margin to a skip start.
  */
 export function mergeStopped(prev: StoppedRecord | undefined, next: StoppedRecord, now: number): StoppedRecord {
   if (prev?.kinds === undefined || next.kinds === undefined) return next
   if (prev.sessionId !== next.sessionId) return next
   if (now >= prev.windowEnd && prev.auto !== true) return next // it ended by time, and nothing continues it
   const joined = [...prev.kinds, ...next.kinds]
-  return {
-    ...next,
+  const later = prev.windowEnd > next.windowEnd ? prev : next
+  const earlier = later === prev ? next : prev
+  const { skip: _skip, ...rest } = next
+  const out: StoppedRecord = {
+    ...rest,
     kinds: KINDS.filter((k) => joined.includes(k)),
-    windowEnd: Math.max(prev.windowEnd, next.windowEnd),
+    windowEnd: later.windowEnd,
     work: prev.work === true || next.work === true,
     test: prev.test === true && next.test === true,
   }
+  if (later.skip === true && (out.auto !== true || stopDue(earlier) <= later.windowEnd)) out.skip = true
+  return out
 }
 
-/** When spare10 may end a stop by itself: its end plus the margin (4.8). */
-export const stopDue = (r: StoppedRecord): number => r.windowEnd + (r.test === true ? TEST_MARGIN_MS : RESET_MARGIN_MS)
+/** When spare10 may end a stop by itself: its end plus the margin (4.8). A skip stop has no margin. */
+export const stopDue = (r: StoppedRecord): number => r.windowEnd + marginOf(r.skip === true, r.test === true)
+
+/**
+ * The skip tag of a new stop (skip 3.5): its until is a skip start of its kinds, and with autoResume on
+ * no kind of it is due later (its hold end plus margin). With autoResume off spare10 never releases the
+ * stop, so only the first part counts.
+ */
+export const skipTag = (until: number, skipStarts: readonly number[], dues: readonly number[], auto: boolean): boolean =>
+  skipStarts.includes(until) && (!auto || dues.every((d) => d <= until))
 
 /** B35: an auto 0.2 stop of this conversation whose end has passed, and that nobody released yet. */
 export function isOverdue(r: StoppedRecord | undefined, sessionId: string, endedSid: string | undefined, now: number): r is StoppedRecord {
@@ -202,13 +237,14 @@ export function joinable(outcome: 'resume' | 'stop' | 'again' | undefined, named
 /** Attended: every refused main step ends its turn. Unattended: only a repeat in the same turn. */
 export const shouldAbortTurn = (attended: boolean, refusedBefore: boolean): boolean => attended || refusedBefore
 
-export type Phase = 'off' | 'blind' | 'waiting' | 'armed' | 'consented' | 'stopped' | 'asking' | 'told' | 'reserve' | 'tripped'
+export type Phase = 'off' | 'blind' | 'waiting' | 'armed' | 'consented' | 'open' | 'stopped' | 'asking' | 'told' | 'reserve' | 'tripped'
 
 export type PhaseInput = {
   enabled: boolean
   basis: Basis
   tripped: boolean
-  consented: boolean
+  consented: boolean // tripped, and every tripped kind is consented
+  open?: boolean // tripped, no kind gates, and a kind is in its skip window (B41)
   stopped: boolean
   asking: boolean
   told: boolean
@@ -216,8 +252,9 @@ export type PhaseInput = {
 }
 
 /**
- * The breaker phase, first match: off, asking, blind, waiting, armed, consented, stopped, told, reserve,
- * tripped. `basis` is the five_hour basis, `tripped` is any watched kind (3.5).
+ * The breaker phase, first match: off, asking, blind, waiting, armed, consented, open, stopped, told,
+ * reserve, tripped. `basis` is the five_hour basis, `tripped` is any watched kind (3.5). A stop never
+ * holds an open kind (B44), so open outranks stopped.
  */
 export function phaseOf(i: PhaseInput): Phase {
   if (!i.enabled) return 'off'
@@ -225,6 +262,7 @@ export function phaseOf(i: PhaseInput): Phase {
   if (i.basis.kind === 'none' && !i.tripped) return i.basis.why === 'blind' ? 'blind' : 'waiting'
   if (!i.tripped) return 'armed'
   if (i.consented) return 'consented'
+  if (i.open === true) return 'open'
   if (i.stopped && i.attended) return 'stopped'
   if (i.told) return 'told'
   if (!i.attended) return 'reserve'

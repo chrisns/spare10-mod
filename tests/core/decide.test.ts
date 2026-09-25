@@ -16,6 +16,7 @@ import {
   parseStopped,
   phaseOf,
   shouldAbortTurn,
+  skipTag,
   stopAction,
   stopDue,
 } from '../../hooks/core/decide.ts'
@@ -398,4 +399,102 @@ test('phaseOf agrees with decide for wait', () => {
       expect(d('step')).toEqual(HOLD)
       expect(d('prompt')).toEqual(THROUGH)
     }
+})
+
+// ---- Skip near the reset (skip design 3.5, 6.3) ----
+
+const OPENS = R - 20 * 60_000 // the 5-hour skip start
+
+test('parseStopped and formatStopped carry the skip tag, last in the list', () => {
+  const skip: StoppedRecord = { sessionId: 'S1', windowEnd: OPENS, at: T0, kinds: ['five_hour'], work: true, auto: true, test: false, skip: true }
+  expect(formatStopped(skip)).toBe(`S1 ${OPENS} ${T0} five_hour,work,auto,skip`)
+  expect(parseStopped(formatStopped(skip))).toEqual(skip)
+  const all: StoppedRecord = { sessionId: 'S1', windowEnd: OPENS, at: T0, kinds: ['five_hour', 'seven_day'], work: true, auto: true, test: true, skip: true }
+  expect(formatStopped(all)).toBe(`S1 ${OPENS} ${T0} five_hour,seven_day,work,auto,test,skip`)
+  expect(parseStopped(`S1 ${OPENS} ${T0} skip,test,seven_day,auto,five_hour,work`)).toEqual(all) // any order in, a fixed order out
+  expect(parseStopped(`S1 ${OPENS} ${T0} five_hour,skip`)).toEqual({ sessionId: 'S1', windowEnd: OPENS, at: T0, kinds: ['five_hour'], work: false, auto: false, test: false, skip: true })
+  // Without the tag the record has no skip field: the D0.2 value reads as before.
+  expect('skip' in (parseStopped(`S1 ${R} ${T0} five_hour,auto`) ?? {})).toBe(false)
+  expect(formatStopped({ ...skip, skip: false })).toBe(`S1 ${OPENS} ${T0} five_hour,work,auto`)
+  expect(parseStopped(`S1 ${OPENS} ${T0} skip`)).toBeUndefined() // still needs a kind
+  expect(parseStopped(`S1 ${OPENS} ${T0} five_hour,skipped`)).toBeUndefined()
+})
+
+test('stopDue adds no margin to a skip stop, also with the test tag', () => {
+  expect(stopDue({ ...REC, windowEnd: OPENS, skip: true })).toBe(OPENS)
+  expect(stopDue({ ...REC, windowEnd: OPENS, skip: true, test: true })).toBe(OPENS)
+  expect(stopDue({ ...REC, windowEnd: OPENS, skip: false })).toBe(OPENS + 300_000)
+  // A skip stop is due, and overdue, from its skip start.
+  expect(stopAction({ record: { ...REC, windowEnd: OPENS, skip: true }, now: OPENS, sessionId: 'S1', autoResume: true, enabled: true, attended: true })).toBe('check')
+  expect(stopAction({ record: { ...REC, windowEnd: OPENS, skip: true }, now: OPENS - 1, sessionId: 'S1', autoResume: true, enabled: true, attended: true })).toBe('none')
+  expect(isOverdue({ ...REC, windowEnd: OPENS, skip: true }, 'S1', undefined, OPENS)).toBe(true)
+})
+
+test('skipTag needs a skip start at until, and with auto no later due', () => {
+  expect(skipTag(OPENS, [OPENS], [OPENS], true)).toBe(true)
+  expect(skipTag(OPENS, [OPENS], [OPENS, OPENS - 60_000], true)).toBe(true)
+  expect(skipTag(OPENS, [OPENS], [OPENS, OPENS + 30_000], true)).toBe(false) // a due 30 s after until keeps its margin
+  expect(skipTag(OPENS, [OPENS], [OPENS + 30_000], false)).toBe(true) // autoResume off: spare10 never releases it, the dues do not count
+  expect(skipTag(R, [OPENS], [R + 300_000], true)).toBe(false) // until is a reset
+  expect(skipTag(R, [OPENS], [], false)).toBe(false)
+  expect(skipTag(OPENS, [], [OPENS], true)).toBe(false)
+})
+
+test('mergeStopped takes the skip tag of the record with the later end, and drops it when the earlier due is later', () => {
+  const at = T0 + 60_000
+  const skipNext: StoppedRecord = { sessionId: 'S1', windowEnd: OPENS, at, kinds: ['five_hour'], work: false, auto: true, test: false, skip: true }
+  const realPrev: StoppedRecord = { sessionId: 'S1', windowEnd: OPENS - 2 * 60_000, at: T0, kinds: ['seven_day'], work: true, auto: true, test: false }
+  // The earlier real end is due 3 min after the skip until: no skip, so the earlier kind keeps its margin.
+  const merged = mergeStopped(realPrev, skipNext, at)
+  expect(merged).toEqual({ sessionId: 'S1', windowEnd: OPENS, at, kinds: ['five_hour', 'seven_day'], work: true, auto: true, test: false })
+  expect(stopDue(merged)).toBe(OPENS + 300_000)
+  // An earlier end that is due by the later until keeps the skip.
+  const earlyPrev = { ...realPrev, windowEnd: OPENS - 10 * 60_000 }
+  expect(mergeStopped(earlyPrev, skipNext, at).skip).toBe(true)
+  // Without auto the dues do not count: the later record's tag stands.
+  expect(mergeStopped({ ...realPrev, auto: false }, { ...skipNext, auto: false }, at).skip).toBe(true)
+  // The later end wins, with its own tag: a later reset-based prev drops the new skip tag.
+  const laterPrev = { ...realPrev, windowEnd: R }
+  expect('skip' in mergeStopped(laterPrev, skipNext, at)).toBe(false)
+  expect(mergeStopped({ ...laterPrev, skip: true }, { ...skipNext, windowEnd: OPENS - 60 * 60_000 }, at).skip).toBe(true)
+  // A tie: the new record's tag, and still only while the earlier record is due by then.
+  expect(mergeStopped({ ...realPrev, windowEnd: OPENS, skip: true }, { ...skipNext, skip: false }, at).skip).toBeUndefined()
+  expect(mergeStopped({ ...realPrev, windowEnd: OPENS, skip: true }, skipNext, at).skip).toBe(true)
+  expect(mergeStopped({ ...realPrev, windowEnd: OPENS }, skipNext, at).skip).toBeUndefined() // the reset-based record is due 5 min later
+  // No earlier record: the new record whole.
+  expect(mergeStopped(undefined, skipNext, at)).toEqual(skipNext)
+})
+
+test('phaseOf: open comes after consented and before stopped', () => {
+  const all = { stopped: true, told: true }
+  expect(phase({ ...all, open: true })).toBe('open')
+  expect(phase({ ...all, open: true, consented: true })).toBe('consented')
+  expect(phase({ ...all, open: true, asking: true })).toBe('asking')
+  expect(phase({ open: true, attended: false })).toBe('open')
+  expect(phase({ open: true, basis: BELOW, tripped: false })).toBe('armed') // open needs a trip
+  expect(phase({ open: true, enabled: false })).toBe('off')
+  expect(phase({ open: false, stopped: true })).toBe('stopped')
+  expect(phase({ stopped: true })).toBe('stopped') // absent: the D0.2 phase
+})
+
+test('phaseOf agrees with decide for open', () => {
+  // open: tripped, and no kind gates (each tripped kind is consented or open). Decide row 3 then passes,
+  // attended and unattended, whatever the stop, the mode and the policy say.
+  let checked = 0
+  for (const attended of [false, true])
+    for (const stopped of [false, true])
+      for (const told of [false, true])
+        for (const mode of ['hold', 'tell'] as const)
+          for (const headless of ['off', 'prompt', 'stop', 'wait'] as const) {
+            const p = phaseOf({ enabled: true, basis: LIVE, tripped: true, consented: false, open: true, stopped, asking: false, told, attended })
+            expect(p).toBe('open')
+            for (const site of SITES)
+              for (const person of [false, true]) {
+                // The gate reads the stop only while a kind gates (B44), so an open session is never stopped.
+                const d = decide({ site, tripped: true, enabled: true, consented: true, attended, headless, mode, person, stopped: false, mainTold: told })
+                expect(d).toEqual(THROUGH)
+                checked += 1
+              }
+          }
+  expect(checked).toBe(384)
 })

@@ -1,15 +1,18 @@
 import type { EngineInterface, Register, SessionRateLimit, Timer } from 'claude-code'
 import {
   DEFAULTS,
+  NO_SPANS,
   childHeadless,
   flagOnlyInShell,
   fromOptions,
   questionTimeout,
   reserveOf,
+  spanOf,
+  unreadEnv,
   watchedKinds,
   withEnv,
 } from './core/config.ts'
-import type { Effective, EnvReads, Settings } from './core/config.ts'
+import type { Effective, EnvReads, Settings, Spans } from './core/config.ts'
 import {
   BUDGET_FLOOR_MS,
   CHECK_MS,
@@ -28,6 +31,7 @@ import {
   parseStopped,
   phaseOf,
   shouldAbortTurn,
+  skipTag,
   stopAction,
   stopDue,
 } from './core/decide.ts'
@@ -35,8 +39,6 @@ import type { Mode, Outcome, Phase, Site, StoppedRecord, Verdict } from './core/
 import {
   FALLBACK_MS,
   KINDS,
-  RESET_MARGIN_MS,
-  TEST_MARGIN_MS,
   anchoredOf,
   asAnchored,
   basis,
@@ -45,11 +47,14 @@ import {
   initialMemory,
   isTripped,
   limitOf,
+  marginOf,
   newer,
   parseReset,
   parseSimulate,
   sawLive,
   sawMeasure,
+  skipStartOf,
+  viewOf,
   windowMs,
 } from './core/reading.ts'
 import type { Anchored, Basis, Kind, Memory } from './core/reading.ts'
@@ -65,11 +70,13 @@ import {
   W_FLAG,
   atText,
   bgEnvWarning,
+  clockText,
   commandFailed,
   consentWarning,
   debugLine,
   factsOf,
   headlessText,
+  leadText,
   notPerson,
   notStarted,
   notice,
@@ -86,9 +93,12 @@ import {
   stopText,
   timeoutWarning,
   unknownVerb,
+  untilFor,
+  untilPhrase,
+  whenOf,
   withdrawnText,
 } from './core/text.ts'
-import type { Facts, Named } from './core/text.ts'
+import type { Ended, Facts, Named } from './core/text.ts'
 import { badgeView } from './core/badge.ts'
 import type { View } from './core/badge.ts'
 
@@ -97,15 +107,21 @@ import type { View } from './core/badge.ts'
 // in its own dispatch, and a lost raiser hands it on (4.5). Decisions cross module copies in the env.
 // 0.2: one basis, consent and told set per kind. A ticker that session.start arms continues held and
 // stopped work at the reset (4 of the 0.2 design). The gates decide in rounds (5.3).
+// Skip near the reset: a tripped kind in the last span before its reset is open. It never gates, and no
+// stop holds it (B41, B44). While its skip start is ahead, that start is its hold end, with no margin (B42).
 
 type Ctx = { site: Site; agentId?: string; person?: boolean; resumed?: readonly Kind[] } // resumed: the kinds of the Resume that ended the last round
 type KindSense = {
   kind: Kind
   reserve: number
-  basis: Basis
+  basis: Basis // the view basis: the real one when a test reading yields to a real trip (B45)
   tripped: boolean
   windowEnd: number // the consent bound
-  holdEnd: number
+  holdEnd: number // the skip start while it is ahead, else the D0.2 hold end (B42)
+  stopEnd: number // the end of a stop with autoResume off: the skip start while it is ahead, else windowEnd
+  span: number // ms, 0 is off
+  skipAt: number | null // the skip start while it is ahead
+  open: boolean // tripped and in its skip window (B41)
   test: boolean
   seed: boolean
 }
@@ -115,10 +131,13 @@ type Settled = Outcome | 'again' // again: ended without an answer (4.5)
 type Raiser = { signal: AbortSignal }
 type Question = {
   kinds: Kind[] // the gating kinds when it opened, five_hour first
-  ends: Partial<Record<Kind, { end: number; test: boolean }>> // consent bound and test flag per kind
-  latestEnd: number // the latest consent bound (B6, the stop with auto off)
+  ends: Partial<Record<Kind, { end: number; test: boolean; skipAt?: number }>> // consent bound, test flag and skip start per kind
+  latestEnd: number // the latest consent bound (the B6 note of a question that is not a skip owner)
+  stopEnd: number // the latest stop end of its kinds: the until of a Stop here with autoResume off
   holdEnd: number // the latest hold end of its kinds
   due: number // the latest hold end plus margin of its kinds
+  skip: boolean // a skip owner: its hold end is a skip start, and no kind of it is due later (B42)
+  noteAt: number // autoResume off: the time of the one note. B43 can move it later
   nextCheck: number // the next check before the due time
   budgetLogAt: number // the last B40 debug line
   silent: boolean // an unattended wait hold: no dialog, never raised
@@ -144,14 +163,19 @@ type Via =
   | 'quota'
   | 'time limit'
 type Release = { raw: string; record: StoppedRecord; cancelled: boolean }
+type Split = { gating: KindSense[]; open: KindSense[] } // skip 3.3
+type Taken = { record: StoppedRecord } & Ended // takeOverdueStop's result (skip 4.6)
+type Late = { record?: StoppedRecord; ended?: Ended; until?: { at: string; lead?: string } } // settle's result for a Stop (B46)
 type Wake = { p: Promise<'woke'>; fire: () => void }
 type Seen = {
   cfg: Effective
   now: number
-  bases: Record<Kind, Basis>
+  bases: Record<Kind, Basis> // with the test reading, for the reading rows
   kinds: KindSense[]
   tripped: boolean
   attended: boolean
+  open: KindSense[] // tripped, not consented, and open (skip 3.3)
+  gating: KindSense[] // tripped, not consented, and not open (skip 3.3)
   consent: Partial<Record<Kind, number>> // consent that covers each kind's window
   stop?: StoppedRecord // the stop that applies
   question?: Question // this copy's open question
@@ -178,6 +202,7 @@ function noKinds<T>(make: () => T): Record<Kind, T> {
 let base: Settings = DEFAULTS // register()
 let effective: Promise<Effective> | undefined // register() resets it
 let autoNow: boolean = DEFAULTS.autoResume // this copy's effective autoResume, answered by $.spare10.auto()
+let spansNow: Spans = NO_SPANS // B47: this copy's spans of its last successful settings read, answered by $.spare10.spans()
 let attended: boolean | undefined // session.start, else lazily
 let sid: string | undefined // session.start, refreshed by stoppedNow, writeStopped, writeConsent, and act on a tell or headless verdict
 let endedSid: string | undefined // the id the last /clear or /resume ended: its stop no longer counts (D3)
@@ -207,6 +232,7 @@ const HOLDING = new WeakSet<object>()
 const told: Record<Kind, { windowEnd: number; keys: Set<string> }> = noKinds(() => ({ windowEnd: 0, keys: new Set<string>() }))
 const toldNoticeFor: Record<Kind, number> = noKinds(() => 0) // window end of the last B12 notice
 const unattendedNoteFor: Record<Kind, number> = noKinds(() => 0) // window end of the last B15 debug line
+const openNoteFor: Record<Kind, number> = noKinds(() => 0) // window end of the last open B15 debug line (skip 2.5)
 let tickerWanted = false // session.start: enabled, and attended or wait
 let ticker: Timer | undefined
 let tickGen = 0
@@ -235,11 +261,12 @@ function settings($: EngineInterface): Promise<Effective> {
     (env) => {
       const eff = withEnv(base, env)
       autoNow = eff.autoResume
+      spansNow = { lastMinutes: eff.lastMinutes, weeklyLastHours: eff.weeklyLastHours }
       return eff
     },
     () => {
       effective = undefined // a failed read is tried again at the next event
-      return withEnv(base, {})
+      return unreadEnv(base) // B47: spans of 0 until a read succeeds
     },
   )
   return effective
@@ -248,6 +275,8 @@ function settings($: EngineInterface): Promise<Effective> {
 async function readEnv($: EngineInterface): Promise<EnvReads> {
   const reserve = await $.env.get('SPARE10_RESERVE')
   const weeklyReserve = await $.env.get('SPARE10_WEEKLY_RESERVE')
+  const lastMinutes = await $.env.get('SPARE10_LAST_MINUTES')
+  const weeklyLastHours = await $.env.get('SPARE10_WEEKLY_LAST_HOURS')
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
   const headless = await $.env.get('SPARE10_HEADLESS')
@@ -256,6 +285,8 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
   return {
     ...(reserve !== undefined && { reserve }),
     ...(weeklyReserve !== undefined && { weeklyReserve }),
+    ...(lastMinutes !== undefined && { lastMinutes }),
+    ...(weeklyLastHours !== undefined && { weeklyLastHours }),
     ...(pausePrompt !== undefined && { pausePrompt }),
     ...(autoResume !== undefined && { autoResume }),
     ...(headless !== undefined && { headless }),
@@ -284,8 +315,23 @@ function testReading(pct: number, kind: Kind, live: SessionRateLimit | undefined
   return { pct, resetsAtMs }
 }
 
+/**
+ * The spans in force (B47): the newest copy's answer. A copy that cannot reach the noun uses 0. The
+ * try also covers a newest copy whose noun has no spans method (an older build): that call throws
+ * before it returns a promise, and a throw here would fail the whole sense open.
+ */
+async function spansInForce($: EngineInterface): Promise<Spans> {
+  try {
+    return await $.spare10.spans()
+  } catch {
+    return NO_SPANS
+  }
+}
+
+type Bases = Record<Kind, { basis: Basis; real: Basis }> // with the test reading, and without it (B45)
+
 /** One usage read, the seeds once, the test reading per kind. */
-async function currentBases($: EngineInterface, now: number): Promise<Record<Kind, Basis>> {
+async function currentBases($: EngineInterface, now: number): Promise<Bases> {
   if (!seedLoaded) {
     seedLoaded = true
     const five = asAnchored(await $.store.get('seed').catch(() => undefined))
@@ -306,10 +352,17 @@ async function currentBases($: EngineInterface, now: number): Promise<Record<Kin
       test[kind] = testReading(cfg.testPct, kind, limitOf(limits, kind), now, cfg.testInMs)
     }
   }
-  return {
-    five_hour: basis(limitOf(limits, 'five_hour'), mem.five_hour, now, test.five_hour, 'five_hour'),
-    seven_day: basis(limitOf(limits, 'seven_day'), mem.seven_day, now, test.seven_day, 'seven_day'),
-  }
+  const both = (kind: Kind): { basis: Basis; real: Basis } => ({
+    basis: basis(limitOf(limits, kind), mem[kind], now, test[kind], kind),
+    real: basis(limitOf(limits, kind), mem[kind], now, undefined, kind),
+  })
+  return { five_hour: both('five_hour'), seven_day: both('seven_day') }
+}
+
+/** The spans for one sense: asked only when a watched kind is tripped, so an event below the reserve costs no noun call. */
+async function spansFor($: EngineInterface, cfg: Effective, bases: Bases): Promise<Spans> {
+  const anyTripped = watchedKinds(cfg).some((kind) => isTripped(bases[kind].basis, reserveOf(cfg, kind)))
+  return anyTripped ? await spansInForce($) : NO_SPANS
 }
 
 /** The window end that bounds consent and stopped. Without resetsAt, one fallback per kind and episode (R11). */
@@ -324,27 +377,35 @@ function windowEndFor(kind: Kind, b: Basis, now: number): number {
   return now + FALLBACK_MS
 }
 
-function sensesOf(cfg: Effective, bases: Record<Kind, Basis>, now: number): KindSense[] {
+function sensesOf(cfg: Effective, bases: Bases, spans: Spans, now: number): KindSense[] {
   return watchedKinds(cfg).map((kind) => {
-    const b = bases[kind]
     const reserve = reserveOf(cfg, kind)
+    const span = spanOf(spans, kind)
+    const v = viewOf(bases[kind].real, bases[kind].basis, reserve, span, now) // B41, B45
+    const b = v.basis
+    const windowEnd = windowEndFor(kind, b, now)
+    if (v.tripped && v.skipAt !== null) addEdge(v.skipAt) // the ticker redraws at the skip start (skip 4.1)
     return {
       kind,
       reserve,
       basis: b,
-      tripped: isTripped(b, reserve),
-      windowEnd: windowEndFor(kind, b, now),
-      holdEnd: holdEndOf(b, mem[kind], now, kind),
+      tripped: v.tripped,
+      windowEnd,
+      holdEnd: v.skipAt ?? holdEndOf(b, mem[kind], now, kind),
+      stopEnd: v.skipAt ?? windowEnd,
+      span,
+      skipAt: v.skipAt,
+      open: v.open,
       test: b.kind === 'test',
       seed: b.kind === 'seed',
     }
   })
 }
 
-function noteBasis($: EngineInterface, kinds: ReadonlyArray<{ kind: Kind; basis: Basis; tripped: boolean }>): void {
+function noteBasis($: EngineInterface, kinds: ReadonlyArray<{ kind: Kind; basis: Basis; tripped: boolean; open: boolean }>): void {
   // The reset is in the key too: a new window at the same figure starts a new told set (5.1).
   const key = kinds
-    .map((k) => `${k.kind}:${k.basis.kind}:${k.basis.kind === 'none' ? k.basis.why : `${k.basis.pct}:${k.basis.resetsAtMs}`}:${k.tripped}`)
+    .map((k) => `${k.kind}:${k.basis.kind}:${k.basis.kind === 'none' ? k.basis.why : `${k.basis.pct}:${k.basis.resetsAtMs}`}:${k.tripped}:${k.open}`)
     .join('|')
   if (key === viewKey) return
   viewKey = key
@@ -423,12 +484,13 @@ async function stoppedNow($: EngineInterface, now: number): Promise<StoppedRecor
 /** 5.7: the 0.2 record, merged with an earlier stop of this session (3.2). Returns what it wrote, for the texts. */
 async function writeStopped(
   $: EngineInterface,
-  n: { kinds: Kind[]; windowEnd: number; work: boolean; auto: boolean; test: boolean },
+  n: { kinds: Kind[]; windowEnd: number; work: boolean; auto: boolean; test: boolean; skip: boolean },
   now: number,
 ): Promise<StoppedRecord> {
   sid = await $.session.id() // R3: a fresh id, a /clear may have run since the last read
   const prev = parseStopped(await $.env.get('SPARE10_STOPPED').catch(() => undefined))
-  const r = mergeStopped(prev, { ...n, sessionId: sid, at: now }, now)
+  const { skip, ...rest } = n
+  const r = mergeStopped(prev, { ...rest, ...(skip ? { skip: true } : {}), sessionId: sid, at: now }, now)
   stopEpoch += 1
   workMarked = r.work === true
   await $.env.set('SPARE10_STOPPED', formatStopped(r))
@@ -469,21 +531,32 @@ async function listed($: EngineInterface, agentId: string): Promise<boolean> {
 async function sense($: EngineInterface): Promise<Sensed> {
   const cfg = await settings($)
   const now = await $.clock.now()
-  const kinds = sensesOf(cfg, await currentBases($, now), now)
+  const bases = await currentBases($, now)
+  const kinds = sensesOf(cfg, bases, await spansFor($, cfg, bases), now)
   noteBasis($, kinds)
   const tripped = kinds.some((k) => k.tripped)
   return { cfg, now, kinds, tripped, attended: tripped ? await isAttended($) : attended === true }
 }
 
-/** The watched kinds that are tripped and not consented. Never throws. */
-async function gatingOf($: EngineInterface, s: Sensed): Promise<KindSense[]> {
-  const out: KindSense[] = []
+/**
+ * Skip 3.3: the tripped kinds that are not consented, split into those that gate and those that are
+ * open. Never throws: an unreadable consent is not consent.
+ */
+async function splitOf($: EngineInterface, s: { kinds: readonly KindSense[]; now: number; attended: boolean }): Promise<Split> {
+  const out: Split = { gating: [], open: [] }
   for (const k of s.kinds) {
     if (!k.tripped) continue
     const until = await consentMs($, k.kind, s.attended, k.test).catch(() => 0) // unreadable: not consented
-    if (!consentCovers(until, s.now, k.windowEnd)) out.push(k)
+    if (consentCovers(until, s.now, k.windowEnd)) continue
+    if (k.open) out.open.push(k)
+    else out.gating.push(k)
   }
   return out
+}
+
+/** The watched kinds that gate: tripped, not consented and not open. Never throws. */
+async function gatingOf($: EngineInterface, s: Sensed): Promise<KindSense[]> {
+  return (await splitOf($, s)).gating
 }
 
 function toldHas(k: KindSense, key: string): boolean {
@@ -531,11 +604,21 @@ async function act($: EngineInterface, s: Sensed, ctx: Ctx): Promise<Acted> {
   return { verdict, stopped, gating }
 }
 
-/** The figures of some kinds, five_hour first. A reading without a reset carries its hold end, for {at}. */
-function factsFrom(ks: readonly KindSense[], now: number): Facts[] {
+/**
+ * The figures of some kinds, five_hour first. A hold end that is not the reset (a reading without a
+ * reset time, or a skip start ahead) rides along for {at}. `owner`: a skip owner, whose kinds with a
+ * skip start ahead carry their span for {lead} (skip 2.1).
+ */
+function factsFrom(ks: readonly KindSense[], now: number, owner = false): Facts[] {
   return ks.map((k) => {
     const f = factsOf(k.basis, k.reserve, undefined, k.kind, now)
-    return k.basis.kind !== 'none' && k.basis.resetsAtMs === null ? { ...f, holdEnd: k.holdEnd } : f
+    const reset = k.basis.kind === 'none' ? undefined : k.basis.resetsAtMs
+    return {
+      ...f,
+      ...(reset !== undefined && k.holdEnd !== reset ? { holdEnd: k.holdEnd } : {}),
+      ...(k.test ? { test: true } : {}),
+      ...(owner && k.skipAt !== null ? { span: k.span } : {}),
+    }
   })
 }
 
@@ -663,23 +746,42 @@ async function dueCheck($: EngineInterface, key: string): Promise<boolean> {
   try {
     const now = await $.clock.now()
     const due = now >= q.due
-    if (!due && now < q.nextCheck && (q.noted || now < q.latestEnd)) return false
+    if (!due && now < q.nextCheck && (q.noted || now < q.noteAt)) return false
     q.nextCheck = now + CHECK_MS
     if (!q.silent && !(await $.spare10.auto().catch(() => q.auto))) {
       // The setting in force now says wait for the answer (1.3 item 6, B6).
-      if (!q.noted && now >= q.latestEnd) {
+      if (!q.noted && now >= q.noteAt) {
+        if (!q.skip) {
+          q.noted = true
+          $.ui.log(notice.resetWaitingFor(namedOf(q))) // D0.2, byte for byte
+          return false
+        }
+        // B43: the note names what opened or reset, so it senses. A throw: the catch logs it, the next check tries again.
+        const s = await sense($)
+        const gatingNow = await gatingOf($, s)
+        const ended = endedFor(namedOf(q), s, gatingNow, true)
+        if (ended.reset.length === 0 && ended.open.length === 0) {
+          // B45: nothing of the question opened yet (a real trip beneath a test reading). Wait for its hold end.
+          const mine = gatingNow.filter((k) => q.kinds.includes(k.kind))
+          q.noteAt = Math.max(now + CHECK_MS, ...mine.map((k) => k.holdEnd))
+          addEdge(q.noteAt)
+          return false
+        }
         q.noted = true
-        $.ui.log(notice.resetWaitingFor(namedOf(q)))
+        // New work goes on only while no kind gates: a window that still gates holds new work too.
+        $.ui.log(notice.resetWaitingFor(ended.reset, ended.open, gatingNow.length === 0))
       }
       return false
     }
     if (!due && now >= q.holdEnd) return false // past the reset, inside the margin: wait (4.8)
     const s = await sense($) // throws: nothing is released
     const gatingNow = await gatingOf($, s)
-    if (!due && gatingNow.length > 0) return false // still in the reserve before the reset
+    // Before the due time only when no kind gates. A stop never holds an open kind (B44), so no kind
+    // gating means the gate lets the held loops through (skip 4.3).
+    if (!due && gatingNow.length > 0) return false
     if (gatingNow.length === 0 && resetTooRecent(s)) return false // a test window that ends near a real reset (4.8)
     if (outcomes.has(key)) return false // answered meanwhile
-    settleAgain($, key, due ? 'reset' : 'quota', gatingNow, s.now)
+    settleAgain($, key, due ? 'reset' : 'quota', gatingNow, s)
     return true
   } catch (err) {
     $.ui.log(debugLine.checkFailed(String(err)), { to: 'debug' })
@@ -695,8 +797,28 @@ async function dueCheck($: EngineInterface, key: string): Promise<boolean> {
  */
 const resetTooRecent = (s: Sensed): boolean => s.kinds.some((k) => inResetMargin(mem[k.kind].seed, k.reserve, s.now))
 
+/**
+ * Skip 4.4: which kinds of a question or a stop reset, and which are open now. A kind is named as reset
+ * when it is neither open nor gating now. With no skip owner and no open kind, the D0.2 lists (every
+ * named kind reset), so each notice keeps its D0.2 wording. `owner` with no sense: nothing is known.
+ */
+function endedFor(
+  named: readonly Named[],
+  s: { kinds: readonly KindSense[]; now: number } | undefined,
+  gatingNow: readonly KindSense[],
+  owner: boolean,
+): Ended {
+  if (s === undefined) return owner ? { reset: [], open: [] } : { reset: [...named], open: [] }
+  const open = factsFrom(s.kinds.filter((k) => k.open && named.some((n) => n.kind === k.kind)), s.now)
+  if (!owner && open.length === 0) return { reset: [...named], open: [] }
+  const reset = named.filter(
+    (n) => !open.some((f) => (f.kind ?? 'five_hour') === n.kind) && !gatingNow.some((k) => k.kind === n.kind),
+  )
+  return { reset, open }
+}
+
 /** 4.5: the question ends without an answer. Synchronous, writes nothing: every held loop decides afresh. */
-function settleAgain($: EngineInterface, key: string, via: 'reset' | 'quota', gatingNow: readonly KindSense[], now: number): void {
+function settleAgain($: EngineInterface, key: string, via: 'reset' | 'quota', gatingNow: readonly KindSense[], s: Sensed): void {
   if (outcomes.has(key)) return
   const q = questions.get(key)
   outcomes.set(key, 'again')
@@ -706,9 +828,17 @@ function settleAgain($: EngineInterface, key: string, via: 'reset' | 'quota', ga
   if (openKey === key) openKey = undefined
   wakeAll()
   if (q !== undefined) {
-    if (via === 'quota') $.ui.log(notice.outOfReserve)
-    else if (gatingNow.length === 0) $.ui.log(notice.resetContinues(namedOf(q)))
-    else $.ui.log(notice.resetStillHeld(namedOf(q), factsFrom(gatingNow, now)))
+    const ended = endedFor(namedOf(q), s, gatingNow, q.skip)
+    if (!q.skip && ended.open.length === 0) {
+      // D0.2, byte for byte
+      if (via === 'quota') $.ui.log(notice.outOfReserve)
+      else if (gatingNow.length === 0) $.ui.log(notice.resetContinues(namedOf(q)))
+      else $.ui.log(notice.resetStillHeld(namedOf(q), factsFrom(gatingNow, s.now)))
+    } else if (gatingNow.length === 0) {
+      $.ui.log(ended.reset.length + ended.open.length > 0 ? notice.resetContinues(ended.reset, ended.open) : notice.outOfReserve)
+    } else {
+      $.ui.log(notice.resetStillHeld(ended.reset, factsFrom(gatingNow, s.now), ended.open))
+    }
   }
   redraw($)
 }
@@ -725,6 +855,9 @@ async function noteBudget($: EngineInterface, key: string, leftMs: number): Prom
 
 // ---- The question (4.3, 4.5, 4.6, 5.6) ----
 
+/** A kind's hold end plus this is when it may be released: 0 at a skip start (B42), else the reset margin (4.8). */
+const dueMargin = (k: KindSense): number => marginOf(k.skipAt !== null, k.test)
+
 function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed, a: Acted): string {
   const g = namedKinds(s, a)
   if (openKey !== undefined) {
@@ -735,18 +868,25 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
     }
     // A settled again, or a settled Resume that did not name a kind that gates now: a new question.
   }
-  const margin = (k: KindSense): number => (k.test ? TEST_MARGIN_MS : RESET_MARGIN_MS)
   seq += 1
   const key = `${ENV}:${seq}`
   openKey = key
   const ends: Question['ends'] = {}
-  for (const k of g) ends[k.kind] = { end: k.windowEnd, test: k.test }
+  for (const k of g) ends[k.kind] = { end: k.windowEnd, test: k.test, ...(k.skipAt === null ? {} : { skipAt: k.skipAt }) }
+  const latestEnd = Math.max(...g.map((k) => k.windowEnd))
+  const holdEnd = Math.max(...g.map((k) => k.holdEnd))
+  const due = Math.max(...g.map((k) => k.holdEnd + dueMargin(k)))
+  // B42: a skip owner only when a skip start is the hold end, and no kind of it is due later.
+  const skip = g.some((k) => k.skipAt === holdEnd) && due === holdEnd
   const q: Question = {
     kinds: g.map((k) => k.kind),
     ends,
-    latestEnd: Math.max(...g.map((k) => k.windowEnd)),
-    holdEnd: Math.max(...g.map((k) => k.holdEnd)),
-    due: Math.max(...g.map((k) => k.holdEnd + margin(k))),
+    latestEnd,
+    stopEnd: Math.max(...g.map((k) => k.stopEnd)),
+    holdEnd,
+    due,
+    skip,
+    noteAt: skip ? holdEnd : latestEnd,
     nextCheck: s.now + CHECK_MS,
     budgetLogAt: s.now,
     silent: !s.attended,
@@ -756,7 +896,7 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
     since: s.now,
     mode: modeOf(s.cfg),
     opener,
-    facts: factsFrom(g, s.now),
+    facts: factsFrom(g, s.now, skip),
     waiting: 0,
     handoffs: 0,
     noted: false,
@@ -766,6 +906,8 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
   for (const k of g) addEdge(k.windowEnd)
   addEdge(q.holdEnd)
   addEdge(q.due)
+  addEdge(q.stopEnd)
+  addEdge(q.noteAt)
   redraw($)
   return key
 }
@@ -834,9 +976,12 @@ function takeRaising(text: string): string | undefined {
 const questionOf = (e: unknown): string =>
   (e as { questions?: Array<{ question?: string }> }).questions?.[0]?.question ?? ''
 
-/** Settles a question. For a Stop that this copy writes, it returns the record as written (merged, 3.2). */
-async function settle($: EngineInterface, key: string, outcome: Outcome, via: Via): Promise<StoppedRecord | undefined> {
-  if (outcomes.has(key)) return undefined
+/**
+ * Settles a question. For a Stop that this copy writes, it returns the record as written (merged, 3.2)
+ * and its time for the reply. For a Stop after the skip start (B46), it also returns what opened.
+ */
+async function settle($: EngineInterface, key: string, outcome: Outcome, via: Via): Promise<Late> {
+  if (outcomes.has(key)) return {}
   // Every synchronous cache first, so an event that arrives during the writes sees the decision.
   outcomes.set(key, outcome)
   needsRaise.delete(key)
@@ -850,9 +995,9 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
     }
   }
   wakeAll()
-  let written: StoppedRecord | undefined
+  let late: Late = {}
   try {
-    if (via === 'elsewhere' || q === undefined) return undefined
+    if (via === 'elsewhere' || q === undefined) return {}
     const now = await $.clock.now()
     if (outcome === 'resume') {
       for (const kind of q.kinds) {
@@ -869,19 +1014,7 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
         )
       }
     } else if (!q.silent && (q.mode === 'hold' || via === 'command')) {
-      const auto = await $.spare10.auto().catch(() => autoNow) // the setting in force
-      // The named windows reset while the dialog was up (inside the margin): the stop also names the
-      // kinds that gate now, so it is not written already over when one of them gates.
-      const late = auto && q.holdEnd <= now ? await lateGating($) : []
-      const kinds = KINDS.filter((k) => q.kinds.includes(k) || late.some((l) => l.kind === k))
-      const holdEnd = Math.max(q.holdEnd, ...late.map((k) => k.holdEnd))
-      const allTest = q.kinds.every((kind) => q.ends[kind]?.test === true) && late.every((k) => k.test)
-      written = await writeStopped($, { kinds, windowEnd: auto ? holdEnd : q.latestEnd, work: q.loops > 0, auto, test: allTest }, now)
-      // The texts follow the record as written: the merge can add work, kinds and a later end (3.2).
-      const facts = byKind([...q.facts, ...factsFrom(late.filter((k) => !q.kinds.includes(k.kind)), now)])
-      const merged = { at: atText(written.windowEnd, written.kinds ?? kinds, undefined, now), work: written.work === true }
-      if (via === 'time limit') $.ui.log(notice.holdLimit(facts, auto ? merged : undefined))
-      else if (via !== 'command') $.ui.log(notice.stopped(facts, auto ? merged : undefined))
+      late = await settleStop($, q, via, now)
     }
     if (openKey === key) openKey = undefined // the decision is readable in env now
     await $.spare10.poke({ from: ENV }) // wake the newest copy's waiters (3.6)
@@ -892,16 +1025,73 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
     if (openKey === key) openKey = undefined
     redraw($)
   }
-  return written
+  return late
 }
 
-/** The kinds that gate now, for a Stop made after its question's windows reset. A failed read adds none. */
-async function lateGating($: EngineInterface): Promise<KindSense[]> {
-  try {
-    return await gatingOf($, await sense($))
-  } catch {
-    return []
+/**
+ * A Stop here (skip 3.5, B46). When the question's time has passed (its hold end with autoResume on,
+ * its skip start with it off), one sense gives the kinds that gate now (`late`) and the question's kinds
+ * that are open now (`opened`). The kinds that gate are stopped as usual. When nothing gates, a kind of
+ * the question is open, and no work waits for a resume prompt, nothing is written: such a stop would
+ * never apply. A failed sense gives empty lists: the D0.2 write.
+ */
+async function settleStop($: EngineInterface, q: Question, via: Via, now: number): Promise<Late> {
+  const auto = await $.spare10.auto().catch(() => autoNow) // the setting in force
+  const work = q.loops > 0
+  const passed = auto ? q.holdEnd <= now : q.skip && q.stopEnd <= now
+  let sNow: Sensed | undefined
+  let late: KindSense[] = []
+  let opened: KindSense[] = []
+  if (passed) {
+    try {
+      sNow = await sense($)
+      const split = await splitOf($, sNow)
+      late = split.gating
+      opened = split.open.filter((k) => q.kinds.includes(k.kind))
+    } catch {
+      sNow = undefined
+    }
   }
+  const until = auto ? Math.max(q.holdEnd, ...late.map((k) => k.holdEnd)) : Math.max(q.stopEnd, ...late.map((k) => k.stopEnd))
+  const ended = sNow === undefined || opened.length === 0 ? undefined : endedFor(namedOf(q), sNow, late, true)
+  if (until <= now && ended !== undefined && !(auto && work)) {
+    // B46 open: nothing is stopped. Held work is refused (the outcome is stop), new work passes.
+    if (via === 'time limit') $.ui.log(notice.holdLimitLate(q.facts, ended, false))
+    else if (via !== 'command') $.ui.log(notice.stoppedLate(q.facts, ended, false))
+    return { ended }
+  }
+  const kinds = KINDS.filter((k) => q.kinds.includes(k) || late.some((l) => l.kind === k))
+  const allTest = q.kinds.every((kind) => q.ends[kind]?.test === true) && late.every((k) => k.test)
+  const skipStarts = [
+    ...q.kinds.map((kind) => q.ends[kind]?.skipAt).filter((t): t is number => t !== undefined),
+    ...late.map((k) => k.skipAt).filter((t): t is number => t !== null),
+  ]
+  const skip = skipTag(until, skipStarts, [q.due, ...late.map((k) => k.holdEnd + dueMargin(k))], auto)
+  const written = await writeStopped($, { kinds, windowEnd: until, work, auto, test: allTest, skip }, now)
+  // The texts follow the record as written: the merge can add work, kinds and a later end (3.2). For a
+  // skip owner, a late kind's fresh facts replace the question's (under B45 it is now sensed on the real
+  // basis). Else only the late kinds that the question does not name are added (D0.2).
+  const fresh = factsFrom(late, now, written.skip === true)
+  const facts = byKind(
+    q.skip
+      ? [...q.facts.filter((f) => !late.some((k) => k.kind === (f.kind ?? 'five_hour'))), ...fresh]
+      : [...q.facts, ...fresh.filter((f) => !q.kinds.includes(f.kind ?? 'five_hour'))],
+  )
+  const u = untilFor(facts, written.windowEnd, written.kinds ?? kinds, written.skip === true, now)
+  if (ended !== undefined && late.length === 0 && auto && work && until <= now) {
+    // B46 soon: the stop is written with its passed until, and the next tick continues the work.
+    if (via === 'time limit') $.ui.log(notice.holdLimitLate(facts, ended, true))
+    else if (via !== 'command') $.ui.log(notice.stoppedLate(facts, ended, true))
+    return { record: written, ended, until: u }
+  }
+  // A skip stop shows its end in both modes: with autoResume off it ends by time then (skip 1.3 item 6).
+  // With autoResume off, an end that has already passed (the window reset while the question waited,
+  // or the sense failed) is no help to the person: the D0.2 text with no time.
+  const shows = written.skip === true && (auto || written.windowEnd > now)
+  const a = shows ? { ...u, work: auto && written.work === true } : auto ? { ...u, work: written.work === true } : undefined
+  if (via === 'time limit') $.ui.log(notice.holdLimit(facts, a))
+  else if (via !== 'command') $.ui.log(notice.stopped(facts, a))
+  return { record: written, until: u }
 }
 
 const byKind = (fs: readonly Facts[]): Facts[] =>
@@ -934,10 +1124,16 @@ function noteTold($: EngineInterface, s: Sensed, a: Acted, key: string): void {
 }
 
 function noteUnattended($: EngineInterface, s: Sensed): void {
-  const fresh = s.kinds.filter((k) => k.tripped && unattendedNoteFor[k.kind] !== k.windowEnd)
-  if (fresh.length === 0) return
-  for (const k of fresh) unattendedNoteFor[k.kind] = k.windowEnd
-  $.ui.log(debugLine.unattended(factsFrom(fresh, s.now), s.cfg.headless), { to: 'debug' }) // R9: every policy
+  const fresh = s.kinds.filter((k) => k.tripped && !k.open && unattendedNoteFor[k.kind] !== k.windowEnd)
+  if (fresh.length > 0) {
+    for (const k of fresh) unattendedNoteFor[k.kind] = k.windowEnd
+    $.ui.log(debugLine.unattended(factsFrom(fresh, s.now), s.cfg.headless), { to: 'debug' }) // R9: every policy
+  }
+  const opened = s.kinds.filter((k) => k.open && openNoteFor[k.kind] !== k.windowEnd)
+  if (opened.length > 0) {
+    for (const k of opened) openNoteFor[k.kind] = k.windowEnd
+    $.ui.log(debugLine.unattendedOpen(factsFrom(opened, s.now)), { to: 'debug' }) // skip 2.5: every policy lets it through
+  }
 }
 
 // ---- Turn end and draft (4.7) ----
@@ -1068,7 +1264,7 @@ async function rebuildEdges($: EngineInterface): Promise<void> {
 function dueQuestion(now: number): boolean {
   for (const [key, q] of questions) {
     if (outcomes.has(key)) continue
-    if (now >= q.due || now >= q.nextCheck || (!q.noted && now >= q.latestEnd)) return true
+    if (now >= q.due || now >= q.nextCheck || (!q.noted && now >= q.noteAt)) return true
   }
   return false
 }
@@ -1102,16 +1298,17 @@ async function stopTick($: EngineInterface, now: number): Promise<void> {
   release = rel
   try {
     // The extension is a release too: a person path that takes the stop over meanwhile cancels it.
-    if (gatingNow.length > 0) return await extendStop($, rel, gatingNow, s.now)
+    if (gatingNow.length > 0) return await extendStop($, rel, gatingNow, s)
     if (r.work === true && (await typingNow($, raw))) return // 4.6.2: wait up to 10 ticks
     if (rel.cancelled) return // the person path cleared it and logged
     if ((await $.env.get('SPARE10_STOPPED')) !== raw) return // a prompt, a command or a copy took it
+    const ended = endedFor(namedStop(r), s, [], r.skip === true) // skip 4.5: what reset and what opened
     const idNow = await $.session.id() // read before the clear: no await after it but one
     await clearStopped($)
     redraw($)
     if (rel.cancelled) return // the person path logged
     if (r.work !== true) {
-      $.ui.log(notice.resetStopOver(namedStop(r)))
+      $.ui.log(notice.resetStopOver(ended.reset, ended.open))
       return
     }
     if (idNow !== r.sessionId || idNow === endedSid) {
@@ -1122,8 +1319,8 @@ async function stopTick($: EngineInterface, now: number): Promise<void> {
       handedOver = { record: r, at: now } // a prompt arrived during the clear: its takeover gives the note (4.6.3)
       return
     }
-    $.ui.log(notice.resetResumes(namedStop(r)))
-    submitResume($, r) // synchronous with the checks above
+    $.ui.log(notice.resetResumes(ended.reset, ended.open))
+    submitResume($, ended) // synchronous with the checks above
   } finally {
     release = undefined
   }
@@ -1134,13 +1331,26 @@ async function stopTick($: EngineInterface, now: number): Promise<void> {
  * inside the ticker's release (4.6.3): a person path that takes the stop over meanwhile sets cancelled,
  * clears the value and logs, and then the extension never stands.
  */
-async function extendStop($: EngineInterface, rel: Release, gatingNow: readonly KindSense[], now: number): Promise<void> {
+async function extendStop($: EngineInterface, rel: Release, gatingNow: readonly KindSense[], s: Sensed): Promise<void> {
   const r = rel.record
   if ((await $.env.get('SPARE10_STOPPED')) !== rel.raw || rel.cancelled) return
   const kinds = gatingNow.map((k) => k.kind)
   const until = Math.max(...gatingNow.map((k) => k.holdEnd))
+  const skip = skipTag(
+    until,
+    gatingNow.map((k) => k.skipAt).filter((t): t is number => t !== null),
+    gatingNow.map((k) => k.holdEnd + dueMargin(k)),
+    true,
+  )
   // The test tag keeps the short margin only while every kind that gates now is a test reading.
-  const longer: StoppedRecord = { ...r, kinds, windowEnd: until, test: r.test === true && gatingNow.every((k) => k.test) }
+  const { skip: _old, ...kept } = r
+  const longer: StoppedRecord = {
+    ...kept,
+    kinds,
+    windowEnd: until,
+    test: r.test === true && gatingNow.every((k) => k.test),
+    ...(skip ? { skip: true } : {}),
+  }
   const value = formatStopped(longer)
   await $.env.set('SPARE10_STOPPED', value)
   if (rel.cancelled) {
@@ -1150,7 +1360,9 @@ async function extendStop($: EngineInterface, rel: Release, gatingNow: readonly 
   }
   addEdge(until)
   addEdge(stopDue(longer))
-  $.ui.log(notice.stopExtended(namedStop(r), factsFrom(gatingNow, now), atText(until, kinds, undefined, now)))
+  const ended = endedFor(namedStop(r), s, gatingNow, r.skip === true)
+  const facts = factsFrom(gatingNow, s.now, skip)
+  $.ui.log(notice.stopExtended(ended.reset, facts, untilPhrase(untilFor(facts, until, kinds, skip, s.now)), ended.open))
   redraw($)
 }
 
@@ -1179,9 +1391,9 @@ async function typingNow($: EngineInterface, raw: string): Promise<boolean> {
 }
 
 /** 4.6.1: one attempt, never awaited in the tick. */
-function submitResume($: EngineInterface, r: StoppedRecord): void {
+function submitResume($: EngineInterface, ended: Ended): void {
   try {
-    void $.prompt.submit({ text: resumePrompt(namedStop(r)) }).then(
+    void $.prompt.submit({ text: resumePrompt(ended.reset, ended.open) }).then(
       (out) => {
         if (out.drop !== undefined) resumeFailed($, out.drop) // another plugin's hook dropped it
       },
@@ -1197,21 +1409,25 @@ function resumeFailed($: EngineInterface, reason: string): void {
   redraw($)
 }
 
-/** 4.6.3, B35: a person prompt or a command after the reset takes an overdue stop over. */
+/**
+ * 4.6.3, B35: a person prompt or a command after the reset, or after the skip start, takes an overdue
+ * stop over. `kinds`: a sense of now, so the notice can name what opened (skip 4.6).
+ */
 async function takeOverdueStop(
   $: EngineInterface,
-  s: { cfg: Effective; now: number; attended: boolean },
-): Promise<StoppedRecord | undefined> {
+  s: { cfg: Effective; now: number; attended: boolean; kinds?: readonly KindSense[] },
+): Promise<Taken | undefined> {
   if (!(s.cfg.enabled && s.attended)) return undefined
+  const at = s.kinds === undefined ? undefined : { kinds: s.kinds, now: s.now }
   const h = handedOver // the ticker cleared it while this prompt was in flight
   handedOver = undefined
-  if (h !== undefined && s.now - h.at < CHECK_MS) return took($, h.record)
+  if (h !== undefined && s.now - h.at < CHECK_MS) return took($, h.record, at)
   const rel = release
   if (rel !== undefined) {
     // The ticker is releasing now: its checks read this, the last one synchronous with the submit.
     rel.cancelled = true
     if ((await $.env.get('SPARE10_STOPPED')) === rel.raw) await clearStopped($)
-    return took($, rel.record)
+    return took($, rel.record, at)
   }
   if (taking) return undefined // another person path is taking it
   taking = true // synchronous: the ticker waits
@@ -1221,16 +1437,17 @@ async function takeOverdueStop(
     const id = await $.session.id()
     if (!isOverdue(r, id, endedSid, s.now)) return undefined // an auto 0.2 record of this session, now >= until
     await clearStopped($)
-    return took($, r)
+    return took($, r, at)
   } finally {
     taking = false
   }
 }
 
-function took($: EngineInterface, r: StoppedRecord): StoppedRecord {
-  $.ui.log(notice.stopTakenOver(namedStop(r)))
+function took($: EngineInterface, record: StoppedRecord, s: { kinds: readonly KindSense[]; now: number } | undefined): Taken {
+  const t: Taken = { record, ...endedFor(namedStop(record), s, [], record.skip === true) }
+  $.ui.log(notice.stopTakenOver(t.reset, t.open))
   redraw($)
-  return r
+  return t
 }
 
 // ---- Badge (3.4, 7) ----
@@ -1257,14 +1474,16 @@ async function seen($: EngineInterface): Promise<Seen> {
   const cfg = await settings($)
   const now = await $.clock.now()
   const bases = await currentBases($, now)
-  const kinds = sensesOf(cfg, bases, now)
+  const kinds = sensesOf(cfg, bases, await spansFor($, cfg, bases), now)
   const tripped = kinds.some((k) => k.tripped)
   const att = await isAttended($)
   const consent: Partial<Record<Kind, number>> = {}
   const gating: KindSense[] = []
+  const openKinds: KindSense[] = []
   for (const k of kinds) {
     const until = await consentMs($, k.kind, att, k.test)
     if (consentCovers(until, now, k.windowEnd)) consent[k.kind] = until
+    else if (k.tripped && k.open) openKinds.push(k)
     else if (k.tripped) gating.push(k)
   }
   const stop = cfg.enabled && att ? await stoppedNow($, now) : undefined
@@ -1279,9 +1498,10 @@ async function seen($: EngineInterface): Promise<Seen> {
   const question = open === undefined ? undefined : questions.get(open)
   const phase = phaseOf({
     enabled: cfg.enabled,
-    basis: bases.five_hour,
+    basis: bases.five_hour.basis,
     tripped,
-    consented: cfg.enabled && tripped && gating.length === 0,
+    consented: cfg.enabled && tripped && gating.length === 0 && openKinds.length === 0,
+    open: cfg.enabled && tripped && gating.length === 0 && openKinds.length > 0,
     stopped: stop !== undefined,
     asking: question !== undefined && !question.silent,
     told: tripped && toldKeys.size > 0,
@@ -1290,10 +1510,12 @@ async function seen($: EngineInterface): Promise<Seen> {
   return {
     cfg,
     now,
-    bases,
+    bases: { five_hour: bases.five_hour.basis, seven_day: bases.seven_day.basis },
     kinds,
     tripped,
     attended: att,
+    open: openKinds,
+    gating,
     consent,
     ...(stop === undefined ? {} : { stop }),
     ...(question === undefined ? {} : { question }),
@@ -1302,15 +1524,27 @@ async function seen($: EngineInterface): Promise<Seen> {
   }
 }
 
-/** 2.6: the clock at which a stop or an open question continues by itself. */
+/**
+ * 2.6: the clock at which a stop or an open question continues by itself. A skip stop shows its end in
+ * both autoResume modes. The open row: the earliest reset among the open kinds, the reserve lost first.
+ */
 function untilOf(p: Seen): { until?: string } {
-  if (!p.cfg.autoResume) return {}
+  if (p.phase === 'open') {
+    const first = [...p.open].sort((a, b) => resetOf(a) - resetOf(b))[0]
+    return first === undefined ? {} : { until: clockText(resetOf(first), first.kind, undefined, p.now) }
+  }
   const st = p.stop
-  if (p.phase === 'stopped' && st?.kinds !== undefined && st.auto === true) return { until: atText(st.windowEnd, st.kinds, undefined, p.now) }
+  if (p.phase === 'stopped' && st?.kinds !== undefined && ((st.auto === true && p.cfg.autoResume) || st.skip === true)) {
+    return { until: atText(st.windowEnd, st.kinds, undefined, p.now) }
+  }
+  if (!p.cfg.autoResume) return {}
   const q = p.question
   if (p.phase === 'asking' && q !== undefined) return { until: atText(q.holdEnd, q.kinds, undefined, p.now) }
   return {}
 }
+
+/** The reset of an open kind (an open kind always has one). */
+const resetOf = (k: KindSense): number => (k.basis.kind === 'none' ? Number.POSITIVE_INFINITY : (k.basis.resetsAtMs ?? Number.POSITIVE_INFINITY))
 
 async function badgeNow($: EngineInterface): Promise<View> {
   try {
@@ -1355,6 +1589,10 @@ async function bgWarnings($: EngineInterface): Promise<string[]> {
   if (reserve !== undefined) set.push(['SPARE10_RESERVE', reserve])
   const weeklyReserve = await $.env.get('SPARE10_WEEKLY_RESERVE')
   if (weeklyReserve !== undefined) set.push(['SPARE10_WEEKLY_RESERVE', weeklyReserve])
+  const lastMinutes = await $.env.get('SPARE10_LAST_MINUTES')
+  if (lastMinutes !== undefined) set.push(['SPARE10_LAST_MINUTES', lastMinutes])
+  const weeklyLastHours = await $.env.get('SPARE10_WEEKLY_LAST_HOURS')
+  if (weeklyLastHours !== undefined) set.push(['SPARE10_WEEKLY_LAST_HOURS', weeklyLastHours])
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
   if (pausePrompt !== undefined) set.push(['SPARE10_PAUSE_PROMPT', pausePrompt])
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
@@ -1387,9 +1625,9 @@ async function statusText($: EngineInterface): Promise<string> {
   const st = p.stop
   const at =
     q !== undefined
-      ? { ms: q.holdEnd, kinds: q.kinds }
-      : st?.kinds !== undefined && st.auto === true
-        ? { ms: st.windowEnd, kinds: st.kinds }
+      ? { ms: q.holdEnd, kinds: q.kinds, skip: q.skip }
+      : st?.kinds !== undefined && (st.auto === true || st.skip === true)
+        ? { ms: st.windowEnd, kinds: st.kinds, skip: st.skip === true }
         : undefined
   const weeklyConsent = p.consent.seven_day
   return statusReport({
@@ -1419,27 +1657,41 @@ async function statusText($: EngineInterface): Promise<string> {
     },
     autoResume: { on: p.cfg.autoResume, from: p.cfg.from.autoResume },
     ...(at === undefined ? {} : { at }),
-    ...(st === undefined ? {} : { work: st.work === true, autoStop: st.auto === true && p.cfg.autoResume }),
+    ...(st === undefined ? {} : { work: st.work === true, autoStop: st.auto === true && p.cfg.autoResume, skipStop: st.skip === true }),
     tickerStale: tickerWanted && p.now - lastTick > STALE_TICK_MS,
+    // This copy's spans: a command runs in the newest copy, so they are the spans in force (skip 2.7).
+    spans: {
+      lastMinutes: p.cfg.lastMinutes,
+      lastMinutesFrom: p.cfg.from.lastMinutes,
+      weeklyLastHours: p.cfg.weeklyLastHours,
+      weeklyLastHoursFrom: p.cfg.from.weeklyLastHours,
+    },
+    // The open kinds, only while no kind gates: the asking line then says that new work goes on, and a
+    // window that still gates would hold that new work.
+    ...(p.open.length === 0 || p.gating.length > 0 ? {} : { open: factsFrom(p.open, p.now) }),
   })
 }
 
 async function resumeCommand($: EngineInterface): Promise<string> {
   const cfg = await settings($)
   if (!cfg.enabled || !(await isAttended($))) return resumeReply('off')
-  const overdue = await takeOverdueStop($, { cfg, now: await $.clock.now(), attended: true })
-  if (overdue !== undefined) return resumeReply('overdue', undefined, namedStop(overdue))
+  const sNow = await sense($).catch(() => undefined) // skip 4.6: the takeover names what opened
+  const now = sNow?.now ?? (await $.clock.now())
+  const overdue = await takeOverdueStop($, { cfg, now, attended: true, ...(sNow === undefined ? {} : { kinds: sNow.kinds }) })
+  if (overdue !== undefined) return resumeReply('overdue', undefined, overdue.reset, overdue.open)
   const open = openQuestion()
   if (open !== undefined) {
     const q = questions.get(open)
     await settle($, open, 'resume', 'command')
     return resumeReply('asking', q?.facts)
   }
-  const s = await sense($)
+  const s = sNow ?? (await sense($))
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
   if (read.length === 0) return resumeReply('none')
   if (!s.tripped) return resumeReply('below', factsFrom(read, s.now))
-  const gating = await gatingOf($, s)
+  const split = await splitOf($, s)
+  const gating = split.gating
+  if (gating.length === 0 && split.open.length > 0) return resumeReply('open', factsFrom(split.open, s.now)) // B44: nothing to resume
   if (gating.length === 0) return resumeReply('consented', factsFrom(s.kinds.filter((k) => k.tripped), s.now))
   const wasStopped = (await stoppedNow($, s.now)) !== undefined
   for (const k of gating) await writeConsent($, k.kind, k.windowEnd, s.now, k.test)
@@ -1452,49 +1704,76 @@ async function resumeCommand($: EngineInterface): Promise<string> {
 async function stopCommand($: EngineInterface): Promise<string> {
   const cfg = await settings($)
   if (!cfg.enabled || !(await isAttended($))) return stopReply('off')
-  const now = await $.clock.now()
-  const overdue = await takeOverdueStop($, { cfg, now, attended: true })
-  if (overdue !== undefined) return stopReply('overdue')
+  const sNow = await sense($).catch(() => undefined) // skip 4.6: the takeover names what opened
+  const now = sNow?.now ?? (await $.clock.now())
+  const overdue = await takeOverdueStop($, { cfg, now, attended: true, ...(sNow === undefined ? {} : { kinds: sNow.kinds }) })
+  if (overdue !== undefined) {
+    // No stop after a takeover (D0.2): a kind that gates asks at its next event, and an open kind needs none (B44).
+    if (overdue.open.length > 0) return stopReply('overdue-open', overdue.open)
+    if (overdue.record.skip === true && sNow === undefined) return stopReply('overdue-skip')
+    return stopReply('overdue')
+  }
   const open = openQuestion()
   if (open !== undefined) {
     const q = questions.get(open)
-    const written = await settle($, open, 'stop', 'command') // sets stopped in tell mode too
+    const late = await settle($, open, 'stop', 'command') // sets stopped in tell mode too
+    if (late.ended !== undefined) {
+      // B46: the question's time had passed and a kind of it is open.
+      return stopReply(late.record !== undefined ? 'asking-soon' : 'asking-open', undefined, undefined, undefined, undefined, late.ended)
+    }
+    const written = late.record
     if (written !== undefined) {
       // The reply follows the record as written (3.2): it promises to continue only work that the stop has.
       const cont = written.auto === true && written.work === true && written.kinds !== undefined
-      return stopReply('asking', undefined, undefined, cont ? { at: atText(written.windowEnd, written.kinds ?? [], undefined, now) } : undefined)
+      return stopReply('asking', undefined, undefined, cont ? late.until : undefined)
     }
     const auto = await $.spare10.auto().catch(() => cfg.autoResume)
-    return stopReply('asking', undefined, undefined, auto && q !== undefined && q.loops > 0 ? { at: atText(q.holdEnd, q.kinds, undefined, now) } : undefined)
+    const lead = q?.skip === true ? whenOf(q.facts).lead : undefined
+    return stopReply(
+      'asking',
+      undefined,
+      undefined,
+      auto && q !== undefined && q.loops > 0 ? { at: atText(q.holdEnd, q.kinds, undefined, now), ...(lead === undefined ? {} : { lead }) } : undefined,
+    )
   }
-  const s = await sense($)
+  const s = sNow ?? (await sense($))
   const trip = tripOf(cfg.reserve)
   const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : undefined
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
   if (read.length === 0) return stopReply('none', undefined, trip, undefined, weeklyTrip)
   if (!s.tripped) return stopReply('below', factsFrom(read, s.now), trip, undefined, weeklyTrip)
   const trippedKinds = s.kinds.filter((k) => k.tripped)
+  // The stop clears both consents, so every tripped kind that is not open gates after it: the stop
+  // names them all, and the command never waits on a consent read (as 0.1). A stop never holds an open
+  // kind (B44): with none left, it writes nothing and clears no consent.
+  const ks = trippedKinds.filter((k) => !k.open)
+  if (ks.length === 0) return stopReply('open', factsFrom(trippedKinds, s.now))
   const f = factsFrom(trippedKinds, s.now)
   const st = await stoppedNow($, s.now)
   if (st !== undefined) {
-    const auto = st.kinds !== undefined && st.auto === true && cfg.autoResume
-    return stopReply('stopped', f, undefined, auto && st.kinds !== undefined ? { at: atText(st.windowEnd, st.kinds, undefined, s.now) } : undefined)
+    const shows = st.kinds !== undefined && ((st.auto === true && cfg.autoResume) || st.skip === true)
+    return stopReply('stopped', f, undefined, shows && st.kinds !== undefined ? { at: atText(st.windowEnd, st.kinds, undefined, s.now) } : undefined)
   }
-  // The stop clears both consents, so every tripped kind gates after it: the stop names them all, and
-  // the command never waits on a consent read (as 0.1).
-  const ks = trippedKinds
   const auto = cfg.autoResume
   const kinds = ks.map((k) => k.kind)
-  const until = auto ? Math.max(...ks.map((k) => k.holdEnd)) : Math.max(...ks.map((k) => k.windowEnd))
+  const until = auto ? Math.max(...ks.map((k) => k.holdEnd)) : Math.max(...ks.map((k) => k.stopEnd))
+  const skip = skipTag(
+    until,
+    ks.map((k) => k.skipAt).filter((t): t is number => t !== null),
+    ks.map((k) => k.holdEnd + dueMargin(k)),
+    auto,
+  )
   await clearConsent($)
-  await writeStopped($, { kinds, windowEnd: until, work: false, auto, test: ks.every((k) => k.test) }, s.now)
+  await writeStopped($, { kinds, windowEnd: until, work: false, auto, test: ks.every((k) => k.test), skip }, s.now)
   // A crossing during the writes saw no consent and no stop yet, so it opened a question that this
   // stop (stamped with the earlier now) cannot answer. Settle it as Stop here.
   const late = openQuestion()
   if (late !== undefined) await settle($, late, 'stop', 'command')
   redraw($)
   await $.spare10.poke({ from: ENV })
-  return stopReply('tripped', f, undefined, auto ? { at: atText(until, kinds, undefined, s.now) } : undefined) // R4: tripped or consented, never armed
+  // R4: tripped or consented, never armed. A skip stop shows its end in both modes (skip 1.3 item 6).
+  const u = untilFor(factsFrom(ks, s.now, skip), until, kinds, skip, s.now)
+  return stopReply('tripped', f, undefined, auto || skip ? { ...u, continues: auto } : undefined)
 }
 
 async function simulateCommand($: EngineInterface, words: readonly string[]): Promise<string> {
@@ -1522,7 +1801,33 @@ async function simulateCommand($: EngineInterface, words: readonly string[]): Pr
     await clearStopped($)
   }
   redraw($)
-  return simulateReply('set', factsOf({ kind: 'test', ...reading }, reserveOf(cfg, spec.kind), undefined, spec.kind, now))
+  const reserve = reserveOf(cfg, spec.kind)
+  const testBasis: Basis = { kind: 'test', ...reading }
+  const span = spanOf(cfg, spec.kind) // this copy's spans: the newest copy's (a command runs there)
+  const f: Facts = { ...factsOf(testBasis, reserve, undefined, spec.kind, now), test: true, ...(span > 0 ? { span } : {}) }
+  return simulateReply('set', f, simulateOpens(testBasis, basis(live, mem[spec.kind], now, undefined, spec.kind), reserve, span, now, f))
+}
+
+/**
+ * Skip 2.9: a forecast of when the test reading opens its reserve. Nothing for a span of 0 or a test
+ * percentage below the trip point. 'real': the real reading is in the reserve too, and its own skip
+ * start does not come first, so the test window does not open it (B45).
+ */
+function simulateOpens(
+  t: Basis,
+  real: Basis,
+  reserve: number,
+  span: number,
+  now: number,
+  f: Facts,
+): { at: string; lead: string } | 'now' | 'real' | undefined {
+  if (span <= 0 || !isTripped(t, reserve)) return undefined
+  const start = skipStartOf(t, span)
+  if (start === null) return undefined
+  const realStart = skipStartOf(real, span)
+  if (isTripped(real, reserve) && (realStart === null || realStart > Math.max(now, start))) return 'real'
+  if (start <= now) return 'now'
+  return { at: clockText(start, f.kind ?? 'five_hour', undefined, now), lead: leadText(f) ?? '' }
 }
 
 // ---- Registrations (10.9.6) ----
@@ -1531,6 +1836,7 @@ export const register: Register = (on, options) => {
   base = fromOptions(options)
   effective = undefined
   autoNow = base.autoResume
+  spansNow = NO_SPANS // B47: 0 until this copy's first successful settings read
 
   // 1. The carrier a held dispatch parks on (4.4), and the setting in force (3.4). No .catch on engine.create.
   on('engine.create', async ($, e, next) => {
@@ -1548,6 +1854,7 @@ export const register: Register = (on, options) => {
           return Promise.resolve(from === ENV ? 'self' : 'other')
         },
         auto: () => Promise.resolve(autoNow), // noun calls route to the newest copy
+        spans: () => Promise.resolve(spansNow), // B47: the spans in force, from the newest copy
       },
     }
   })
@@ -1635,8 +1942,12 @@ export const register: Register = (on, options) => {
       noteBasis(
         $,
         watchedKinds(cfg).map((kind) => {
-          const b = basis(limitOf(e.rateLimits, kind), mem[kind], now, test[kind], kind)
-          return { kind, basis: b, tripped: isTripped(b, reserveOf(cfg, kind)) }
+          const live = limitOf(e.rateLimits, kind)
+          const withTest = basis(live, mem[kind], now, test[kind], kind)
+          const real = basis(live, mem[kind], now, undefined, kind)
+          // This copy's spans: the badge only (skip 6.6).
+          const v = viewOf(real, withTest, reserveOf(cfg, kind), spanOf(cfg, kind), now)
+          return { kind, basis: v.basis, tripped: v.tripped, open: v.open }
         }),
       )
       watchTicker($, now)
@@ -1786,7 +2097,7 @@ export const register: Register = (on, options) => {
             personResume && wasStopped && last !== undefined
               ? resumeContext(factsFrom(namedKinds(last.s, last.a), last.s.now)) // B9: a person's Resume cleared the stop
               : await takeOverdueStop($, s).then(
-                  (r) => (r?.work === true ? resetContext(namedStop(r)) : undefined),
+                  (t) => (t?.record.work === true ? resetContext(t.reset, t.open) : undefined),
                   () => undefined,
                 )
           return note === undefined ? next(e) : next({ ...e, context: [...(e.context ?? []), note] })

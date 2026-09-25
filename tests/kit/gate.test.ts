@@ -1,14 +1,17 @@
 import { test, expect } from 'claude-code/testing'
 import type { ToolCallResult } from 'claude-code'
 import { atText, debugLine, factsOf, notice, questionText, resumeReply, stopReply, stopText } from '../../hooks/core/text.ts'
-import { HOUR, RESETS, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, slowAsk, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, OPENS, RESETS, SKIP, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, slowAsk, step, stopRec, typed, world } from '../helpers/world.ts'
 
 // The gate through the engine (design 11.4, gate.test.ts): one question for every held loop,
 // every answer class, the carrier, the hand-off, decisions from another copy, forks and failures.
 
 const F93 = factsOf({ kind: 'live', pct: 93, resetsAtMs: Date.parse(RESETS) }, 10)
 const STOP = stopText(F93)
-const AT = atText(Date.parse(RESETS), ['five_hour']) // {at} with autoResume on
+// {at} with autoResume on: with the shipped spans the skip start, 20 min before RESETS, with its lead (skip 2.1).
+const AT = atText(Date.parse(OPENS), ['five_hour'])
+const LEAD = '20 min before the reset'
+const F93_OWNER = { ...F93, holdEnd: Date.parse(OPENS), span: SKIP } // the facts of a skip owner's question
 const AUTO_OFF = { SPARE10_AUTO_RESUME: 'off' } // the 0.1 behaviour: a question waits for its answer
 const debug = (w: { logs: Array<{ text: string; to?: string }> }) => w.logs.filter((l) => l.to === 'debug').map((l) => l.text)
 const transcript = (w: { logs: Array<{ text: string; to?: string }> }) => w.logs.filter((l) => l.to !== 'debug').map((l) => l.text)
@@ -70,7 +73,7 @@ test('Stop here: parked loops are denied, later calls denied and steps refused, 
   expect((await bash($, 'a1')).deny).toBe(STOP)
   await w.clock.advance(1000)
   w.envSetDelayMs = 0
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
   expect((await bash($)).deny).toBe(STOP)
   expect((await bash($, 'a1')).deny).toBe(STOP)
   const refused = await drain($, step())
@@ -78,7 +81,7 @@ test('Stop here: parked loops are denied, later calls denied and steps refused, 
   expect(w.requests).toBe(0)
   expect(w.ran).toEqual([])
   expect(w.asked).toHaveLength(1)
-  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true }))
+  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true, lead: LEAD }))
 })
 
 test('a dismissed dialog, Chat about this (a rejection) and free text all read as Stop', async ($, on) => {
@@ -100,7 +103,7 @@ test('the dialog shows the loop question, the spare10 chip and Stop here first',
   const w = world(on, { pct: 93, answer: 'Resume' })
   await begin($, w)
   await bash($)
-  expect(w.asked).toEqual([{ question: questionText(F93, 'loop', 'hold', true), header: 'spare10', labels: ['Stop here', 'Resume'] }])
+  expect(w.asked).toEqual([{ question: questionText(F93_OWNER, 'loop', 'hold', true), header: 'spare10', labels: ['Stop here', 'Resume'] }])
 })
 
 test('a carrier the host rejects is re-armed and the loop still resumes', async ($, on) => {
@@ -256,7 +259,7 @@ test('after /clear, a stop from another copy under the new id settles the open q
 })
 
 test('the question has no timed release: past its window end the loops stay held, B6 is logged once, and Resume then runs them', async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1'], env: AUTO_OFF })
+  const w = world(on, { pct: 93, agents: ['a1'], env: AUTO_OFF, spans: 'off' }) // the D0.2 reset timing
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   await w.clock.settle()
@@ -419,12 +422,12 @@ test('a question stopped by /spare10 stop before its dialog arrives: the late di
   const held = bash($, 'a1')
   await w.clock.settle()
   expect(w.asked).toEqual([])
-  expect((await $.command.run(cmd('stop'))).text).toBe(stopReply('asking', undefined, undefined, { at: AT }))
+  expect((await $.command.run(cmd('stop'))).text).toBe(stopReply('asking', undefined, undefined, { at: AT, lead: LEAD }))
   expect((await held).deny).toBe(STOP)
   await w.clock.advance(1000)
   await w.clock.settle()
   expect(w.asked).toEqual([]) // no dialog is left whose Stop here or Resume nobody reads
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
   expect((await bash($, 'a1')).deny).toBe(STOP)
 })
 
@@ -493,8 +496,8 @@ test('after five hand-offs the next lost raiser settles the question as Stop her
   expect(w.asked).toHaveLength(6)
   expect(bg?.deny).toBe(STOP) // the live waiter is refused
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0 + 1500, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0 + 1500, 'five_hour,work,auto,skip'))
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.ran).toEqual([])
-  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true }))
+  expect(transcript(w)).toContain(notice.stopped(F93, { at: AT, work: true, lead: LEAD }))
 })

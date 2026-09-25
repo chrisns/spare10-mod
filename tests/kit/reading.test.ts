@@ -24,13 +24,21 @@ const mf = (reserve: number, used: number, at: number | null): string =>
 // With autoResume on (the 0.2 default) a question says when spare10 continues: {at}, the hold end. A
 // reading without resetsAt holds until its first sight plus 5 h (3.1), T0 + 5 h here unless given.
 const holdEnd = (at: number | null, hold?: number): string => clock(hold ?? at ?? T0 + 5 * HOUR)
-const loopQuestion = (reserve: number, used: number, at: number | null, hold?: number): string =>
+// Skip 2.2 (the shipped spans): a reading with a reset time more than 20 min ahead continues at its skip
+// start, 20 min before the reset, and the question names that lead. `end` is 'the reset', or 'the test
+// window ends' for a test reading. A reading without resetsAt keeps the D0.2 wording.
+const SPAN = 20 * MIN
+const skips = (at: number | null, hold?: number): at is number => at !== null && hold === undefined
+const when = (at: number | null, hold: number | undefined, end: string): string =>
+  skips(at, hold) ? `${clock(at - SPAN)}, 20 min before ${end}` : holdEnd(at, hold)
+const loopQuestion = (reserve: number, used: number, at: number | null, hold?: number, end = 'the reset'): string =>
   `Your ${one(reserve)}% reserve is reached: ${pf(used, at)}. All work is on hold. Continue on the reserve ${until(at)}? ` +
-  `If you choose Stop here or do not answer, the work waits until ${holdEnd(at, hold)}. Then spare10 continues it, unless a reserve is still reached.`
-const promptQuestion = (reserve: number, used: number, at: number | null, hold?: number): string =>
+  `If you choose Stop here or do not answer, the work waits until ${when(at, hold, end)}. Then spare10 continues it, unless a reserve is still reached.`
+const promptQuestion = (reserve: number, used: number, at: number | null, hold?: number, end = 'the reset'): string =>
   `Your ${one(reserve)}% reserve is reached: ${pf(used, at)}. spare10 holds your prompt and any other work. Continue on the reserve ${until(at)}? ` +
-  `If you do not answer, all of it continues after ${holdEnd(at, hold)}, unless a reserve is still reached. ` +
-  `Stop here gives your prompt back and pauses other work until ${holdEnd(at, hold)}.`
+  `If you do not answer, all of it continues ${skips(at, hold) ? 'at' : 'after'} ${when(at, hold, end)}, unless a reserve is still reached. ` +
+  `Stop here gives your prompt back and pauses other work until ${skips(at, hold) ? clock(at - SPAN) : holdEnd(at, hold)}.`
+const TEST_END = 'the test window ends' // {lead} of a test reading
 const stopText = (reserve: number, used: number, at: number | null): string =>
   `spare10: the user stopped work at the quota reserve (${mf(reserve, used, at)}). Stop now and wait for the user. Do not call any further tools.`
 
@@ -318,7 +326,8 @@ test('only the five_hour entry is the live basis, whatever other limits say', as
 })
 
 test('a seven_day entry of 99 trips by default, with the weekly wording', async ($, on) => {
-  const w = world(on, { pct: 50, extraLimits: [{ kind: 'seven_day', percentUsed: 99, resetsAt: LATER }] })
+  // the D0.2 reset timing: a weekly reset 8 h after T0 is inside the shipped weekly span, so it would be open at once
+  const w = world(on, { pct: 50, extraLimits: [{ kind: 'seven_day', percentUsed: 99, resetsAt: LATER }], spans: 'off' })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -579,7 +588,7 @@ test('SPARE10_SIMULATE raises a lower live reading and borrows its reset time', 
   const w = world(on, { pct: 50, env: { SPARE10_SIMULATE: '95' }, answer: 'Resume' })
   await begin($, w)
   expect((await bash($)).result).toBe('ran')
-  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, RESETS_MS)])
+  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, RESETS_MS, undefined, TEST_END)])
   await w.clock.settle()
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined() // 3.5: a Resume on a test reading stays in this copy
   expect(await status($)).toMatch(reading(`test reading · ${pf(95, RESETS_MS)} (in `))
@@ -624,14 +633,14 @@ test('a test reading applies over a blind sensor', async ($, on) => {
   await $.session.measure(measure(undefined, ['cost']))
   await $.session.measure(measure(undefined, ['cost']))
   expect((await bash($)).result).toBe('ran')
-  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, T0 + 5 * HOUR)])
+  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, T0 + 5 * HOUR, undefined, TEST_END)])
 })
 
 test('a test reading over a stored seed runs five hours from now, not to the seed reset', async ($, on) => {
   const w = world(on, { store: { seed: seedOf(50) }, env: { SPARE10_SIMULATE: '95' }, answer: 'Resume' })
   await begin($, w)
   expect((await bash($)).result).toBe('ran')
-  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, T0 + 5 * HOUR)])
+  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, T0 + 5 * HOUR, undefined, TEST_END)])
 })
 
 test('a test reading below the trip point never masks a live trip', async ($, on) => {
@@ -649,7 +658,7 @@ test('without a live reading the test reading lasts five hours from its first us
   await begin($, w)
   const end = T0 + 5 * HOUR
   expect((await bash($)).result).toBe('ran')
-  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, end)])
+  expect(w.asked.map((a) => a.question)).toEqual([loopQuestion(10, 95, end, undefined, TEST_END)])
   await w.clock.settle()
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined() // 3.5: a Resume on a test reading stays in this copy
   expect((await bash($)).result).toBe('ran') // this copy keeps the consent while the test reading applies

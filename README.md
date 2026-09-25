@@ -45,7 +45,7 @@ The plugin name is `spare10`.
    claude plugin install spare10@spare10
    ```
 
-   The install can say that 7 `userConfig` options are not set yet.
+   The install can say that 9 `userConfig` options are not set yet.
    You do not have to set them. The defaults apply until you change them in `/config`.
 
 3. Start a new Claude Code session in a terminal.
@@ -70,12 +70,15 @@ If spare10 does not load:
 To test the question, type `/spare10 simulate 95`, then send a prompt.
 Choose **Stop here**, and the test uses no quota.
 Type `/spare10 simulate off` to clear the test reading.
+If the 5-hour window resets in less than 20 minutes, the reserve is open, and spare10 does not ask.
+Then use `/spare10 simulate 95 in 1h`.
+See [Skip near the reset](#skip-near-the-reset).
 
 ## Screenshots
 
 These screenshots show spare10-mod 0.1. The screenshots for 0.2 are not ready yet.
-In 0.2, the report also has the weekly rows and the `at the reset` row.
-After **Stop here**, the badge and the notice also show the time of the reset.
+In 0.2, the report also has the weekly rows, the `opens` rows and the `at the reset` row.
+After **Stop here**, the badge and the notice also show the time when the stop ends.
 
 The badge at the right of the prompt footer, and the `/spare10` report:
 
@@ -97,8 +100,12 @@ At the reserve of either window, spare10 holds all work at the next step.
 It then asks you one question in the Claude Code dialog: **Stop here** or **Resume**.
 **Resume** continues all held work from the point where it stopped.
 **Stop here** ends the work at its next step, but the session stays open.
-After the reset, spare10 continues held and stopped work by itself.
-You can switch this off.
+
+Shortly before a window resets, spare10 opens its reserve.
+Then all work can use it, and spare10 asks nothing.
+The defaults are the last 20 minutes of the 5-hour window and the last 8 hours of the weekly window.
+When the reserve opens, or after the reset, spare10 continues held and stopped work by itself.
+You can switch each of these off.
 
 ## Before you start
 
@@ -162,7 +169,7 @@ All other held steps join it.
 
 ```
  ☐ spare10
-Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 14:00? If you choose Stop here or do not answer, the work waits until 14:00. Then spare10 continues it, unless a reserve is still reached.
+Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 14:00? If you choose Stop here or do not answer, the work waits until 13:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.
 ❯ 1. Stop here
   2. Resume
   3. Type something.
@@ -170,6 +177,9 @@ Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ```
 
+At 13:40 the reserve opens, 20 minutes before the reset.
+See [Skip near the reset](#skip-near-the-reset).
+With an open time of 0, the question says `the work waits until 14:00`.
 With **Continue at the reset** off, the question ends at `Continue on the reserve until 14:00?`
 
 The weekly window has the same question, with the weekly wording.
@@ -178,7 +188,7 @@ A reset more than 6 days away also shows the date, such as `Thu 1 Oct 11:00`.
 When both windows are in the reserve, one question names both:
 
 ```
-Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on both reserves until they reset (14:00 and Mon 09:00)? If you choose Stop here or do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.
+Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on both reserves until they reset (14:00 and Mon 09:00)? If you choose Stop here or do not answer, the work waits until Mon 01:00, 8 h before the weekly reset. Then spare10 continues it, unless a reserve is still reached.
 ```
 
 The question names the windows that are in the reserve when it opens.
@@ -186,7 +196,8 @@ Another window can reach its reserve while the question waits.
 **Resume** does not apply to that window.
 After a **Resume**, spare10 asks you again about it.
 **Stop here** also stops the work on that window.
-With **Continue at the reset** on, the stop then lasts until that window resets too.
+With **Continue at the reset** on, the stop then also waits for that window.
+It lasts until that window opens its reserve, or resets.
 
 **Stop here** has the focus, so a stray Enter never spends the reserve.
 Only the exact label `Resume` continues.
@@ -207,12 +218,16 @@ All other answers are **Stop here**: Esc, `Chat about this`, other text, and a d
 - spare10 denies each held tool call.
 - spare10 answers each held model request itself, and sends no request.
 - spare10 ends the main turn, so a Stop hook cannot start the loop again.
-- spare10 refuses all later steps until the reset, or until you continue.
+- spare10 refuses all later steps until the reserve opens, or until you continue.
+  With an open time of 0, this lasts until the reset.
 - The session stays open and idle.
-- With **Continue at the reset** on, spare10 continues the stopped work after the reset.
+- With **Continue at the reset** on, spare10 continues the stopped work when the reserve opens.
   It sends Claude a short message that the stop is over.
-- The transcript shows `spare10: stopped at your 10% reserve until 14:00. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.`
-- With the option off, the transcript shows `spare10: stopped at your 10% reserve. Type a prompt to be asked again, or run /spare10 resume.`
+- The transcript shows `spare10: stopped at your 10% reserve until 13:40, 20 min before the reset. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.`
+- With the option off, the transcript shows `spare10: stopped at your 10% reserve until 13:40, 20 min before the reset. Type a prompt to be asked again, or run /spare10 resume.`
+  At 13:40 the stop ends, and your next prompt goes in with no question.
+  spare10 sends nothing.
+- With the option off and an open time of 0, the transcript shows `spare10: stopped at your 10% reserve. Type a prompt to be asked again, or run /spare10 resume.`
 
 The model reads one of these texts after a Stop:
 
@@ -221,9 +236,68 @@ spare10: the user stopped work at the quota reserve (into your 10% reserve · 9%
 spare10: work stopped at the quota reserve (into your 10% reserve · 9% of quota left · resets 14:00). No model request was sent, so this task is not finished. Wait for the user.
 ```
 
+### Skip near the reset
+
+The quota refreshes at the reset.
+A reserve that you do not use by then is lost.
+So by default spare10 skips the reserve check shortly before the reset, and opens the reserve:
+
+- in the last 20 minutes of the 5-hour window
+- in the last 8 hours of the weekly window
+
+These are the open times. You can change them in `/config`.
+While a reserve is open, spare10 lets all work use it and asks nothing.
+Each window has its own time.
+A weekly trip still holds the work in the last 20 minutes of the 5-hour window.
+Before that time, spare10 guards the reserve as usual.
+
+Example: the reserve is 10%, and the 5-hour window resets at 16:40.
+
+- At 14:00, with 92% used, spare10 holds the work and asks you.
+  The question says `the work waits until 16:20, 20 min before the reset`.
+- At 16:25, with 93% used, the work goes on with no question.
+  The badge shows `↻ spare10: reserve open until 16:40`.
+
+**With Continue at the reset on**, held and stopped work continues when the reserve opens.
+The question, the stop notice and the badge give that time.
+spare10 adds no margin here, because the reset is still ahead.
+If the clock of your computer runs fast, the reserve opens early by the same amount.
+The work then still uses the reserve of the window that ends.
+When the reserve opens, the transcript shows `spare10: the 5-hour window resets at 16:40. Your 10% reserve is open until then. Held work continues.`
+After a stop, Claude gets a short message that starts `The 5-hour window resets at 16:40. Your 10% reserve is open until then, so the stop at the quota reserve is over.`
+
+**With Continue at the reset off**, held work still waits for your answer.
+When the reserve opens, the transcript tells you once:
+`spare10: the 5-hour window resets at 16:40. Your 10% reserve is open until then, but held work still waits for your answer. New work goes on with no question.`
+If the other window still holds work at its reserve, new work waits too. Then the line does not have the part `New work goes on with no question.`
+A **Stop here** ends when the reserve opens.
+Your next prompt then goes in with no question, and spare10 sends nothing.
+
+A question can stay on the screen for a short time after the reserve opens.
+A **Stop here** in that time does not stop the open window:
+
+- With **Continue at the reset** on, spare10 continues the held work at its next check, within about 30 s.
+- With the option off, spare10 refuses the held work, and new work goes on with no question.
+
+While a reserve is open:
+
+- `/spare10 stop` stops only a window that is in its reserve and not open. This includes a window that you chose to continue on.
+  If every window in its reserve is open, it stops nothing and says that the reserve is open.
+- `/spare10 resume` has nothing to do, unless another window holds the work.
+- In tell mode, no agent gets the pause prompt.
+- Every unattended policy lets the work through. See [Unattended runs](#unattended-runs).
+
+To keep a reserve until the reset, set its open time to `0`. See [Configure](#configure).
+The change also applies to work that spare10 holds now.
+
+spare10 opens a reserve only when it knows the reset time.
+A reading without a reset time keeps the guard until the reset.
+
 ### At the reset
 
 This part applies with **Continue at the reset** on, which is the default.
+It applies to a window that does not open its reserve before the reset.
+That is a window with an open time of 0, or a reading without a reset time.
 spare10 does not act at the exact time of the reset.
 It waits 5 minutes after the reset, and then reads the quota again.
 A window that is still in its reserve keeps the work on hold.
@@ -253,14 +327,14 @@ The message names no figures, because the new window has none yet.
 spare10 does not start a stopped subagent again.
 The model does this if it still needs the result.
 
-If a window is still in its reserve, the stop continues until that window resets.
-The transcript then shows `spare10: the 5-hour window reset, but your 10% weekly reserve is reached. The stop lasts until Mon 09:00.`
+If a window is still in its reserve, the stop continues until that window opens its reserve or resets.
+The transcript then shows `spare10: the 5-hour window reset, but your 10% weekly reserve is reached. The stop lasts until Mon 01:00, 8 h before the weekly reset.`
 If you type in the prompt box at the reset, the message waits.
 After 5 minutes, it goes anyway.
 If the message fails, the transcript shows `spare10: could not continue the stopped work: <reason>. Type a prompt to continue.`
 
 **With the option off.**
-Switch off **Continue at the reset** to get the behaviour of spare10-mod 0.1.
+Switch off **Continue at the reset** to get the behaviour of spare10-mod 0.1 at the reset.
 Then an open question waits for your answer with no time limit.
 The window reset does not release the work and does not stop it.
 At the reset, the transcript shows `spare10: the 5-hour window reset. Held work still waits for your answer.`
@@ -276,7 +350,7 @@ See [Configure](#configure).
 Inside the reserve, spare10 asks before your prompt enters.
 The question then says `spare10 holds your prompt and any other work.`
 With **Continue at the reset** on, the question ends like this:
-`If you do not answer, all of it continues after 14:00, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until 14:00.`
+`If you do not answer, all of it continues at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until 13:40.`
 **Resume** lets the prompt enter.
 After a stop, the prompt also carries a short note.
 The note tells the model that you chose to continue.
@@ -287,12 +361,14 @@ Prompt dropped by a hook: spare10: not started. This session is inside your 10% 
 ```
 
 spare10 then puts your text back in the prompt box, if the box is empty.
-At the reset, spare10 does not send that text for you.
-If no other work stopped, the transcript shows `spare10: the 5-hour window reset, and the stop is over. Type a prompt to continue.`
+When the stop ends, spare10 does not send that text for you.
+If no other work stopped, the transcript shows `spare10: the 5-hour window resets at 14:00. Your 10% reserve is open until then, and the stop is over. Type a prompt to continue.`
+After a reset, it shows `spare10: the 5-hour window reset, and the stop is over. Type a prompt to continue.`
 
-You can send a prompt after the reset, before spare10 continues the stopped work.
+You can send a prompt after the stop ends, before spare10 continues the stopped work.
 Your prompt then ends the stop, and spare10 sends no message of its own.
-The transcript shows `spare10: the 5-hour window reset, and the stop is over.`
+The transcript shows `spare10: the 5-hour window resets at 14:00. Your 10% reserve is open until then, and the stop is over.`
+After a reset, it shows `spare10: the 5-hour window reset, and the stop is over.`
 If the stop held work, your prompt carries a short note.
 The note tells the model to continue the stopped task after your message.
 
@@ -318,10 +394,14 @@ The transcript shows `spare10: your 10% reserve is reached. spare10 told the age
 Until the main loop gets the instruction, a prompt that you send still asks first.
 Its question says `spare10 holds your prompt.`
 With **Continue at the reset** on, the question ends like this:
-`If you do not answer, your prompt goes in after 14:00, unless a reserve is still reached. Stop here gives it back to you.`
+`If you do not answer, your prompt goes in at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives it back to you.`
 If you choose **Resume**, no agent gets the instruction in that window.
 If you choose **Stop here**, spare10 drops the prompt and puts the text back.
 Nothing else stops.
+
+While the reserve is open, no agent gets the instruction, and your prompts go in with no question.
+An agent that got the instruction before that time gets no message to go on.
+Type a prompt to continue it.
 
 ### The badge
 
@@ -335,21 +415,25 @@ The rows without a label, such as `⚠ Pausing at next step`, show no ` (test)`.
 | Badge | Meaning |
 |---|---|
 | `○ spare10 off` | spare10 is not enabled in this run. It only watches. |
-| `? spare10: waiting for you until 14:00` | A question is open. Held work waits for your answer, or until the reset at 14:00. |
+| `? spare10: waiting for you until 13:40` | A question is open. Held work waits for your answer, or until 13:40, when the reserve opens. |
 | `? spare10: waiting for you` | A question is open, and **Continue at the reset** is off. Held work waits for your answer. |
 | `⚠ spare10 quota unavailable` | Claude Code reports no 5-hour quota. spare10 lets all work through. |
 | `⧗ spare10` | There is no reading yet. spare10 lets all work through. |
 | `● spare10` | Usage is below each reserve. |
 | `⨯ spare10` | You chose to continue. spare10 is quiet until the window resets. |
-| `■ spare10: stopped until 14:00` | You chose **Stop here**. The stop ends at the reset at 14:00. Then spare10 continues any stopped work. |
-| `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself. **Continue at the reset** is off, or was off at the stop. |
+| `↻ spare10: reserve open until 14:00` | The reset is near. spare10 lets all work use the reserve until 14:00. |
+| `■ spare10: stopped until 13:40` | You chose **Stop here**. The stop ends at 13:40, when the reserve opens. With **Continue at the reset** on, spare10 then continues any stopped work. |
+| `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself. **Continue at the reset** is off, or was off at the stop. The stop ends at the reset. |
 | `⏸ spare10` | At least one agent got the pause prompt. |
 | `⚠ spare10: in the reserve` | An unattended run is inside the reserve. |
 | `⚠ Pausing at next step` | Usage reached a reserve. spare10 holds the next step and asks you. The glyph blinks. |
 | `⚠ Winding down at next step` | Usage reached a reserve. Each agent gets the pause prompt at its next tool result. The glyph blinks. |
 
-The time in the badge is the time of the reset.
-spare10 continues the work about 5 minutes later.
+The time in a `?` or `■` row is the time when the hold or the stop ends.
+That is the time when the reserve opens, or the reset.
+After a reset, spare10 continues the work about 5 minutes later.
+A stop that ends when the reserve opens always shows its time, also with **Continue at the reset** off.
+The time in the `↻` row is the reset.
 A weekly time shows the weekday, such as `Mon 09:00`.
 The badge does not tell you which window tripped.
 Type `/spare10` to see both windows.
@@ -362,7 +446,7 @@ The vscode and mobile surfaces have no footer, so there the dialog is the only s
 
 | Command | What it does |
 |---|---|
-| `/spare10` or `/spare10 status` | Shows the phase, the reserves, the readings, the consents, what happens at the reset and any warnings. |
+| `/spare10` or `/spare10 status` | Shows the phase, the reserves, the open times, the readings, the consents, what happens at the reset and any warnings. |
 | `/spare10 resume` | Continues on the reserve until the window resets. It answers an open question with **Resume**. |
 | `/spare10 stop` | Stops at the reserve now. It answers an open question with **Stop here**. |
 
@@ -379,6 +463,8 @@ spare10: version 0.2.0
   ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.
   · reserve        10% of the 5-hour window (from /config)
   · weekly reserve 10% of the weekly window (from /config)
+  · reserve opens  in the last 20 min of the 5-hour window (from /config)
+  · weekly opens   in the last 8 h of the weekly window (from /config)
   · at the reserve stop and ask you
   · at the reset   continue by itself (from /config)
   · reading        live · 42% used · 58% left · resets 14:00 (in 2 h 14 min)
@@ -394,19 +480,44 @@ spare10: version 0.2.0
 
 Claude Code puts `spare10: ` in front of each reply and each transcript line of spare10.
 
+- The `reserve opens` and `weekly opens` rows show the open times and where they come from.
+  `only at the reset` means that the open time is 0.
+  `spare10 could not read the env` means that spare10 uses an open time of 0 until it can read the variables.
 - The `at the reset` row says `continue by itself` or `wait for your answer`.
 - With a weekly reserve of 0, the `weekly reserve` row says `off`.
-  Then the `weekly reading` and `weekly consent` rows do not show.
+  Then the `weekly opens`, `weekly reading` and `weekly consent` rows do not show.
 - If the reset check does not run in this session, the report shows this warning:
   `⚠ spare10 cannot check the reset in this session. Type a prompt to continue after the reset.`
+
+While a reserve is open, the phase line reads like this:
+
+```
+  ↻ open           the reset is near. Your 10% reserve is open until 14:00, so spare10 lets all work through.
+```
 
 `/spare10 stop` works only inside the reserve, when spare10 is tripped or you chose to continue.
 Below the trip point it changes nothing.
 
-A stop can be past its reset, but not yet continued by spare10.
+While a reserve is open, `/spare10 stop` and `/spare10 resume` have nothing to do.
+They write nothing, and reply like this:
+
+```
+spare10: nothing to stop. The reset is near, so your 10% reserve is open until 14:00. To keep a reserve until the reset, set its Open reserve option to 0 in /config.
+spare10: nothing to resume. The reset is near, so your 10% reserve is open until 14:00.
+```
+
+If the other window is in its reserve and not open, `/spare10 stop` stops that window only.
+
+A stop can be past its end, but not yet continued by spare10.
 Then `/spare10 resume` and `/spare10 stop` end the stop, and spare10 sends no message to Claude.
-`/spare10 resume` replies `spare10: the 5-hour window reset, and the stop is over. Type a prompt to continue.`
-`/spare10 stop` replies `spare10: the stop ended at the reset. spare10 will not continue the stopped work.`
+After a reset, `/spare10 resume` replies `spare10: the 5-hour window reset, and the stop is over. Type a prompt to continue.`
+After a reset, `/spare10 stop` replies `spare10: the stop ended at the reset. spare10 will not continue the stopped work.`
+When the reserve opened, the replies are these:
+
+```
+spare10: the 5-hour window resets at 14:00. Your 10% reserve is open until then, and the stop is over. Type a prompt to continue.
+spare10: the stop is over, because the reset is near. Your 10% reserve is open until 14:00. spare10 will not continue the stopped work.
+```
 
 ### How long a choice lasts
 
@@ -417,16 +528,17 @@ Then `/spare10 resume` and `/spare10 stop` end the stop, and spare10 sends no me
   `/clear` and `/resume` inside the session keep it.
 - A **Resume** on a test reading applies only while that test reading applies.
   A reload, a new `/spare10 simulate` value or `/spare10 simulate off` ends it.
-- **Stop here** lasts until the window resets, for this conversation only.
+- **Stop here** lasts until the reserve opens, or until the window resets when it does not open before.
+  It applies to this conversation only.
   With **Continue at the reset** on, spare10 then continues the stopped work.
-  With the option off, the stop ends, and spare10 arms again.
+  With the option off, the stop ends, and spare10 sends nothing.
 - `/exit` ends a stop for good.
-- `/clear` ends a stop for good, unless you `/resume` that conversation before the reset.
+- `/clear` ends a stop for good, unless you `/resume` that conversation before the stop ends.
   `/resume` to another conversation does the same.
   The next prompt then asks again.
 - An open question stays open after `/clear`.
   Your answer still applies to all held work.
-  With **Continue at the reset** on, the held work still continues after the reset.
+  With **Continue at the reset** on, the held work still continues when the reserve opens, or after the reset.
 - After `/clear`, each loop gets the wind-down text again.
   This applies to the pause prompt and to the unattended `prompt` policy.
 - A new terminal starts armed, and asks on its own.
@@ -436,7 +548,7 @@ Then `/spare10 resume` and `/spare10 stop` end the stop, and spare10 sends no me
 
 Each `claude --bg` session runs its own copy of spare10.
 No question time limit applies to its question.
-With **Continue at the reset** on, held work continues after the reset, as in a terminal.
+With **Continue at the reset** on, held work continues as in a terminal, when the reserve opens or after the reset.
 `claude agents` shows the job as `blocked`, with the question and both labels.
 Type `resume` in the agent view to answer **Resume**.
 Any other reply is **Stop here**.
@@ -445,7 +557,7 @@ A background session does not take the consent of another session.
 It asks on its own.
 A background session gets its environment from the `claude daemon`, not from your terminal.
 The daemon can start from a session that you started with one of these variables:
-`SPARE10=off`, `SPARE10_RESERVE`, `SPARE10_WEEKLY_RESERVE`, `SPARE10_PAUSE_PROMPT` or `SPARE10_AUTO_RESUME`.
+`SPARE10=off`, `SPARE10_RESERVE`, `SPARE10_WEEKLY_RESERVE`, `SPARE10_LAST_MINUTES`, `SPARE10_WEEKLY_LAST_HOURS`, `SPARE10_PAUSE_PROMPT` or `SPARE10_AUTO_RESUME`.
 Then every background session that the daemon starts gets these values.
 spare10 shows a warning in each background session that has them.
 
@@ -501,14 +613,20 @@ A change of option reloads the plugin.
 |---|---|---|---|
 | Reserve (%) | `10` | 1 to 99, one decimal at most | The part of the 5-hour window that you keep. spare10 trips at `100 - reserve` percent used. |
 | Weekly reserve (%) | `10` | `0`, or 1 to 99, one decimal at most | The part of the weekly window that you keep. `0` switches the weekly guard off. |
+| Open reserve before 5-hour reset (min) | `20` | 0 to 299, one decimal at most | In this many last minutes of the 5-hour window, spare10 lets all work use the reserve. `0` switches this off. |
+| Open weekly reserve before weekly reset (h) | `8` | 0 to 167, one decimal at most | The same for the weekly window, in hours. `0` switches this off. |
 | Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. |
-| Continue at the reset | on | on, off | On: a few minutes after the reset, spare10 continues held and stopped work by itself. **Stop here** then means "stop until the reset". Off: work waits for you. |
+| Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". Off: work waits for you. |
 | Unattended runs (-p, SDK) | `off` | `off`, `prompt`, `stop`, `wait` | What spare10 does inside the reserve when nobody can answer. See [Unattended runs](#unattended-runs). |
 | Guarded sessions | `all` | `all`, `opt-in` | `all`: every interactive session. `opt-in`: only runs started with `SPARE10=on`. |
 | Status badge | on | on, off | Shows the badge at the right of the prompt footer. |
 
 With a weekly reserve of `0`, spare10 still reads the weekly window.
 It never acts on it.
+
+The open time of a window is the time before its reset in which spare10 opens the reserve.
+See [Skip near the reset](#skip-near-the-reset).
+The largest open times still guard the first minute of the 5-hour window and the first hour of the weekly window.
 
 These variables change one run.
 Set them before you start Claude Code.
@@ -517,6 +635,8 @@ Set them before you start Claude Code.
 |---|---|
 | `SPARE10_RESERVE` | Replaces the reserve, 1 to 99. |
 | `SPARE10_WEEKLY_RESERVE` | Replaces the weekly reserve: `0`, or 1 to 99. `0` switches the weekly guard off. |
+| `SPARE10_LAST_MINUTES` | Replaces the open time of the 5-hour window, 0 to 299 minutes. `0` switches it off. |
+| `SPARE10_WEEKLY_LAST_HOURS` | Replaces the open time of the weekly window, 0 to 167 hours. `0` switches it off. |
 | `SPARE10_PAUSE_PROMPT` | Replaces the pause prompt. A set but empty value forces stop and ask. |
 | `SPARE10_AUTO_RESUME` | `on` or `off`. Replaces **Continue at the reset**. |
 | `SPARE10_HEADLESS` | Replaces the unattended policy: `off`, `prompt`, `stop` or `wait`. |
@@ -525,7 +645,9 @@ Set them before you start Claude Code.
 A variable wins over `/config`.
 `/config` wins over the default.
 spare10 ignores a bad value and logs a warning at the start of the session.
-`/spare10` shows where the reserve, the weekly reserve and the scope switch come from.
+If spare10 cannot read the variables at all, it sets both open times to 0 until a read succeeds.
+Then it keeps each reserve until the reset.
+`/spare10` shows where the reserve, the weekly reserve, the open times and the scope switch come from.
 In an attended session, it also shows where the setting for the reset comes from.
 In an unattended run, it also shows where the policy comes from.
 
@@ -541,7 +663,9 @@ spare10 also writes some variables into the process environment:
   It holds the session id, the end of the stop, the time of the stop and a list of tags.
   The tags name the windows of the stop.
   They also tell spare10 whether the stop held work, and whether to continue it at the reset.
+  The tag `skip` tells spare10 that the stop ends when the reserve opens, with no margin.
   A value from spare10-mod 0.1 still stops, but never continues by itself.
+  It holds no work while a reserve is open.
 - `SPARE10_HEADLESS=stop` goes to child processes, as [Scope](#scope) explains.
 
 A `SPARE10_CONSENT` value that lies after the current window has no effect.
@@ -552,7 +676,7 @@ A `SPARE10_WEEKLY_CONSENT` value that lies after the current weekly window has n
 If you edit `pluginConfigs` in a settings file by hand, use the correct JSON types:
 
 ```json
-{ "pluginConfigs": { "spare10@spare10": { "options": { "reserve": 15, "weeklyReserve": 5, "autoResume": false, "badge": false } } } }
+{ "pluginConfigs": { "spare10@spare10": { "options": { "reserve": 15, "weeklyReserve": 5, "lastMinutes": 30, "autoResume": false, "badge": false } } } }
 ```
 
 A value of the wrong type, or out of range, stops spare10 from loading.
@@ -565,9 +689,9 @@ Two settings make Claude Code continue a question by itself after a time:
 - the `CLAUDE_AFK_TIMEOUT_MS` variable
 
 With either one set, an unanswered spare10 question counts as **Stop here**.
-With **Continue at the reset** on, spare10 then continues the work at the reset.
+With **Continue at the reset** on, spare10 then continues the work at the time that the question names.
 spare10 warns you about this at the start of a session.
-Run `/spare10 resume` to continue before the reset.
+Run `/spare10 resume` to continue before that time.
 Neither limit applies in a `--bg` session.
 
 ## Unattended runs
@@ -583,7 +707,7 @@ The `headless` option (Unattended runs in `/config`) sets what spare10 does insi
 | `off` (default) | spare10 changes nothing. It reads the quota and shares the reading with other sessions. |
 | `prompt` | Each agent gets the wind-down text once, on its next tool result. With an empty pause prompt, the text has no `User instructions` part. |
 | `stop` | spare10 denies tool calls and refuses model requests, and sends no request. Prompts still enter. |
-| `wait` | spare10 holds tool calls and model requests, with no question. After the reset, it reads the quota again and continues. Prompts still enter. |
+| `wait` | spare10 holds tool calls and model requests, with no question. When the reserve opens, or after the reset, it reads the quota again and continues. Prompts still enter. |
 
 Under `stop`, the run ends with this answer:
 
@@ -600,6 +724,18 @@ spare10: unattended run inside the reserve (91% used · 9% left · resets 14:00)
 Use `--debug-file <path>` to see it.
 In a `-p` run, spare10 notices go only to the debug log.
 
+While a reserve is open, every policy lets the work through.
+Nothing is told, refused or held.
+spare10 then writes this line once per window:
+
+```
+spare10: unattended run inside the reserve (91% used · 9% left · resets 14:00), but the reset is near. spare10 lets it through.
+```
+
+A run that must never spend a reserve sets `SPARE10_LAST_MINUTES=0` and `SPARE10_WEEKLY_LAST_HOURS=0`.
+A CI run is an example.
+If spare10 cannot read these variables, it keeps each reserve until the reset.
+
 **With `scope: opt-in`, a plain `-p` run without `SPARE10=on` is not enabled.**
 spare10 ignores the `headless` policy in that run.
 A `claude -p` that a `SPARE10=on` session starts inherits the variable, so the policy applies to it.
@@ -614,13 +750,15 @@ A terminal session that you view from the desktop app is attended, and shows the
 
 ### The `wait` policy
 
-A `wait` hold lasts until the reset of each window that tripped, plus 5 minutes.
+A `wait` hold lasts until each window that tripped opens its reserve.
+spare10 adds no margin there.
+With an open time of 0, the hold lasts until the reset, plus 5 minutes.
 That is up to about 5 hours for the 5-hour window.
 For the weekly window, it is up to 7 days.
 `wait` has no upper bound of its own.
 To keep a run from a wait of days, start it with `SPARE10_WEEKLY_RESERVE=0`.
 
-- `wait` ignores **Continue at the reset**. It always continues at the reset.
+- `wait` ignores **Continue at the reset**. It always continues when the reserve opens, or after the reset.
 - A consent that the run inherits from its parent session still applies.
 - After the release, the turn goes on, and the run ends as usual.
 - A `-p` run has no quota reading at its start.
@@ -630,7 +768,7 @@ To keep a run from a wait of days, start it with `SPARE10_WEEKLY_RESERVE=0`.
 - In the desktop and IDE hosts, a `wait` hold shows a running turn with no sign of spare10.
   It looks like a hang, so use `prompt` or `stop` there.
 
-Three things can end a `wait` hold before the reset:
+Three things can end a `wait` hold before its time:
 
 - **The hook budget.** Each hold uses a little of its time budget.
   Before the budget runs out, spare10 ends the hold as a stop.
@@ -664,6 +802,7 @@ Three hooks see every step of work.
 `turn.step` sees each model request, also in turns that make no tool call.
 `prompt.submit` sees your prompts.
 Below the trip point, each hook lets the step through at once.
+While a reserve is open, it does the same.
 
 **Hold.**
 At the trip point, the hook does not return.
@@ -684,11 +823,11 @@ The answer then releases or refuses all held steps.
 **Continue.**
 Nothing in Claude Code fires at a quota reset, so spare10 keeps its own clock.
 At the start of a session, spare10 starts a timer that runs every 30 s.
-The timer continues a stop after the reset, with a short message to Claude.
+The timer continues a stop when the reserve opens, or after the reset, with a short message to Claude.
 A second timer runs every 5 minutes.
 If a hook of another plugin stops one timer, the other timer starts it again.
 Each held step also checks the time on each cycle of its wait.
-So an open question ends after the reset, also after a reload.
+So an open question ends when the reserve opens, or after the reset, also after a reload.
 Before it releases work by itself, spare10 reads the quota again.
 If that read fails, spare10 does not release the work.
 
@@ -735,7 +874,7 @@ After the reading trips, a failure holds or refuses the step.
 7. **A long hold expires the prompt cache.** The first request after a long hold caches the context again.
 8. **Consent is per session.** Another terminal, a new session and each `--bg` session ask on their own. After `/clear` or `/resume` in the same process, your consent stays.
 9. **Desktop and IDE hosts are unattended** in this version. By default spare10 only watches there. The vscode and mobile surfaces show no badge.
-10. **Some setups turn every question into Stop.** These are `dontAsk` mode and a disallowed AskUserQuestion tool. A question time limit turns an unanswered question into Stop. With **Continue at the reset** on, the work then continues at the reset. Use `/spare10 resume` to continue before that.
+10. **Some setups turn every question into Stop.** These are `dontAsk` mode and a disallowed AskUserQuestion tool. A question time limit turns an unanswered question into Stop. With **Continue at the reset** on, the work then continues at the time that the question names. Use `/spare10 resume` to continue before that.
 11. **You cannot type `/spare10` while the dialog is on the screen.** Answer the dialog, or use a remote surface.
 12. **A reload while a question is open** can show a second question for new work. One answer releases both within 10 s. On a test reading, each copy asks on its own.
 13. **The shared reading is not keyed by account.** After you change account on one machine, a new session can ask once too early.
@@ -750,17 +889,26 @@ After the reading trips, a failure holds or refuses the step.
 22. **An installed copy and a `--plugin-dir` copy cannot run together.** One of them unloads.
 23. **spare10 guards every interactive session by default**, and this includes your important sessions. Use `SPARE10=off`, or `scope: opt-in` with `SPARE10=on`.
 24. **There is no list of stopped runs across sessions.** spare10 doctor listed each stopped background run. Use `claude agents`.
-25. **spare10 continues 5 minutes after a real reset, not at the exact time.** After a test window, it waits 60 s. A test window can end less than 5 minutes after the reset of a real reading in the reserve. Then spare10 waits until 5 minutes after that reset. The release uses the clock of your computer.
+25. **spare10 continues 5 minutes after a real reset, not at the exact time.** When the reserve opens before the reset, spare10 adds no margin. After a test window, it waits 60 s. A test window can end less than 5 minutes after the reset of a real reading in the reserve. Then spare10 waits until 5 minutes after that reset. The release uses the clock of your computer.
 26. **A held loop continues within about 10 s after that time.** A stopped session waits for the next 30 s check.
 27. **The message at the reset starts a new turn.** While the prompt box holds new text, the message waits up to 5 minutes. Then it goes.
-28. **A hold ends as Stop here when it has used most of its hook budget.** The estimate is more than a day. With **Continue at the reset** on, the work then continues at the reset. Under `wait`, the run ends with the `stop` answer.
+28. **A hold ends as Stop here when it has used most of its hook budget.** The estimate is more than a day. With **Continue at the reset** on, the work then continues when the reserve opens, or at the reset. Under `wait`, the run ends with the `stop` answer.
 29. **`wait` has no upper bound of its own.** A weekly trip can hold a run for up to seven days. Use `SPARE10_WEEKLY_RESERVE=0` for runs that must not wait.
 30. **The badge does not show which window tripped.** It never shows the weekly reserve. Use `/spare10` to see both windows.
 31. **spare10 does not restart a stopped subagent.** The message at the reset tells the model to run it again if it needs the result.
-32. **Stop here on a prompt question of an idle session gives the prompt back.** spare10 does not send that prompt at the reset. Type it again.
-33. **Continue at the reset spends the new window while nobody watches.** spare10 stops again at the reserve of the new window. To stop for good, use `/exit` or `/clear`, or switch the option off.
+32. **Stop here on a prompt question of an idle session gives the prompt back.** spare10 does not send that prompt when the stop ends. Type it again.
+33. **Continue at the reset spends quota while nobody watches.** When the reserve opens, the work uses the reserve. After the reset, it uses the new window. spare10 stops again at the reserve of the new window. To stop for good, use `/exit` or `/clear`, or switch the option off.
 34. **After an upgrade from 0.1 while a question is open, answer that question once.** The old copy has no reset check, so its held work does not continue by itself. A **Stop here** from the new copy does not close the old dialog.
 35. **A reload while a prompt question is open in a stopped session can start two turns at the reset.** One turn is the message of spare10. The other is your released prompt.
+36. **A question that opens just before the reserve opens shows for a short time only.** spare10 does not hide it. A **Stop here** in that time does not stop the open window.
+37. **Agents that got the pause prompt do not get a message when the reserve opens.** Type a prompt to continue them.
+38. **You cannot stop at a reserve while it is open.** `/spare10 stop` stops nothing then. To keep a reserve until the reset, set its open time to 0.
+39. **A stop from spare10 0.1 does not hold work while a reserve is open.**
+40. **With Continue at the reset off, new work can run while older work waits.** When the reserve opens, new work goes on with no question. Work that a question from before holds still waits for your answer.
+41. **The weekly open time spends the weekly reserve at the pace of the 5-hour window.** In the last 8 hours of the weekly window, only the 5-hour guard holds the work.
+42. **Unattended `stop` and `prompt` runs spend an open reserve.** Set `SPARE10_LAST_MINUTES=0` and `SPARE10_WEEKLY_LAST_HOURS=0` for runs that must never spend a reserve.
+43. **The open time uses the clock of your computer.** A clock that runs fast opens the reserve early by the same amount. The work then still uses the reserve of the window that ends.
+44. **spare10 opens a reserve only when it knows the reset time.** A reading without a reset time keeps the guard until the reset.
 
 ## Develop
 
@@ -794,7 +942,7 @@ types.d.ts                       the types contract: the $.spare10 noun
 hooks/hooks.json                 names the hooks module
 hooks/register.tsx               every hook and every $ call
 hooks/core/config.ts             pure: options, per-run variables, scope, start-up checks
-hooks/core/reading.ts            pure: the readings of both windows, shared seeds, blind count, test readings, hold ends
+hooks/core/reading.ts            pure: the readings of both windows, shared seeds, blind count, test readings, hold ends, open times
 hooks/core/decide.ts             pure: the decision table, the phase, answers, consent, stopped
 hooks/core/text.ts               pure: every text that a person or the model reads
 hooks/core/badge.ts              pure: the badge view
@@ -805,6 +953,9 @@ tests/kit/weekly.test.ts         kit tests of the weekly window
 tests/kit/reset.test.ts          kit tests of an open question at the reset
 tests/kit/reset-stop.test.ts     kit tests of a stop at the reset, and of what ends it
 tests/kit/headless-wait.test.ts  kit tests of the unattended wait policy
+tests/kit/skip.test.ts           kit tests of the reserve that opens near the reset
+tests/kit/skip-hold.test.ts      kit tests of held work and questions near the reset
+tests/kit/skip-stop.test.ts      kit tests of stops, commands, the badge and the report near the reset
 .fixtures/stophook.json          a Stop hook for live check LC3
 docs/live-checks.md              the live checks, as a runbook
 .claude/CLAUDE.md                notes for Claude Code. Not at the root, where validate --strict warns.
@@ -845,11 +996,16 @@ The command takes this form:
 - `/spare10 simulate 95 weekly` sets a test reading for the weekly window.
   The words `5h`, `5-hour`, `five_hour`, `weekly`, `7d` and `seven_day` name a window, in any case.
   Without a window word, the test reading is for the 5-hour window.
-- `/spare10 simulate 95 in 2m` sets a test window that ends in two minutes.
+- `/spare10 simulate 95 in 22m` sets a test window that ends in 22 minutes.
   The time is 10 s at least, and the window length at most.
-- A 2-minute test window lets you see the reset.
-  spare10 waits 60 s after the end of a test window, so `in 2m` continues about 3 minutes later.
+- A test window has an open time too.
+  With the default open time, `in 22m` opens the reserve 2 minutes later, with no margin.
+  For the weekly window, use `in 482m`.
+  A test window shorter than 20 minutes (8 hours for the weekly window) is open at once.
+- To see the reset itself, start Claude Code with `SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0`.
+  Then spare10 waits 60 s after the end of a test window, so `in 2m` continues about 3 minutes later.
 - Without `in`, the test window ends at the reset of the live reading.
+  If that reset is less than 20 minutes away, the reserve is open at once.
   If that live reading is in the reserve, spare10 waits 5 minutes after the reset, not 60 s.
   Without a live reading, it ends 5 hours from now, or 7 days for the weekly window.
 - Each window has one test reading.
@@ -861,12 +1017,22 @@ The command takes this form:
 
 A test reading can only raise the real reading.
 It never releases a hold that the real reading causes, because spare10 reads the real quota before each release.
+A test reading opens the reserve only when the real reading is below the reserve, or open by itself.
+When the real reading is in the reserve, the work waits until the real reserve opens.
 While it applies, `/spare10` shows `test reading`, and the labelled badge rows show `(test)`.
 The rows `⚠ Pausing at next step` and `⚠ Winding down at next step` have no label.
 A **Resume** on a test reading never goes into `SPARE10_CONSENT` or `SPARE10_WEEKLY_CONSENT`.
 So a reload or a real trip past the test reading asks you again.
 A stop on a test reading reads the real quota at its end.
 If the real quota is in the reserve, the stop continues.
+
+The reply to `/spare10 simulate` says when the reserve opens:
+
+```
+spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
+spare10: test reading set to 95% used, resets 14:10. It can only raise the real reading. The test window ends within 20 min, so the reserve is open at once. Run /spare10 simulate off to clear it.
+spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.
+```
 
 ### Live checks
 

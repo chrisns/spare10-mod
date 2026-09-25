@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, ElementQuery, FoundElement } from 'claude-code/testing'
 import type { RenderSurface } from 'claude-code'
-import { HOUR, LATER, RESETS, T0, above, bash, begin, cmd, measure, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, stopRec, typed, world } from '../helpers/world.ts'
 import { atText } from '../../hooks/core/text.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -12,7 +12,9 @@ type Ui = { find: (q: ElementQuery) => Promise<FoundElement | undefined>; findAl
 type Shown = { text: string | undefined; color: unknown }
 
 const STOP_PREFIX = 'spare10: the user stopped work at the quota reserve ('
-const AT = atText(Date.parse(RESETS), ['five_hour']) // 2.6: the clock at which spare10 continues (autoResume on)
+// 2.6: the clock at which spare10 continues (autoResume on). With the shipped spans that is the skip
+// start, 20 min before RESETS (skip 2.6).
+const AT = atText(Date.parse(OPENS), ['five_hour'])
 
 /** Mounts the SessionMode footer site as the engine does on terminal and desktop. */
 function mountBadge($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
@@ -425,14 +427,15 @@ test('/spare10 stop while a question is open redraws the stopped row', async ($,
 })
 
 test('the edge timer redraws a stopped badge at the window end', async ($, on) => {
-  const w = world(on, { pct: 93, answer: 'Stop here' })
+  const w = world(on, { pct: 93, answer: 'Stop here', spans: 'off' }) // the D0.2 reset timing
+  const atReset = atText(Date.parse(RESETS), ['five_hour'])
   await begin($, w)
   const ui = await mountBadge($)
   expect((await bash($)).deny).toContain(STOP_PREFIX)
   await w.clock.settle()
-  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${atReset}`, 'warning'))
   await w.clock.set(Date.parse(RESETS) - 1000)
-  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${AT}`, 'warning'))
+  expect(await badge(ui)).toEqual(shown(` ■ spare10: stopped until ${atReset}`, 'warning'))
   w.pct = undefined // the engine drops a window once it reset
   const before = w.invalidations
   await w.clock.advance(2000) // no event, no pulse: only the edge timer can redraw
@@ -643,7 +646,7 @@ for (const reason of ['clear', 'resume'] as const) {
     await w.clock.advance(300) // before the first pulse tick: only the end's own timer redraws
     expect(w.invalidations).toBeGreaterThan(switched)
     expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
-    expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto')) // the record stays: it names S1
+    expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip')) // the record stays: it names S1
   })
 }
 

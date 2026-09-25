@@ -19,6 +19,7 @@ import {
   initialMemory,
   isTripped,
   limitOf,
+  marginOf,
   newer,
   parseDuration,
   parseReset,
@@ -28,6 +29,8 @@ import {
   pctOf,
   sawLive,
   sawMeasure,
+  skipStartOf,
+  viewOf,
   windowEndOf,
   windowMs,
 } from '../../hooks/core/reading.ts'
@@ -389,4 +392,79 @@ test('parseSimulateEnv splits on white space, and off or junk is no test reading
   expect(parseSimulateEnv(' 95\tweekly  in 2m ')).toEqual({ pct: 95, kind: 'seven_day', inMs: 120_000 })
   expect(parseSimulateEnv('95 in 2m')).toEqual({ pct: 95, kind: 'five_hour', inMs: 120_000 })
   for (const junk of [undefined, '', ' ', 'off', 'abc', '95 later', '95%']) expect(parseSimulateEnv(junk)).toBeUndefined()
+})
+
+// ---- Skip near the reset (skip design B41, B42, B45, 6.1) ----
+
+const SPAN = 20 * 60_000
+const START = R - SPAN // 14:40
+const live = (pct: number, resetsAtMs: number | null = R): Basis => ({ kind: 'live', pct, resetsAtMs })
+const testB = (pct: number, resetsAtMs: number): Basis => ({ kind: 'test', pct, resetsAtMs })
+
+test('skipStartOf is the reset minus the span, and none without a span or a reset', () => {
+  expect(skipStartOf(live(93), SPAN)).toBe(START)
+  expect(skipStartOf({ kind: 'seed', pct: 93, resetsAtMs: R }, SPAN)).toBe(START)
+  expect(skipStartOf(testB(95, T0 + 22 * 60_000), SPAN)).toBe(T0 + 2 * 60_000) // `in 22m` opens 2 minutes later
+  expect(skipStartOf(live(93, W), 8 * HOUR)).toBe(W - 8 * HOUR)
+  expect(skipStartOf(live(93), 0)).toBeNull()
+  expect(skipStartOf(live(93), -1)).toBeNull()
+  expect(skipStartOf(live(93, null), SPAN)).toBeNull()
+  expect(skipStartOf({ kind: 'none', why: 'no-reading' }, SPAN)).toBeNull()
+})
+
+test('viewOf opens a tripped kind at its skip start and gives the skip start while it is ahead', () => {
+  expect(viewOf(live(93), live(93), 10, SPAN, T0)).toEqual({ basis: live(93), tripped: true, skipAt: START, open: false })
+  expect(viewOf(live(93), live(93), 10, SPAN, START - 1)).toEqual({ basis: live(93), tripped: true, skipAt: START, open: false })
+  expect(viewOf(live(93), live(93), 10, SPAN, START)).toEqual({ basis: live(93), tripped: true, skipAt: null, open: true }) // the boundary is open
+  expect(viewOf(live(93), live(93), 10, SPAN, R - 1)).toEqual({ basis: live(93), tripped: true, skipAt: null, open: true })
+  // A span of 0: the D0.2 view, never open.
+  expect(viewOf(live(93), live(93), 10, 0, R - 1)).toEqual({ basis: live(93), tripped: true, skipAt: null, open: false })
+  // Each kind has its own span: a weekly trip is not open in the last 20 minutes of the 5-hour window.
+  expect(viewOf(live(93, W), live(93, W), 10, 8 * HOUR, START).open).toBe(false)
+  expect(viewOf(live(93, W), live(93, W), 10, 8 * HOUR, W - 8 * HOUR).open).toBe(true)
+})
+
+test('viewOf never opens a kind that is not tripped', () => {
+  expect(viewOf(live(89.9), live(89.9), 10, SPAN, START)).toEqual({ basis: live(89.9), tripped: false, skipAt: null, open: false })
+  expect(viewOf(live(50), live(50), 10, SPAN, T0)).toEqual({ basis: live(50), tripped: false, skipAt: START, open: false })
+  const none: Basis = { kind: 'none', why: 'window-reset' }
+  expect(viewOf(none, none, 10, SPAN, START)).toEqual({ basis: none, tripped: false, skipAt: null, open: false })
+})
+
+test('viewOf keeps a kind without a reset time closed', () => {
+  for (const now of [T0, START, R, R + 4 * HOUR]) {
+    expect(viewOf(live(93, null), live(93, null), 10, SPAN, now)).toEqual({ basis: live(93, null), tripped: true, skipAt: null, open: false })
+  }
+  const seed: Basis = { kind: 'seed', pct: 95, resetsAtMs: null }
+  expect(viewOf(seed, seed, 10, 8 * HOUR, T0).open).toBe(false)
+})
+
+test('viewOf: a test reading in its skip window yields to a real trip that is not open', () => {
+  const t = testB(95, T0 + 22 * 60_000) // test skip start T0 + 2 min
+  const now = T0 + 3 * 60_000
+  const v = viewOf(live(92), t, 10, SPAN, now)
+  expect(v).toEqual({ basis: live(92), tripped: true, skipAt: START, open: false }) // the real basis, test false
+  expect(v.basis.kind).toBe('live')
+  // Before the test skip start the test view stands, with its own skip start.
+  expect(viewOf(live(92), t, 10, SPAN, T0)).toEqual({ basis: t, tripped: true, skipAt: T0 + 2 * 60_000, open: false })
+  // A real trip without a reset time is never open, so it keeps the hold too.
+  expect(viewOf(live(92, null), t, 10, SPAN, now)).toEqual({ basis: live(92, null), tripped: true, skipAt: null, open: false })
+})
+
+test('viewOf: a test reading opens over a real reading below the reserve, or over a real trip that is open', () => {
+  const t = testB(95, T0 + 22 * 60_000)
+  const now = T0 + 3 * 60_000
+  expect(viewOf(live(50), t, 10, SPAN, now)).toEqual({ basis: t, tripped: true, skipAt: null, open: true })
+  const none: Basis = { kind: 'none', why: 'no-reading' }
+  expect(viewOf(none, t, 10, SPAN, now)).toEqual({ basis: t, tripped: true, skipAt: null, open: true })
+  // The real trip is open by itself: its reset is near too.
+  const nearReal = live(92, T0 + 15 * 60_000)
+  expect(viewOf(nearReal, t, 10, SPAN, now)).toEqual({ basis: t, tripped: true, skipAt: null, open: true })
+})
+
+test('marginOf is 0 at a skip start, 60 s for a test window, 5 min otherwise', () => {
+  expect(marginOf(true, false)).toBe(0)
+  expect(marginOf(true, true)).toBe(0)
+  expect(marginOf(false, true)).toBe(TEST_MARGIN_MS)
+  expect(marginOf(false, false)).toBe(RESET_MARGIN_MS)
 })

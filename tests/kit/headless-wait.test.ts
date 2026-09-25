@@ -5,6 +5,8 @@ import { LATER, MARGIN, MIN, RESETS, SOON, T0, TEST_MARGIN, TICK, above, bash, b
 // Unattended wait through the engine (design 0.2: 8.3 headless.test.ts additions, B36, B37, 5.3, 5.5).
 // Every expected text is spelled out from design section 2 here, not taken from hooks/core/text.ts,
 // so a drift in the texts or the policy fails a test.
+// The D0.2 reset path: spans off. Every world has spans: 'off' (skip design 7.4), so a question
+// and a stop continue at the reset plus the margin. tests/kit/skip.test.ts runs the shipped spans.
 
 const RESET_MS = Date.parse(RESETS)
 const LATER_MS = Date.parse(LATER)
@@ -74,7 +76,7 @@ const stallNow: Plugin = {
 }
 
 test('-p wait holds a tool call and a step with no dialog, and they continue at the reset', async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], agents: ['a1'], env: WAIT })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], agents: ['a1'], env: WAIT })
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   const req = drain($, step(undefined, 'T1'))
@@ -105,7 +107,7 @@ test('-p wait holds a tool call and a step with no dialog, and they continue at 
 
 test('-p wait lets a prompt enter, and its step holds', async ($, on) => {
   // autoResume off changes nothing here: wait continues at the reset whatever it says (B36)
-  const w = world(on, { pct: 93, surfaces: [], env: { ...WAIT, SPARE10_AUTO_RESUME: 'off' } })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: { ...WAIT, SPARE10_AUTO_RESUME: 'off' } })
   await begin($, w)
   expect(await $.prompt.submit(typed('go', 'sdk'))).toMatchObject({ text: 'go' }) // the run's own prompt
   expect(await $.prompt.submit(typed('typed', 'composer'))).toMatchObject({ text: 'typed' }) // row 6a: prompt passes
@@ -121,7 +123,7 @@ test('-p wait lets a prompt enter, and its step holds', async ($, on) => {
 })
 
 test('-p wait with SPARE10_SIMULATE="95 in 2m" continues after the test window', async ($, on) => {
-  const w = world(on, { surfaces: [], env: { ...WAIT, SPARE10_SIMULATE: '95 in 2m' } })
+  const w = world(on, { spans: 'off', surfaces: [], env: { ...WAIT, SPARE10_SIMULATE: '95 in 2m' } })
   await begin($, w)
   const end = T0 + 2 * MIN // `in` counts from the first gated event (2.9)
   const held = bash($)
@@ -145,7 +147,7 @@ test('-p wait with SPARE10_SIMULATE="95 in 2m" continues after the test window',
 
 test('-p wait: a seed alone does not hold, the first step goes, and the next one holds on the live reading', async ($, on) => {
   // -p has no start-up quota read: the first events see only the seed of another session (B36)
-  const w = world(on, { surfaces: [], env: WAIT, store: { seed: { pct: 95, resetsAtMs: RESET_MS } } })
+  const w = world(on, { spans: 'off', surfaces: [], env: WAIT, store: { seed: { pct: 95, resetsAtMs: RESET_MS } } })
   await begin($, w)
   expect((await bash($)).result).toBe('ran') // row 6a: seedOnly passes (trip)
   expect((await drain($, step(undefined, 'T1'))).text).toBe('hi')
@@ -169,7 +171,7 @@ test('-p wait: a seed alone does not hold, the first step goes, and the next one
 })
 
 test('-p wait: an inherited consent for this window passes', async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], agents: ['a1'], env: { ...WAIT, SPARE10_CONSENT: RESETS } })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], agents: ['a1'], env: { ...WAIT, SPARE10_CONSENT: RESETS } })
   await begin($, w)
   const out = await Promise.all([bash($), bash($, 'a1')])
   expect(out.map((r) => r.result)).toEqual(['ran', 'ran'])
@@ -184,7 +186,7 @@ test(
   '-p wait: a carrier that fails closed denies with the HEADLESS text, and the .catch with HEADLESS_GENERIC',
   { plugins: [stallNow], timeoutMs: 30_000 },
   async ($, on) => {
-    const w = world(on, { pct: 93, surfaces: [], env: WAIT, parkRejects: 6 })
+    const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: WAIT, parkRejects: 6 })
     await begin($, w)
     // Three fast rejections in a row: the noun is gone, the hold fails closed (5.3, B36)
     expect((await bash($)).deny).toBe(HEADLESS(93))
@@ -212,7 +214,7 @@ test(
 
 // A held waiter across 8 h of mock time checks on every tick: allow more than the 5 s default.
 test('-p wait: a lost hold with no waiter is forgotten, and the next call holds again', { plugins: [above], timeoutMs: 20_000 }, async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], env: WAIT })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: WAIT })
   await begin($, w)
   const lost = bash($, undefined, 'abandon me')
   await w.clock.settle()
@@ -237,7 +239,7 @@ test('-p wait: a lost hold with no waiter is forgotten, and the next call holds 
 })
 
 test('-p wait logs the unattended debug line with policy wait', async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], env: WAIT })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: WAIT })
   await begin($, w)
   const held = bash($)
   const req = drain($, step(undefined, 'T1'))
@@ -251,7 +253,7 @@ test('-p wait logs the unattended debug line with policy wait', async ($, on) =>
 })
 
 test('session.end other stops the ticker, and logout keeps it', async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], env: WAIT })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: WAIT })
   await begin($, w)
   const first = bash($)
   await w.clock.settle()
@@ -274,7 +276,7 @@ test('session.end other stops the ticker, and logout keeps it', async ($, on) =>
 })
 
 test('-p wait shows the reserve phase, never asking', async ($, on) => {
-  const w = world(on, { pct: 93, surfaces: [], env: WAIT })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: WAIT })
   await begin($, w)
   const idle = await report($)
   expect(idle).toContain(RESERVE_PHASE)
@@ -299,7 +301,7 @@ test('-p wait shows the reserve phase, never asking', async ($, on) => {
 test('a guarded session with headless wait sets SPARE10_HEADLESS=stop for children', async ($, on) => {
   // The kit loads the manifest defaults, so wait comes by the env. The env is read once per activation
   // (D0.1 8.2): once read, the effective policy stays wait while the variable itself is gone.
-  const w = world(on, { pct: 50, env: WAIT })
+  const w = world(on, { spans: 'off', pct: 50, env: WAIT })
   expect((await bash($)).result).toBe('ran') // the first event reads the env
   w.env.delete('SPARE10_HEADLESS')
   await begin($, w)
@@ -311,7 +313,7 @@ test('a guarded session with headless wait sets SPARE10_HEADLESS=stop for childr
 
 test('-p wait holds a step when a live reading gates beside a seed, and releases it at the reset', { timeoutMs: 20_000 }, async ($, on) => {
   // The weekly window rests on a seed from another session, the 5-hour window on a live reading.
-  const w = world(on, { pct: 93, surfaces: [], env: WAIT, store: { 'seed-weekly': { pct: 95, resetsAtMs: Date.parse(SOON) } } })
+  const w = world(on, { spans: 'off', pct: 93, surfaces: [], env: WAIT, store: { 'seed-weekly': { pct: 95, resetsAtMs: Date.parse(SOON) } } })
   await begin($, w)
   const req = drain($, step(undefined, 'T1'))
   await w.clock.settle()

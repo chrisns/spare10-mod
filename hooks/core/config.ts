@@ -12,6 +12,8 @@ export type Scope = 'all' | 'opt-in'
 export type Settings = {
   reserve: number
   weeklyReserve: number // 0: the weekly window is not watched
+  lastMinutes: number // the 5-hour span: the reserve opens this many minutes before the reset. 0 is off
+  weeklyLastHours: number // the weekly span, in hours. 0 is off
   pausePrompt: string | null
   autoResume: boolean
   headless: Headless
@@ -19,9 +21,24 @@ export type Settings = {
   badge: boolean
 }
 export type Source = 'option' | 'env'
+/** Where a span comes from. 'unread': the env read failed, so the span is 0 (B47). */
+export type SpanSource = Source | 'unread'
+/** The spans in force (B47): the newest copy answers them through $.spare10.spans(). */
+export type Spans = { lastMinutes: number; weeklyLastHours: number }
+/** Both spans off: the guard holds until the reset. Every unknown gives this. */
+export const NO_SPANS: Spans = Object.freeze({ lastMinutes: 0, weeklyLastHours: 0 })
 export type Effective = Settings & {
   enabled: boolean
-  from: { reserve: Source; weeklyReserve: Source; pausePrompt: Source; autoResume: Source; headless: Source; enabled: 'scope' | 'SPARE10' }
+  from: {
+    reserve: Source
+    weeklyReserve: Source
+    lastMinutes: SpanSource
+    weeklyLastHours: SpanSource
+    pausePrompt: Source
+    autoResume: Source
+    headless: Source
+    enabled: 'scope' | 'SPARE10'
+  }
   testPct?: number // from SPARE10_SIMULATE
   testKind?: Kind // only when SPARE10_SIMULATE names the weekly window
   testInMs?: number // only when SPARE10_SIMULATE has `in`
@@ -30,6 +47,8 @@ export type Effective = Settings & {
 export type EnvReads = {
   reserve?: string
   weeklyReserve?: string
+  lastMinutes?: string
+  weeklyLastHours?: string
   pausePrompt?: string
   autoResume?: string
   headless?: string
@@ -40,6 +59,8 @@ export type EnvReads = {
 export const DEFAULTS: Settings = {
   reserve: 10,
   weeklyReserve: 10,
+  lastMinutes: 20,
+  weeklyLastHours: 8,
   pausePrompt: null,
   autoResume: true,
   headless: 'off',
@@ -72,6 +93,24 @@ export function parseWeeklyReserve(raw: unknown): number | undefined {
   return r >= 1 && r <= 99 ? r : undefined
 }
 
+// One rule for both spans: 0 to max, rounded to one decimal. A number or a numeric string.
+function parseSpan(raw: unknown, max: number): number | undefined {
+  const n = numberOf(raw)
+  if (!Number.isFinite(n)) return undefined
+  const r = Math.round(n * 10) / 10 + 0 // + 0: never -0
+  return r >= 0 && r <= max ? r : undefined
+}
+
+/** The 5-hour span in minutes: 0 (off) to 299, rounded to one decimal. */
+export const parseLastMinutes = (raw: unknown): number | undefined => parseSpan(raw, 299)
+
+/** The weekly span in hours: 0 (off) to 167, rounded to one decimal. */
+export const parseWeeklyLastHours = (raw: unknown): number | undefined => parseSpan(raw, 167)
+
+/** A kind's span in ms (B41). 0 is off. */
+export const spanOf = (s: Spans, kind: Kind): number =>
+  Math.round(kind === 'seven_day' ? s.weeklyLastHours * 3_600_000 : s.lastMinutes * 60_000)
+
 /** Blank or white space means stop and ask. Anything else is the instruction, verbatim. */
 export const parsePausePrompt = (raw: unknown): string | null => (typeof raw === 'string' && raw.trim() !== '' ? raw : null)
 
@@ -96,11 +135,13 @@ export const parseBadge = (raw: unknown): boolean => raw !== false
 /** As parseBadge: only an explicit false turns autoResume off. */
 export const parseAutoResume = (raw: unknown): boolean => raw !== false
 
-/** The seven declared fields, defaults filled. Extra stored keys are ignored. */
+/** The nine declared fields, defaults filled. Extra stored keys are ignored. */
 export function fromOptions(options: PluginOptions): Settings {
   return {
     reserve: parseReserve(options['reserve']) ?? DEFAULTS.reserve,
     weeklyReserve: parseWeeklyReserve(options['weeklyReserve']) ?? DEFAULTS.weeklyReserve,
+    lastMinutes: parseLastMinutes(options['lastMinutes']) ?? DEFAULTS.lastMinutes,
+    weeklyLastHours: parseWeeklyLastHours(options['weeklyLastHours']) ?? DEFAULTS.weeklyLastHours,
     pausePrompt: parsePausePrompt(options['pausePrompt']),
     autoResume: parseAutoResume(options['autoResume']),
     headless: parseHeadless(options['headless']) ?? DEFAULTS.headless,
@@ -126,7 +167,16 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
   const out: Effective = {
     ...base,
     enabled: base.scope === 'all',
-    from: { reserve: 'option', weeklyReserve: 'option', pausePrompt: 'option', autoResume: 'option', headless: 'option', enabled: 'scope' },
+    from: {
+      reserve: 'option',
+      weeklyReserve: 'option',
+      lastMinutes: 'option',
+      weeklyLastHours: 'option',
+      pausePrompt: 'option',
+      autoResume: 'option',
+      headless: 'option',
+      enabled: 'scope',
+    },
     warnings,
   }
   if (env.reserve !== undefined) {
@@ -143,6 +193,22 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
     else {
       out.weeklyReserve = r
       out.from.weeklyReserve = 'env'
+    }
+  }
+  if (env.lastMinutes !== undefined) {
+    const m = parseLastMinutes(env.lastMinutes)
+    if (m === undefined) warnings.push(badWarning('SPARE10_LAST_MINUTES', env.lastMinutes, fmtPct(base.lastMinutes)))
+    else {
+      out.lastMinutes = m
+      out.from.lastMinutes = 'env'
+    }
+  }
+  if (env.weeklyLastHours !== undefined) {
+    const h = parseWeeklyLastHours(env.weeklyLastHours)
+    if (h === undefined) warnings.push(badWarning('SPARE10_WEEKLY_LAST_HOURS', env.weeklyLastHours, fmtPct(base.weeklyLastHours)))
+    else {
+      out.weeklyLastHours = h
+      out.from.weeklyLastHours = 'env'
     }
   }
   if (env.pausePrompt !== undefined) {
@@ -180,6 +246,19 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
     if (spec.kind !== 'five_hour') out.testKind = spec.kind
     if (spec.inMs !== undefined) out.testInMs = spec.inMs
   }
+  return out
+}
+
+/**
+ * B47: the settings after a failed env read. The D0.2 fallback (the options only), with both spans 0
+ * from 'unread': an unknown span keeps the guard on until the reset.
+ */
+export function unreadEnv(base: Settings): Effective {
+  const out = withEnv(base, {})
+  out.lastMinutes = 0
+  out.weeklyLastHours = 0
+  out.from.lastMinutes = 'unread'
+  out.from.weeklyLastHours = 'unread'
   return out
 }
 

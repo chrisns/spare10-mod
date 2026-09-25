@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world } from '../helpers/world.ts'
 
 // Unattended runs through the engine (design 11.4 headless.test.ts, 2.4 B15 and B16, 9, ruling R2).
 // Every expected text is spelled out from design section 2 here, not taken from hooks/core/text.ts,
@@ -31,9 +31,10 @@ const TELL = (used: number, pausePrompt?: string): string =>
 const UNATTENDED = (used: number, policy: string, resetMs = RESET_MS): string =>
   `spare10: unattended run inside the reserve (${pf(used, resetMs)}), policy ${policy}.`
 const TOLD_NOTICE = 'your 10% reserve is reached. spare10 told the agents to wind down.'
+// With the shipped spans the question continues at the skip start, 20 min before the reset (skip 2.2).
 const LOOP_QUESTION = (used: number): string =>
   `Your 10% reserve is reached: ${pf(used)}. All work is on hold. Continue on the reserve until ${clockOf(RESET_MS)}? ` +
-  `If you choose Stop here or do not answer, the work waits until ${clockOf(RESET_MS)}. Then spare10 continues it, unless a reserve is still reached.`
+  `If you choose Stop here or do not answer, the work waits until ${clockOf(Date.parse(OPENS))}, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.`
 const NOT_GUARDED = 'this run is not guarded. Nothing changed.'
 const B28 = 'function hooks are on only in this shell.'
 const B29 = 'questions here continue by themselves after a time limit'
@@ -649,7 +650,7 @@ test('/spare10 simulate works in an unattended run and only raises the reading',
   await begin($, w)
   expect((await bash($)).result).toBe('ran')
   expect((await $.command.run(cmd('simulate 95'))).text).toBe(
-    `test reading set to 95% used, resets ${clockOf(RESET_MS)}. It can only raise the real reading. Run /spare10 simulate off to clear it.`,
+    `test reading set to 95% used, resets ${clockOf(RESET_MS)}. It can only raise the real reading. The reserve opens at ${clockOf(Date.parse(OPENS))}, 20 min before the test window ends. Run /spare10 simulate off to clear it.`,
   )
   expect((await bash($)).deny).toBe(HEADLESS(95))
   expect((await $.command.run(cmd('simulate off'))).text).toBe('test reading cleared. Consent and stop for this window are cleared too.')

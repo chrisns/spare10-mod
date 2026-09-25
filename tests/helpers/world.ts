@@ -53,6 +53,9 @@ import type {
 //                never run (w.afterRefusals counts down)
 //   everyRefusals  the same for $.clock.every periods: a refused period ends that interval (the watch
 //                timer, the badge pulse) (w.everyRefusals counts down)
+//   spans        'off' puts SPARE10_LAST_MINUTES=0 and SPARE10_WEEKLY_LAST_HOURS=0 into w.env, before
+//                env (a test's own value wins). Default: nothing, so the manifest defaults apply (20 min
+//                and 8 h), as they ship
 //
 // The world records: asked (each dialog), ran, requests, prompts, fills, aborts, logs, invalidations,
 // renders, commands (names), commandSpecs (whole) and parkCalls. submitted holds the texts of the prompts
@@ -72,10 +75,14 @@ import type {
 // window that resets at iso. advanceChunked(w, ms) moves in steps of at most 48 h. stopRec(sid, until,
 // at, tags?) is a 0.2 SPARE10_STOPPED value, stopRe(sid, tags?) the same as a RegExp. typed(text,
 // kind?, turnId?) builds a whole PromptSubmitInput, cmd(args, kind?) a whole CommandRunInput.
+// pastOpen(w, iso?) moves the clock one tick past a skip start (OPENS by default).
 // Inline plugins: `above` (prepend) settles above a Bash call whose command starts with `abandon`
 // after 1000 mock ms. `stepAbove` (prepend) does the same to a model request whose turn id starts
 // with `abandon`. `slowAsk` (prepend) holds each AskUserQuestion 1000 mock ms before its next, as a
 // slow hook above spare10 does. `auditor` calls $.tool.call of Read on every AskUserQuestion before its next.
+// `newerCopy` (prepend) answers $.spare10.spans() with the spans in w.env NEWER_COPY_SPANS: it acts out
+// a newer copy of spare10 with other options (B47). The engine forbids one engine.create step to replace
+// a noun that another step added, so it hooks the noun's event, as the world hooks spare10.park.
 //
 // Timing idiom: start a gated call without awaiting it, then `await w.clock.settle()`, then answer,
 // release, cap or advance. Lessons from the kit:
@@ -95,6 +102,16 @@ import type {
 // about 75 h of ticks and watch periods, about 2.7 h while a tripped badge pulses. So keep resets near
 // T0 (weekly tests use weekResetsAt: SOON), never mount a tripped badge across a long move, and use
 // advanceChunked past a date days ahead.
+//
+// Skip near the reset: the world has the shipped spans (20 min and 8 h). So a tripped 5-hour window that
+// resets at RESETS opens at OPENS (14:40), and a question or a stop continues there with no margin. The
+// D0.2 reset path runs with spans: 'off'. The rule of the skip design 7.4: a test gets spans: 'off' when
+// it moves the clock to or past a skip start of a tripped kind (OPENS for RESETS, WEEK_OPENS for
+// WEEK_RESETS), uses weekResetsAt: SOON with a weekly trip (its skip start lies before T0), or sets a test
+// window shorter than its span. A skip start releases on the tick at it: move there with pastOpen. To act
+// between a skip start and its release, use OFF_TICK and OFF_OPENS: the gap is the tick latency. A failed
+// env read uses spans of 0 (B47). $.spare10.spans() answers this copy in the kit: newerCopy acts out a
+// newer one.
 
 export const T0 = Date.parse('2026-09-24T12:00:00Z')
 export const RESETS = '2026-09-24T15:00:00.000Z' // 3 h after T0
@@ -109,6 +126,15 @@ export const DAY = 86_400_000
 export const MARGIN = 300_000 // a release waits this long after a real reset
 export const TEST_MARGIN = 60_000 // and this long after a test window
 export const TICK = 30_000 // one step of the reset clock
+export const SKIP = 20 * MIN // the shipped 5-hour span
+export const WEEK_SKIP = 8 * HOUR // the shipped weekly span
+export const OPENS = '2026-09-24T14:40:00.000Z' // RESETS minus SKIP: the 5-hour reserve opens
+export const WEEK_OPENS = '2026-09-28T01:00:00.000Z' // WEEK_RESETS minus WEEK_SKIP (Mon 01:00)
+export const WEEK_NEAR = '2026-09-24T21:00:00.000Z' // a weekly reset 9 h after T0
+export const WEEK_NEAR_OPENS = '2026-09-24T13:00:00.000Z' // WEEK_NEAR minus WEEK_SKIP: 1 h after T0
+export const LATE = '2026-09-24T16:40:00.000Z' // the owner's example reset (skip 1.1)
+export const OFF_TICK = '2026-09-24T15:00:15.000Z' // a reset 15 s off the tick grid
+export const OFF_OPENS = '2026-09-24T14:40:15.000Z' // OFF_TICK minus SKIP: a skip start 15 s off the tick grid
 
 export type Core = 'ran' | 'deny' | 'error'
 export type SettingsWorld = {
@@ -149,6 +175,7 @@ export type WorldOptions = {
   everyRefusals?: number
   usageFailsAfter?: number
   usageDelayMs?: number
+  spans?: 'off'
 }
 
 export type Asked = { question: string; header?: string; labels: string[] }
@@ -243,7 +270,9 @@ export function world(on: On, opts: WorldOptions = {}): World {
     usageFailsAfter: opts.usageFailsAfter,
     usageDelayMs: opts.usageDelayMs ?? 0,
     settings: opts.settings ?? {},
-    env: new Map(Object.entries(opts.env ?? {})),
+    env: new Map(
+      Object.entries({ ...(opts.spans === 'off' ? { SPARE10_LAST_MINUTES: '0', SPARE10_WEEKLY_LAST_HOURS: '0' } : {}), ...(opts.env ?? {}) }),
+    ),
     store: new Map(Object.entries(opts.store ?? {})),
     asked: [],
     dialogAborted: 'no',
@@ -482,6 +511,11 @@ export function pastDue(w: World, iso: string, margin = MARGIN): Promise<void> {
   return w.clock.set(Date.parse(iso) + margin + TICK)
 }
 
+/** Moves the clock one tick past a skip start: a skip start has no margin, so it releases on the tick at it. */
+export function pastOpen(w: World, iso: string = OPENS): Promise<void> {
+  return w.clock.set(Date.parse(iso) + TICK)
+}
+
 /** Moves the clock on in steps of at most 48 h, under the cap of 10 000 waits per move (ticks and watch periods). */
 export async function advanceChunked(w: World, ms: number): Promise<void> {
   const step = 48 * HOUR
@@ -562,6 +596,26 @@ export const slowAsk: Plugin = {
     on('tool.call', { tool: /^AskUserQuestion$/ }, async ($, e, next) => {
       await $.clock.sleep(1000)
       return next(e)
+    })
+  },
+}
+
+/**
+ * A prepend plugin that acts out a newer copy of spare10 with other options (B47): while the world env
+ * has NEWER_COPY_SPANS (`<lastMinutes> <weeklyLastHours>`, such as `0 0`), it answers $.spare10.spans()
+ * with those spans. Without it, spare10 answers. Every call of the noun, spare10's own included, passes
+ * this hook first. The kit runs an inline plugin's hooks apart from the test, so the test steers it
+ * through the env, never through a closure.
+ */
+export const newerCopy: Plugin = {
+  name: 'newer-copy',
+  tier: 'prepend',
+  register: (on) => {
+    on('spare10.spans', async ($, e, next) => {
+      const raw = await $.env.get('NEWER_COPY_SPANS')
+      if (raw === undefined) return next(e)
+      const [m, h] = raw.split(' ').map(Number)
+      return { value: { lastMinutes: m ?? 0, weeklyLastHours: h ?? 0 } }
     })
   },
 }

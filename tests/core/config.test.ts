@@ -1,19 +1,24 @@
 import { test, expect } from 'claude-code/testing'
 import {
   DEFAULTS,
+  NO_SPANS,
   childHeadless,
   flagOnlyInShell,
   fromOptions,
   parseAutoResume,
   parseBadge,
   parseHeadless,
+  parseLastMinutes,
   parsePausePrompt,
   parseReserve,
   parseScope,
   parseSwitch,
+  parseWeeklyLastHours,
   parseWeeklyReserve,
   questionTimeout,
   reserveOf,
+  spanOf,
+  unreadEnv,
   watchedKinds,
   withEnv,
 } from '../../hooks/core/config.ts'
@@ -65,10 +70,30 @@ test('parseBadge is on unless explicitly false', () => {
 
 test('fromOptions fills the defaults and reads only declared fields', () => {
   expect(fromOptions({})).toEqual(DEFAULTS)
-  expect(DEFAULTS).toEqual({ reserve: 10, weeklyReserve: 10, pausePrompt: null, autoResume: true, headless: 'off', scope: 'all', badge: true })
+  expect(DEFAULTS).toEqual({
+    reserve: 10,
+    weeklyReserve: 10,
+    lastMinutes: 20,
+    weeklyLastHours: 8,
+    pausePrompt: null,
+    autoResume: true,
+    headless: 'off',
+    scope: 'all',
+    badge: true,
+  })
   expect(fromOptions({ reserve: 10, pausePrompt: '', headless: 'off', scope: 'all', badge: true })).toEqual(DEFAULTS)
   const s = fromOptions({ reserve: 20.04, pausePrompt: 'Wrap up.', headless: 'stop', scope: 'opt-in', badge: false, extra: 'x', window: 'both' })
-  expect(s).toEqual({ reserve: 20, weeklyReserve: 10, pausePrompt: 'Wrap up.', autoResume: true, headless: 'stop', scope: 'opt-in', badge: false })
+  expect(s).toEqual({
+    reserve: 20,
+    weeklyReserve: 10,
+    lastMinutes: 20,
+    weeklyLastHours: 8,
+    pausePrompt: 'Wrap up.',
+    autoResume: true,
+    headless: 'stop',
+    scope: 'opt-in',
+    badge: false,
+  })
   expect(fromOptions({ reserve: 150, headless: 'loud', scope: 'some' })).toEqual(DEFAULTS)
 })
 
@@ -167,7 +192,7 @@ test('parseHeadless takes wait', () => {
 
 test('fromOptions fills weeklyReserve 10 and autoResume true', () => {
   const d = fromOptions({})
-  expect(Object.keys(d).sort()).toEqual(['autoResume', 'badge', 'headless', 'pausePrompt', 'reserve', 'scope', 'weeklyReserve'])
+  expect(Object.keys(d).sort()).toEqual(['autoResume', 'badge', 'headless', 'lastMinutes', 'pausePrompt', 'reserve', 'scope', 'weeklyLastHours', 'weeklyReserve'])
   expect(d.weeklyReserve).toBe(10)
   expect(d.autoResume).toBe(true)
   expect(fromOptions({ weeklyReserve: 0, autoResume: false, headless: 'wait' })).toEqual({ ...DEFAULTS, weeklyReserve: 0, autoResume: false, headless: 'wait' })
@@ -179,7 +204,16 @@ test('fromOptions fills weeklyReserve 10 and autoResume true', () => {
 
 test('withEnv: SPARE10_WEEKLY_RESERVE and SPARE10_AUTO_RESUME override, bad values warn', () => {
   const plain = withEnv(DEFAULTS, {})
-  expect(plain.from).toEqual({ reserve: 'option', weeklyReserve: 'option', pausePrompt: 'option', autoResume: 'option', headless: 'option', enabled: 'scope' })
+  expect(plain.from).toEqual({
+    reserve: 'option',
+    weeklyReserve: 'option',
+    lastMinutes: 'option',
+    weeklyLastHours: 'option',
+    pausePrompt: 'option',
+    autoResume: 'option',
+    headless: 'option',
+    enabled: 'scope',
+  })
   expect(plain.weeklyReserve).toBe(10)
   expect(plain.autoResume).toBe(true)
   const off = withEnv(DEFAULTS, { weeklyReserve: '0', autoResume: ' OFF ' })
@@ -276,4 +310,95 @@ test('questionTimeout names askUserQuestionTimeout or CLAUDE_AFK_TIMEOUT_MS', ()
   expect(questionTimeout({ askUserQuestionTimeout: 0 }, undefined)).toBeUndefined()
   expect(questionTimeout({ askUserQuestionTimeout: '60' }, undefined)).toBeUndefined()
   expect(questionTimeout({ askUserQuestionTimeout: null }, '1')).toBe('CLAUDE_AFK_TIMEOUT_MS')
+})
+
+// ---- Skip near the reset (skip design 5, 7.2) ----
+
+test('parseLastMinutes takes 0 to 299 with one decimal', () => {
+  expect(parseLastMinutes(0)).toBe(0)
+  expect(parseLastMinutes('0')).toBe(0)
+  expect(parseLastMinutes(20)).toBe(20)
+  expect(parseLastMinutes('2.55')).toBe(2.6)
+  expect(parseLastMinutes(' 30 ')).toBe(30)
+  expect(parseLastMinutes(299)).toBe(299)
+  expect(Object.is(parseLastMinutes(-0.04), 0)).toBe(true) // rounded first, and never -0
+  expect(parseLastMinutes(-0.05)).toBe(0) // rounded first, as parseWeeklyReserve
+  for (const bad of [300, 299.1, -1, -0.06, 'x', '', ' ', null, undefined, true, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(parseLastMinutes(bad)).toBeUndefined()
+  }
+})
+
+test('parseWeeklyLastHours takes 0 to 167 with one decimal', () => {
+  expect(parseWeeklyLastHours(0)).toBe(0)
+  expect(parseWeeklyLastHours(8)).toBe(8)
+  expect(parseWeeklyLastHours(0.5)).toBe(0.5)
+  expect(parseWeeklyLastHours('12.34')).toBe(12.3)
+  expect(parseWeeklyLastHours(167)).toBe(167)
+  for (const bad of [168, 167.1, -1, 'x', '', null, undefined, false]) expect(parseWeeklyLastHours(bad)).toBeUndefined()
+})
+
+test('fromOptions fills lastMinutes 20 and weeklyLastHours 8', () => {
+  const d = fromOptions({})
+  expect(Object.keys(d)).toHaveLength(9)
+  expect(d.lastMinutes).toBe(20)
+  expect(d.weeklyLastHours).toBe(8)
+  expect(fromOptions({ lastMinutes: 0, weeklyLastHours: 0 })).toEqual({ ...DEFAULTS, lastMinutes: 0, weeklyLastHours: 0 })
+  expect(fromOptions({ lastMinutes: 30.04, weeklyLastHours: '12' })).toEqual({ ...DEFAULTS, lastMinutes: 30, weeklyLastHours: 12 })
+  // Out of range: the default, without a word (an option has no warning, as weeklyReserve).
+  expect(fromOptions({ lastMinutes: 300, weeklyLastHours: 168 })).toEqual(DEFAULTS)
+  expect(fromOptions({ lastMinutes: -5, weeklyLastHours: 'lots' })).toEqual(DEFAULTS)
+})
+
+test('withEnv: SPARE10_LAST_MINUTES and SPARE10_WEEKLY_LAST_HOURS override, bad values warn', () => {
+  const plain = withEnv(DEFAULTS, {})
+  expect(plain.from.lastMinutes).toBe('option')
+  expect(plain.from.weeklyLastHours).toBe('option')
+  expect(plain.warnings).toEqual([])
+  const off = withEnv(DEFAULTS, { lastMinutes: '0', weeklyLastHours: ' 0 ' })
+  expect(off.lastMinutes).toBe(0)
+  expect(off.weeklyLastHours).toBe(0)
+  expect(off.from.lastMinutes).toBe('env')
+  expect(off.from.weeklyLastHours).toBe('env')
+  expect(off.warnings).toEqual([])
+  const on = withEnv({ ...DEFAULTS, lastMinutes: 0 }, { lastMinutes: '45.55', weeklyLastHours: '24' })
+  expect(on.lastMinutes).toBe(45.6)
+  expect(on.weeklyLastHours).toBe(24)
+  const bad = withEnv(DEFAULTS, { lastMinutes: '300', weeklyLastHours: 'x' })
+  expect(bad.lastMinutes).toBe(20)
+  expect(bad.weeklyLastHours).toBe(8)
+  expect(bad.from.lastMinutes).toBe('option')
+  expect(bad.from.weeklyLastHours).toBe('option')
+  expect(bad.warnings).toEqual([
+    'SPARE10_LAST_MINUTES="300" is not 0 to 299. spare10 uses 20.',
+    'SPARE10_WEEKLY_LAST_HOURS="x" is not 0 to 167. spare10 uses 8.',
+  ])
+  expect(withEnv({ ...DEFAULTS, lastMinutes: 2.5, weeklyLastHours: 0 }, { lastMinutes: '-1', weeklyLastHours: '168' }).warnings).toEqual([
+    'SPARE10_LAST_MINUTES="-1" is not 0 to 299. spare10 uses 2.5.',
+    'SPARE10_WEEKLY_LAST_HOURS="168" is not 0 to 167. spare10 uses 0.',
+  ])
+})
+
+test('unreadEnv keeps the options but sets both spans to 0 from unread', () => {
+  const base = { ...DEFAULTS, reserve: 15, lastMinutes: 30, weeklyLastHours: 12, autoResume: false }
+  const u = unreadEnv(base)
+  expect(u.lastMinutes).toBe(0)
+  expect(u.weeklyLastHours).toBe(0)
+  expect(u.from.lastMinutes).toBe('unread')
+  expect(u.from.weeklyLastHours).toBe('unread')
+  // Every other field is the D0.2 fallback: the options only.
+  const plain = withEnv(base, {})
+  expect({ ...u, lastMinutes: plain.lastMinutes, weeklyLastHours: plain.weeklyLastHours, from: plain.from }).toEqual(plain)
+  expect(u.reserve).toBe(15)
+  expect(u.autoResume).toBe(false)
+  expect(u.warnings).toEqual([])
+})
+
+test('spanOf gives minutes and hours in ms, and 0 when off', () => {
+  expect(spanOf(DEFAULTS, 'five_hour')).toBe(20 * 60_000)
+  expect(spanOf(DEFAULTS, 'seven_day')).toBe(8 * 3_600_000)
+  expect(spanOf({ lastMinutes: 2.5, weeklyLastHours: 0.1 }, 'five_hour')).toBe(150_000)
+  expect(spanOf({ lastMinutes: 2.5, weeklyLastHours: 0.1 }, 'seven_day')).toBe(360_000)
+  expect(spanOf(NO_SPANS, 'five_hour')).toBe(0)
+  expect(spanOf(NO_SPANS, 'seven_day')).toBe(0)
+  expect(NO_SPANS).toEqual({ lastMinutes: 0, weeklyLastHours: 0 })
 })

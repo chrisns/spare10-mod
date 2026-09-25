@@ -17,11 +17,13 @@ import {
   commandFailed,
   consentWarning,
   debugLine,
+  eventText,
   factsOf,
   fmtDuration,
   fmtPct,
   formatClock,
   headlessText,
+  leadText,
   modelFacts,
   notPerson,
   notStarted,
@@ -36,16 +38,21 @@ import {
   resumePrompt,
   resumeReply,
   simulateReply,
+  soonText,
+  spanText,
   statusReport,
   stepsIn,
   stopReply,
   stopText,
   timeoutWarning,
   unknownVerb,
+  untilFor,
+  untilPhrase,
   untilText,
+  whenOf,
   withdrawnText,
 } from '../../hooks/core/text.ts'
-import type { Facts, Named, ReplyCase, StatusInput } from '../../hooks/core/text.ts'
+import type { Ended, Facts, Named, ReplyCase, StatusInput } from '../../hooks/core/text.ts'
 import { badgeView } from '../../hooks/core/badge.ts'
 import type { Phase } from '../../hooks/core/decide.ts'
 import type { Basis, Kind } from '../../hooks/core/reading.ts'
@@ -237,7 +244,7 @@ test('the notices, warnings and replies are the section 2 texts, without the pre
   )
   expect(simulateReply('off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
   expect(simulateReply('bad')).toBe(
-    '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 2m for a test window that resets in two minutes.',
+    '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
   )
   expect(commandFailed('boom')).toBe('/spare10 failed: boom')
 })
@@ -347,7 +354,7 @@ test('the status report prints every field', () => {
 
 // D4: the phase detail and each field value start in one column, whatever the phase and the fields.
 test('every phase line and field line of the report starts its value in the same column', () => {
-  const phases: Phase[] = ['off', 'blind', 'waiting', 'armed', 'consented', 'stopped', 'asking', 'told', 'reserve', 'tripped']
+  const phases: Phase[] = ['off', 'blind', 'waiting', 'armed', 'consented', 'open', 'stopped', 'asking', 'told', 'reserve', 'tripped']
   for (const phase of phases) {
     for (const attended of [true, false]) {
       const lines = statusReport(status({ phase, attended, consentUntil: R, warnings: [W_FLAG] })).split('\n')
@@ -467,7 +474,7 @@ function everyText(): string[] {
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off'] as ReplyCase[]) out.push(resumeReply(c, f))
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off'] as const) out.push(stopReply(c, f), stopReply(c, f, 90))
   }
-  const phases: Phase[] = ['off', 'blind', 'waiting', 'armed', 'consented', 'stopped', 'asking', 'told', 'reserve', 'tripped']
+  const phases: Phase[] = ['off', 'blind', 'waiting', 'armed', 'consented', 'open', 'stopped', 'asking', 'told', 'reserve', 'tripped']
   const bases: Basis[] = [LIVE, { kind: 'seed', pct: 92, resetsAtMs: null }, { kind: 'test', pct: 95, resetsAtMs: R }, { kind: 'none', why: 'blind' }, { kind: 'none', why: 'no-reading' }, { kind: 'none', why: 'window-reset' }]
   for (const phase of phases)
     for (const mode of ['hold', 'tell'] as const)
@@ -768,6 +775,7 @@ function newEnginePrefixed(): string[] {
     simulateReply('set', { ...FW, used: 95, left: 5 }),
     resumeReply('overdue'),
     stopReply('overdue'),
+    ...skipEnginePrefixed(),
     stopReply('below', F5, 90, undefined, 90),
     stopReply('none', undefined, 90, undefined, 85),
   ]
@@ -832,7 +840,7 @@ test('every new notice and reply starts without the engine prefix', () => {
   expect(badWarning('SPARE10_WEEKLY_RESERVE', '0.5', '10')).toBe('SPARE10_WEEKLY_RESERVE="0.5" is not 0 or 1 to 99. spare10 uses 10.')
   expect(badWarning('SPARE10_AUTO_RESUME', 'yes', 'on')).toBe('SPARE10_AUTO_RESUME="yes" is not on or off. spare10 uses on.')
   expect(timeoutWarning('askUserQuestionTimeout', true)).toBe(
-    'questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the reset.',
+    'questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the time that the question names.',
   )
   expect(consentWarning('2026-10-06T00:00:00.000Z', 'seven_day')).toBe(
     'SPARE10_WEEKLY_CONSENT="2026-10-06T00:00:00.000Z" names a time after this weekly window. spare10 ignores it.',
@@ -996,7 +1004,7 @@ test('the simulate replies name the weekly window and the new grammar', () => {
   )
   expect(simulateReply('weekly-off')).toBe('the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.')
   expect(simulateReply('bad')).toBe(
-    '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 2m for a test window that resets in two minutes.',
+    '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
   )
   expect(simulateReply('off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
 })
@@ -1015,6 +1023,7 @@ function newTexts(): string[] {
     stepsIn(12.5, 0),
     clockText(NEXT_THU, 'seven_day', TZ, T0),
     fmtDuration(W - T0),
+    ...skipTexts(),
   ]
   const lists: Array<Facts | Facts[]> = [F5, FW, BOTH, NO_RESET, { ...FW, resetsAtMs: null }, [NO_RESET, { ...FW, resetsAtMs: null }], { ...FW, resetsAtMs: NEXT_THU }]
   for (const f of lists) {
@@ -1055,6 +1064,482 @@ function newTexts(): string[] {
             ),
           )
           for (const until of ['15:00', 'Mon 09:00', 'Thu 1 Oct 11:00']) out.push(badgeView(phase, { reserve: 12.5, test: on, mode: 'hold', blink: on, until }).text)
+        }
+  return out
+}
+
+// ---- Skip near the reset (skip design 2, 7.2) ----
+
+// The examples of skip 2: 5-hour reserve 10, 92% used, reset 16:40, span 20 min, skip start 16:20. Weekly
+// reserve 10, 92% used, reset Mon 09:00, span 8 h, skip start Mon 01:00. A test window set at 14:00 `in
+// 22m`: reset 14:22, skip start 14:02. A weekly test window `in 482m`: reset Thu 22:02, skip start Thu 14:02.
+const R1640 = Date.parse('2026-09-24T16:40:00Z')
+const T1400 = Date.parse('2026-09-24T14:00:00Z')
+const S5 = 20 * MIN
+const S7 = 8 * HOUR
+const OPEN5: Facts = { used: 92, left: 8, resetsAtMs: R1640, reserve: 10, timeZone: TZ } // an open kind: no span, no hold end
+const OPEN7: Facts = { used: 92, left: 8, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0 }
+const OWN5: Facts = { ...OPEN5, holdEnd: R1640 - S5, span: S5 } // a skip owner's 5-hour facts
+const OWN7: Facts = { ...OPEN7, holdEnd: W - S7, span: S7 }
+const TEST5: Facts = { used: 95, left: 5, resetsAtMs: T1400 + 22 * MIN, reserve: 10, timeZone: TZ, test: true, holdEnd: T1400 + 2 * MIN, span: S5 }
+const TEST7: Facts = { used: 95, left: 5, resetsAtMs: T1400 + 482 * MIN, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T1400, test: true, span: S7 }
+const KIT: Facts = { used: 90, left: 10, resetsAtMs: R, reserve: 10, timeZone: TZ, holdEnd: R - S5, span: S5 } // the kit default world
+const NONE: Ended = { reset: [], open: [] }
+const OPEN_5: Ended = { reset: [], open: [OPEN5] }
+
+test('leadText names the span and the reset, the weekly reset and the test windows', () => {
+  expect(leadText(OWN5)).toBe('20 min before the reset')
+  expect(leadText(OWN7)).toBe('8 h before the weekly reset')
+  expect(leadText(TEST5)).toBe('20 min before the test window ends')
+  expect(leadText(TEST7)).toBe('8 h before the weekly test window ends')
+  expect(leadText({ ...OWN5, span: 2.5 * MIN })).toBe('2.5 min before the reset')
+  expect(leadText({ ...OWN7, span: 0.5 * HOUR })).toBe('0.5 h before the weekly reset')
+  expect(leadText(OPEN5)).toBeUndefined() // no span: no lead
+  expect(spanText(OWN5)).toBe('20 min')
+  expect(spanText(OWN7)).toBe('8 h')
+})
+
+test('soonText and eventText name reset and open windows in order', () => {
+  expect(soonText(OPEN5)).toBe('the 5-hour window resets at 16:40')
+  expect(soonText(OPEN7)).toBe('the weekly window resets at Mon 09:00')
+  expect(soonText({ ...OPEN5, resetsAtMs: T1400 + 22 * MIN, test: true })).toBe('the test window ends at 14:22')
+  expect(soonText(TEST7)).toBe('the weekly test window ends at Thu 22:02')
+  expect(soonText([OPEN7, OPEN5])).toBe('the 5-hour window resets at 16:40, and the weekly window resets at Mon 09:00') // five_hour first
+  expect(eventText([], [OPEN5])).toBe('the 5-hour window resets at 16:40. Your 10% reserve is open until then')
+  expect(eventText(FIVE, [OPEN7])).toBe(
+    'the 5-hour window reset. The weekly window resets at Mon 09:00. Your 10% weekly reserve is open until then',
+  )
+  expect(eventText([], [OPEN5, OPEN7])).toBe(
+    'the 5-hour window resets at 16:40, and the weekly window resets at Mon 09:00. Your 10% reserve and your 10% weekly reserve are open until then',
+  )
+  expect(eventText(TWO, [])).toBe(resetText(TWO)) // no open kind: {reset}
+  expect(eventText([], [])).toBe('')
+})
+
+test('the question says when the reserve opens, for loop, prompt hold and prompt tell', () => {
+  expect(questionText(OWN5, 'loop', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 92% used · 8% left · resets 16:40. All work is on hold. Continue on the reserve until 16:40? If you choose Stop here or do not answer, the work waits until 16:20, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(questionText(OWN7, 'loop', 'hold', true)).toBe(
+    'Your 10% weekly reserve is reached: 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on the weekly reserve until Mon 09:00? If you choose Stop here or do not answer, the work waits until Mon 01:00, 8 h before the weekly reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(questionText(TEST5, 'loop', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 95% used · 5% left · resets 14:22. All work is on hold. Continue on the reserve until 14:22? If you choose Stop here or do not answer, the work waits until 14:02, 20 min before the test window ends. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(questionText(OWN5, 'prompt', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 92% used · 8% left · resets 16:40. spare10 holds your prompt and any other work. Continue on the reserve until 16:40? If you do not answer, all of it continues at 16:20, 20 min before the reset, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until 16:20.',
+  )
+  expect(questionText(OWN5, 'prompt', 'tell', true)).toBe(
+    'Your 10% reserve is reached: 92% used · 8% left · resets 16:40. spare10 holds your prompt. Continue on the reserve until 16:40? If you do not answer, your prompt goes in at 16:20, 20 min before the reset, unless a reserve is still reached. Stop here gives it back to you.',
+  )
+  expect(questionText(KIT, 'loop', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 90% used · 10% left · resets 15:00. All work is on hold. Continue on the reserve until 15:00? If you choose Stop here or do not answer, the work waits until 14:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  // The span alone gives the skip start: the hold end is optional.
+  expect(questionText({ ...OPEN5, span: S5 }, 'loop', 'hold', true)).toBe(questionText(OWN5, 'loop', 'hold', true))
+  // Two kinds: {at} is the latest hold end, and the lead is its owner's.
+  expect(questionText([OWN5, OWN7], 'loop', 'hold', true)).toEndWith(
+    'the work waits until Mon 01:00, 8 h before the weekly reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  // autoResume off: no {after}, as D0.2.
+  expect(questionText(OWN5, 'loop', 'hold', false)).toBe(questionText(OPEN5, 'loop', 'hold', false))
+  expect(whenOf(OWN5)).toEqual({ at: '16:20', lead: '20 min before the reset' })
+})
+
+test('the question keeps the D0.2 wording without a skip owner', () => {
+  // A weekly reset owns the time (the weekly span is 0): the 5-hour facts carry no span, and {at} is the reset.
+  const five = { ...OPEN5, holdEnd: R1640 - S5 } // a skip start ahead, but no skip owner
+  expect(questionText([five, OPEN7], 'loop', 'hold', true)).toEndWith(
+    'If you choose Stop here or do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  // Facts without span: {at} is the hold end, with no lead and `after`.
+  expect(questionText(five, 'prompt', 'hold', true)).toEndWith(
+    'If you do not answer, all of it continues after 16:20, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until 16:20.',
+  )
+  expect(questionText(F5, 'loop', 'hold', true)).toContain('the work waits until 15:00. Then')
+  expect(whenOf([five, OPEN7])).toEqual({ at: 'Mon 09:00' })
+})
+
+test('the reset notices with an empty open list are the D0.2 texts', () => {
+  for (const named of NAMED) {
+    expect(notice.resetContinues(named, [])).toBe(`${resetText(named)}. Held work continues.`)
+    expect(notice.resetStillHeld(named, [F5], [])).toBe(`${resetText(named)}, but your 10% reserve is reached. Held work still waits.`)
+    expect(notice.resetResumes(named, [])).toBe(`${resetText(named)}. spare10 continues the stopped work.`)
+    expect(notice.resetStopOver(named, [])).toBe(`${resetText(named)}, and the stop is over. Type a prompt to continue.`)
+    expect(notice.stopTakenOver(named, [])).toBe(`${resetText(named)}, and the stop is over.`)
+    expect(notice.stopExtended(named, [FW], 'Mon 09:00', [])).toBe(`${resetText(named)}, but your 10% weekly reserve is reached. The stop lasts until Mon 09:00.`)
+    expect(notice.resetWaitingFor(named, [])).toBe(`${resetText(named)}. Held work still waits for your answer.`)
+    expect(notice.resetContinues(named)).toBe(notice.resetContinues(named, []))
+    expect(resumePrompt(named, [])).toBe(resumePrompt(named))
+    expect(resetContext(named, [])).toBe(resetContext(named))
+  }
+  expect(notice.resetContinues(FIVE)).toBe('the 5-hour window reset. Held work continues.')
+  expect(notice.resetWaitingFor(FIVE)).toBe(notice.resetWaiting)
+})
+
+test('the reset notices with open kinds, and their empty-event forms', () => {
+  expect(notice.resetContinues([], [OPEN5])).toBe('the 5-hour window resets at 16:40. Your 10% reserve is open until then. Held work continues.')
+  expect(notice.resetStillHeld([], [FW], [OPEN5])).toBe(
+    'the 5-hour window resets at 16:40. Your 10% reserve is open until then, but your 10% weekly reserve is reached. Held work still waits.',
+  )
+  expect(notice.resetResumes([], [OPEN5])).toBe('the 5-hour window resets at 16:40. Your 10% reserve is open until then. spare10 continues the stopped work.')
+  expect(notice.resetStopOver([], [OPEN5])).toBe(
+    'the 5-hour window resets at 16:40. Your 10% reserve is open until then, and the stop is over. Type a prompt to continue.',
+  )
+  expect(notice.stopTakenOver([], [OPEN5])).toBe('the 5-hour window resets at 16:40. Your 10% reserve is open until then, and the stop is over.')
+  expect(notice.stopExtended([], [OWN7], untilPhrase(untilFor(OWN7, W - S7, ['seven_day'], true)), [OPEN5])).toBe(
+    'the 5-hour window resets at 16:40. Your 10% reserve is open until then, but your 10% weekly reserve is reached. The stop lasts until Mon 01:00, 8 h before the weekly reset.',
+  )
+  // Both open, a reset and an open kind, and a test window.
+  expect(notice.resetContinues([], [OPEN5, OPEN7])).toBe(
+    'the 5-hour window resets at 16:40, and the weekly window resets at Mon 09:00. Your 10% reserve and your 10% weekly reserve are open until then. Held work continues.',
+  )
+  expect(notice.resetResumes(FIVE, [OPEN7])).toBe(
+    'the 5-hour window reset. The weekly window resets at Mon 09:00. Your 10% weekly reserve is open until then. spare10 continues the stopped work.',
+  )
+  expect(notice.resetContinues([], [{ ...OPEN5, resetsAtMs: T1400 + 22 * MIN, test: true }])).toBe(
+    'the test window ends at 14:22. Your 10% reserve is open until then. Held work continues.',
+  )
+  // The empty event: a test kind whose skip start came while a real trip beneath it still gates (B45).
+  expect(notice.resetStillHeld([], [F5], [])).toBe('your 10% reserve is reached. Held work still waits.')
+  expect(notice.stopTakenOver([], [])).toBe('the stop is over.')
+  expect(notice.stopExtended([], [OWN7], 'Mon 01:00', [])).toBe('your 10% weekly reserve is reached. The stop lasts until Mon 01:00.')
+})
+
+test('resetWaitingFor says that new work goes on only when a kind is open', () => {
+  expect(notice.resetWaitingFor([], [OPEN5])).toBe(
+    'the 5-hour window resets at 16:40. Your 10% reserve is open until then, but held work still waits for your answer. New work goes on with no question.',
+  )
+  expect(notice.resetWaitingFor(FIVE, [OPEN7])).toBe(
+    'the 5-hour window reset. The weekly window resets at Mon 09:00. Your 10% weekly reserve is open until then, but held work still waits for your answer. New work goes on with no question.',
+  )
+  expect(notice.resetWaitingFor(FIVE, [])).toBe('the 5-hour window reset. Held work still waits for your answer.')
+  expect(notice.resetWaitingFor(FIVE, [])).not.toContain('New work')
+  // Another window still gates: it holds new work too, so the note does not say that new work goes on.
+  expect(notice.resetWaitingFor([], [OPEN5], false)).toBe(
+    'the 5-hour window resets at 16:40. Your 10% reserve is open until then, but held work still waits for your answer.',
+  )
+})
+
+test('the stop and hold-limit notices name the skip start and the lead', () => {
+  const u = untilFor(OWN5, R1640 - S5, ['five_hour'], true)
+  expect(u).toEqual({ at: '16:20', lead: '20 min before the reset' })
+  expect(untilFor(OWN5, R1640 - S5, ['five_hour'], false)).toEqual({ at: '16:20' }) // not a skip owner: no lead
+  expect(untilFor(OPEN5, R1640 - S5, ['five_hour'], true)).toEqual({ at: '16:20' }) // no span: no lead
+  expect(untilFor([OWN5, OWN7], W - S7, ['five_hour', 'seven_day'], true)).toEqual({ at: 'Mon 01:00', lead: '8 h before the weekly reset' })
+  expect(notice.stopped(OWN5, { ...u, work: true })).toBe(
+    'stopped at your 10% reserve until 16:20, 20 min before the reset. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  expect(notice.stopped(OWN5, { ...u, work: false })).toBe(
+    'stopped at your 10% reserve until 16:20, 20 min before the reset. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  expect(notice.holdLimit(OWN5, { ...u, work: true })).toBe(
+    'the hold reached its time limit. The work is stopped at your 10% reserve until 16:20, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(notice.holdLimit(OWN5, { ...u, work: false })).toBe(
+    'the hold reached its time limit. The work is stopped at your 10% reserve until 16:20, 20 min before the reset. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  expect(notice.stopped(F5, { at: '15:00', work: true })).toBe(notice.stopped(F5, { at: '15:00', work: true, lead: undefined as never }))
+})
+
+test('the late stop notices: soon and open', () => {
+  expect(notice.stoppedLate(OWN5, OPEN_5, true)).toBe(
+    'stopped at your 10% reserve. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so spare10 continues the work soon, unless a reserve is still reached.',
+  )
+  expect(notice.stoppedLate(OWN5, OPEN_5, false)).toBe(
+    'stopped. Held work is refused. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so new work goes on with no question.',
+  )
+  expect(notice.holdLimitLate(OWN5, OPEN_5, true)).toBe(
+    'the hold reached its time limit. The work is stopped at your 10% reserve. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so spare10 continues it soon, unless a reserve is still reached.',
+  )
+  expect(notice.holdLimitLate(OWN5, OPEN_5, false)).toBe(
+    'the hold reached its time limit. Held work is refused. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so new work goes on with no question.',
+  )
+  // No past time: the skip start that has passed is never named.
+  for (const soon of [false, true]) {
+    for (const t of [notice.stoppedLate(OWN5, OPEN_5, soon), notice.holdLimitLate(OWN5, OPEN_5, soon)]) {
+      expect(t).not.toContain('16:20')
+      expect(t).not.toContain(' until 1')
+    }
+  }
+})
+
+test('the open resume prompt and the open reset note', () => {
+  expect(resumePrompt([], [OPEN5])).toBe(
+    'The 5-hour window resets at 16:40. Your 10% reserve is open until then, so the stop at the quota reserve is over. spare10 is set to continue the work when the reserve opens, so do not wait for the user. Continue the task from the point where it stopped. A subagent whose result says "spare10: work stopped" or "spare10: the user stopped work" did not finish. Run it again if you still need its result.',
+  )
+  expect(resetContext([], [OPEN5])).toBe(
+    "spare10: earlier work stopped at the quota reserve. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so the stop is over. The stopped task is not finished. After the user's message, continue it unless the user says otherwise.",
+  )
+  expect(resumePrompt(FIVE, [OPEN7])).toStartWith('The 5-hour window reset. The weekly window resets at Mon 09:00. Your 10% weekly reserve is open until then, so the stop')
+  expect(resumePrompt([], [OPEN5]).startsWith('spare10')).toBe(false)
+  expect(resetContext([], [OPEN5]).startsWith('spare10: ')).toBe(true)
+})
+
+test('the stop replies have skip, late, open and overdue forms', () => {
+  const u = untilFor(OWN5, R1640 - S5, ['five_hour'], true)
+  expect(stopReply('open', OPEN5)).toBe(
+    'nothing to stop. The reset is near, so your 10% reserve is open until 16:40. To keep a reserve until the reset, set its Open reserve option to 0 in /config.',
+  )
+  expect(stopReply('open', [OPEN5, OPEN7])).toBe(
+    'nothing to stop. The reset is near, so your 10% reserve and your 10% weekly reserve are open until they reset (16:40 and Mon 09:00). To keep a reserve until the reset, set its Open reserve option to 0 in /config.',
+  )
+  expect(stopReply('overdue-open', OPEN5)).toBe(
+    'the stop is over, because the reset is near. Your 10% reserve is open until 16:40. spare10 will not continue the stopped work.',
+  )
+  expect(stopReply('overdue-skip')).toBe('the stop is over. spare10 will not continue the stopped work.')
+  expect(stopReply('overdue')).toBe('the stop ended at the reset. spare10 will not continue the stopped work.')
+  expect(stopReply('tripped', OWN5, undefined, { ...u })).toBe(
+    'stopped at the reserve until 16:20, 20 min before the reset. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  expect(stopReply('tripped', OWN5, undefined, { ...u, continues: false })).toBe(
+    'stopped at the reserve until 16:20, 20 min before the reset. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  expect(stopReply('asking', undefined, undefined, u)).toBe('stopped. Held work is refused. spare10 continues it at 16:20, 20 min before the reset.')
+  expect(stopReply('asking', undefined, undefined, { at: '15:00' })).toBe('stopped. Held work is refused. spare10 continues it after 15:00.')
+  expect(stopReply('asking-soon', undefined, undefined, undefined, undefined, OPEN_5)).toBe(
+    'stopped. Held work is refused. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so spare10 continues it soon, unless a reserve is still reached.',
+  )
+  expect(stopReply('asking-open', undefined, undefined, undefined, undefined, OPEN_5)).toBe(
+    'stopped. Held work is refused. The 5-hour window resets at 16:40. Your 10% reserve is open until then, so new work goes on with no question.',
+  )
+  expect(stopReply('stopped', OWN5, undefined, u)).toBe('already stopped until 16:20.') // the lead is left out
+})
+
+test('the resume replies: open, and overdue with an empty event', () => {
+  expect(resumeReply('open', OPEN5)).toBe('nothing to resume. The reset is near, so your 10% reserve is open until 16:40.')
+  expect(resumeReply('open', OPEN7)).toBe('nothing to resume. The reset is near, so your 10% weekly reserve is open until Mon 09:00.')
+  expect(resumeReply('overdue', undefined, [], [OPEN5])).toBe(
+    'the 5-hour window resets at 16:40. Your 10% reserve is open until then, and the stop is over. Type a prompt to continue.',
+  )
+  expect(resumeReply('overdue', undefined, [], [])).toBe('the stop is over. Type a prompt to continue.')
+  expect(resumeReply('overdue')).toBe('the stop is over. Type a prompt to continue.')
+  expect(resumeReply('overdue', undefined, FIVE)).toBe('the 5-hour window reset, and the stop is over. Type a prompt to continue.')
+})
+
+const SPANS = { lastMinutes: 20, lastMinutesFrom: 'option', weeklyLastHours: 8, weeklyLastHoursFrom: 'option' } as const
+
+test('the status report shows the reserve opens rows with their sources, and leaves weekly opens out when the weekly guard is off', () => {
+  expect(statusReport(status02({ spans: SPANS }))).toBe(
+    [
+      'version 0.2.0',
+      '',
+      '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
+      '  · reserve        10% of the 5-hour window (from /config)',
+      '  · weekly reserve 10% of the weekly window (from /config)',
+      '  · reserve opens  in the last 20 min of the 5-hour window (from /config)',
+      '  · weekly opens   in the last 8 h of the weekly window (from /config)',
+      '  · at the reserve stop and ask you',
+      '  · at the reset   continue by itself (from /config)',
+      '  · reading        live · 42% used · 58% left · resets 14:00 (in 2 h 14 min)',
+      '  · weekly reading live · 61% used · 39% left · resets Mon 09:00 (in 3 d 21 h)',
+      '  · consent        none',
+      '  · weekly consent none',
+      '  · guarded        yes (scope all)',
+      '  · claude -p      runs started here: stop',
+      '',
+      '/spare10 resume   continue on the reserve until the window resets',
+      '/spare10 stop     stop at the reserve now',
+    ].join('\n'),
+  )
+  const rows = (over: Partial<StatusInput>): string[] =>
+    statusReport(status02(over))
+      .split('\n')
+      .filter((l) => l.includes('opens '))
+  expect(rows({ spans: { lastMinutes: 2.5, lastMinutesFrom: 'env', weeklyLastHours: 0, weeklyLastHoursFrom: 'env' } })).toEqual([
+    '  · reserve opens  in the last 2.5 min of the 5-hour window (from SPARE10_LAST_MINUTES)',
+    '  · weekly opens   only at the reset (from SPARE10_WEEKLY_LAST_HOURS)',
+  ])
+  expect(rows({ spans: { lastMinutes: 0, lastMinutesFrom: 'option', weeklyLastHours: 0.5, weeklyLastHoursFrom: 'option' } })).toEqual([
+    '  · reserve opens  only at the reset (from /config)',
+    '  · weekly opens   in the last 0.5 h of the weekly window (from /config)',
+  ])
+  expect(rows({ spans: { lastMinutes: 0, lastMinutesFrom: 'unread', weeklyLastHours: 0, weeklyLastHoursFrom: 'unread' } })).toEqual([
+    '  · reserve opens  only at the reset (spare10 could not read the env)',
+    '  · weekly opens   only at the reset (spare10 could not read the env)',
+  ])
+  for (const weekly of ['off', { reserve: 0, from: 'option', basis: { kind: 'none', why: 'no-reading' } }] as const) {
+    expect(rows({ spans: SPANS, weekly })).toEqual(['  · reserve opens  in the last 20 min of the 5-hour window (from /config)'])
+  }
+  // Unattended runs show the rows too. Without spans: no rows (the D0.2 report).
+  expect(rows({ spans: SPANS, attended: false, headless: 'stop' })).toHaveLength(2)
+  expect(rows({})).toEqual([])
+  // D4: every value starts at column 19.
+  for (const row of statusReport(status02({ spans: SPANS })).split('\n').slice(2, 15)) {
+    const chars = [...row]
+    expect(chars[18]).toBe(' ')
+    expect(chars[19]).not.toBe(' ')
+  }
+})
+
+test('the open phase line names the open reserves and the reset', () => {
+  const line = (over: Partial<StatusInput>) => statusReport(status02(over)).split('\n')[2]
+  expect(line({ phase: 'open', open: [OPEN5] })).toBe('  ↻ open           the reset is near. Your 10% reserve is open until 16:40, so spare10 lets all work through.')
+  expect(line({ phase: 'open', open: [OPEN7, OPEN5] })).toBe(
+    '  ↻ open           the reset is near. Your 10% reserve and your 10% weekly reserve are open until they reset (16:40 and Mon 09:00), so spare10 lets all work through.',
+  )
+  expect(line({ phase: 'open' })).toBe('  ↻ open           the reset is near, so spare10 lets all work through.')
+})
+
+test('the asking line says that new work goes on while a reserve is open', () => {
+  const line = (over: Partial<StatusInput>) => statusReport(status02(over)).split('\n')[2]
+  expect(line({ phase: 'asking', open: [OPEN5] })).toBe(
+    '  ? asking         a question is open. Held work waits until you answer. Your 10% reserve is open until 16:40, so new work goes on. If no dialog shows, run /spare10 resume or /spare10 stop.',
+  )
+  expect(line({ phase: 'asking', open: [OPEN5], at: { ms: W - S7, kinds: ['seven_day'], skip: true } })).toBe(
+    '  ? asking         a question is open. Held work waits until you answer, or until Mon 01:00. Your 10% reserve is open until 16:40, so new work goes on. If no dialog shows, run /spare10 resume or /spare10 stop.',
+  )
+  expect(line({ phase: 'asking', open: [] })).toBe(line({ phase: 'asking' })) // no open kind: the D0.2 line
+})
+
+test('a skip stop and a skip wait say at, not after', () => {
+  const at = { ms: R1640 - S5, kinds: ['five_hour'] as Kind[], skip: true }
+  const line = (over: Partial<StatusInput>) => statusReport(status02(over)).split('\n')[2]
+  expect(line({ phase: 'stopped', at, skipStop: true, autoStop: true, work: true })).toBe(
+    '  ■ stopped        you chose Stop here. spare10 continues the work at 16:20. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  // No work, or autoResume off (no auto tag in force): the stop ends by time, and the line says until when.
+  for (const over of [{ autoStop: true, work: false }, { autoStop: false, work: true }, { autoStop: false, work: false }]) {
+    expect(line({ phase: 'stopped', at, skipStop: true, ...over })).toBe(
+      '  ■ stopped        you chose Stop here, until 16:20. Type a prompt to be asked again, or run /spare10 resume.',
+    )
+  }
+  expect(line({ phase: 'reserve', attended: false, headless: 'wait', at })).toBe('  ⚠ tripped        unattended run, policy wait. Held work continues at 16:20.')
+  // Not a skip: the D0.2 lines.
+  expect(line({ phase: 'reserve', attended: false, headless: 'wait', at: { ...at, skip: false } })).toBe(
+    '  ⚠ tripped        unattended run, policy wait. Held work continues after 16:20.',
+  )
+  expect(line({ phase: 'stopped', at: { ...at, skip: false }, autoStop: true, work: true })).toBe(
+    '  ■ stopped        you chose Stop here. spare10 continues the work after 16:20. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+})
+
+test('the simulate reply says when the reserve opens, that it is open at once, or that the real reading holds', () => {
+  const t22: Facts = { used: 95, left: 5, resetsAtMs: T1400 + 22 * MIN, reserve: 10, timeZone: TZ, test: true, span: S5 }
+  expect(simulateReply('set', t22, { at: '14:02', lead: '20 min before the test window ends' })).toBe(
+    'test reading set to 95% used, resets 14:22. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', { ...t22, resetsAtMs: T1400 + 10 * MIN }, 'now')).toBe(
+    'test reading set to 95% used, resets 14:10. It can only raise the real reading. The test window ends within 20 min, so the reserve is open at once. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', TEST7, { at: 'Thu 14:02', lead: '8 h before the weekly test window ends' })).toBe(
+    'test reading set to 95% used of the weekly window, resets Thu 22:02. It can only raise the real reading. The weekly reserve opens at Thu 14:02, 8 h before the weekly test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', t22, 'real')).toBe(
+    'test reading set to 95% used, resets 14:22. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', TEST7, 'real')).toContain(
+    'It can only raise the real reading. The real weekly reading is also in the weekly reserve, so the weekly test window does not open it. Run',
+  )
+  expect(simulateReply('set', TEST7, 'now')).toContain('The weekly test window ends within 8 h, so the weekly reserve is open at once.')
+  // A span of 0, or a percentage below the trip point: the caller passes nothing, and the reply is D0.2.
+  expect(simulateReply('set', { ...t22, used: 50, left: 50 })).toBe(
+    'test reading set to 50% used, resets 14:22. It can only raise the real reading. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('bad')).toBe(
+    '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
+  )
+})
+
+test('B27 names 0 to 299 and 0 to 167, and B29 names the time that the question names', () => {
+  expect(badWarning('SPARE10_LAST_MINUTES', '300', '20')).toBe('SPARE10_LAST_MINUTES="300" is not 0 to 299. spare10 uses 20.')
+  expect(badWarning('SPARE10_WEEKLY_LAST_HOURS', 'x', '8')).toBe('SPARE10_WEEKLY_LAST_HOURS="x" is not 0 to 167. spare10 uses 8.')
+  expect(timeoutWarning('CLAUDE_AFK_TIMEOUT_MS', true)).toBe(
+    'questions here continue by themselves after a time limit (CLAUDE_AFK_TIMEOUT_MS). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the time that the question names.',
+  )
+  expect(timeoutWarning('CLAUDE_AFK_TIMEOUT_MS', false)).toBe(
+    'questions here continue by themselves after a time limit (CLAUDE_AFK_TIMEOUT_MS). An unanswered spare10 question then counts as Stop here.',
+  )
+})
+
+test('the unattended open debug line keeps its prefix', () => {
+  expect(debugLine.unattendedOpen(OPEN5)).toBe(
+    'spare10: unattended run inside the reserve (92% used · 8% left · resets 16:40), but the reset is near. spare10 lets it through.',
+  )
+  expect(debugLine.unattendedOpen([OPEN5, OPEN7]).startsWith('spare10: ')).toBe(true)
+})
+
+// The skip notices and replies: the engine prefixes each one.
+function skipEnginePrefixed(): string[] {
+  const u = untilFor(OWN5, R1640 - S5, ['five_hour'], true)
+  const endeds: Ended[] = [NONE, OPEN_5, { reset: FIVE, open: [OPEN7] }, { reset: [], open: [OPEN5, OPEN7] }]
+  const out: string[] = [
+    badWarning('SPARE10_LAST_MINUTES', '300', '20'),
+    badWarning('SPARE10_WEEKLY_LAST_HOURS', 'x', '8'),
+    stopReply('overdue-skip'),
+    resumeReply('overdue', undefined, [], []),
+    notice.stopTakenOver([], []),
+  ]
+  for (const e of endeds.slice(1)) {
+    out.push(notice.stoppedLate(OWN5, e, true), notice.stoppedLate(OWN5, e, false), notice.holdLimitLate(OWN5, e, true), notice.holdLimitLate(OWN5, e, false))
+    out.push(stopReply('asking-soon', undefined, undefined, undefined, undefined, e), stopReply('asking-open', undefined, undefined, undefined, undefined, e))
+  }
+  for (const e of endeds) {
+    out.push(notice.resetWaitingFor(e.reset.length === 0 ? FIVE : e.reset, e.open), notice.resetContinues(e.reset, e.open))
+    out.push(notice.resetStillHeld(e.reset, [FW], e.open), notice.resetResumes(e.reset.length === 0 ? FIVE : e.reset, e.open))
+    out.push(notice.resetStopOver(e.reset.length === 0 ? FIVE : e.reset, e.open), notice.stopTakenOver(e.reset, e.open))
+    out.push(notice.stopExtended(e.reset, [OWN7], 'Mon 01:00, 8 h before the weekly reset', e.open), resumeReply('overdue', undefined, e.reset, e.open))
+  }
+  for (const f of [OPEN5, OPEN7, [OPEN5, OPEN7]]) out.push(resumeReply('open', f), stopReply('open', f), stopReply('overdue-open', f))
+  for (const work of [false, true]) out.push(notice.stopped(OWN5, { ...u, work }), notice.holdLimit(OWN5, { ...u, work }))
+  for (const continues of [false, true]) out.push(stopReply('tripped', OWN5, undefined, { ...u, continues }))
+  out.push(stopReply('asking', undefined, undefined, u), stopReply('stopped', OWN5, undefined, u))
+  for (const opens of [undefined, 'now', 'real', { at: '14:02', lead: '20 min before the test window ends' }] as const) {
+    out.push(simulateReply('set', TEST5, opens), simulateReply('set', TEST7, opens))
+  }
+  out.push(statusReport(status02({ spans: SPANS, phase: 'open', open: [OPEN5] })))
+  return out
+}
+
+test('every skip notice and reply starts without the engine prefix', () => {
+  const texts = skipEnginePrefixed()
+  expect(texts.length).toBeGreaterThan(60)
+  for (const t of texts) {
+    expect(t.startsWith('spare10: ')).toBe(false)
+    expect(t.startsWith('spare10 ')).toBe(false)
+  }
+})
+
+// Every skip text, skip on and off, for the STE guard.
+function skipTexts(): string[] {
+  const out: string[] = [...skipEnginePrefixed(), debugLine.unattendedOpen(OPEN5), debugLine.unattendedOpen([OPEN5, OPEN7])]
+  for (const f of [OWN5, OWN7, TEST5, TEST7, KIT, [OWN5, OWN7], [OWN5, OPEN7]] as Array<Facts | Facts[]>) {
+    for (const auto of [false, true])
+      for (const opener of ['loop', 'prompt'] as const)
+        for (const mode of ['hold', 'tell'] as const) out.push(questionText(f, opener, mode, auto))
+    out.push(soonText(f), whenOf(f).at, untilPhrase(whenOf(f)))
+  }
+  for (const f of [OWN5, OWN7, TEST5, TEST7]) out.push(leadText(f) ?? 'no lead', spanText(f))
+  for (const named of NAMED)
+    for (const open of [[], [OPEN5], [OPEN7], [OPEN5, OPEN7]] as Facts[][]) {
+      out.push(resumePrompt(named, open), resetContext(named, open), eventText(named, open) || 'empty')
+    }
+  const spans = [
+    SPANS,
+    { lastMinutes: 0, lastMinutesFrom: 'env', weeklyLastHours: 0, weeklyLastHoursFrom: 'unread' },
+    { lastMinutes: 2.5, lastMinutesFrom: 'unread', weeklyLastHours: 167, weeklyLastHoursFrom: 'env' },
+  ] as const
+  const phases: Phase[] = ['off', 'blind', 'waiting', 'armed', 'consented', 'open', 'stopped', 'asking', 'told', 'reserve', 'tripped']
+  for (const phase of phases)
+    for (const attended of [true, false])
+      for (const sp of spans)
+        for (const skip of [false, true]) {
+          out.push(
+            statusReport(
+              status02({
+                phase,
+                attended,
+                spans: sp,
+                open: skip ? [OPEN5, OPEN7] : [],
+                skipStop: skip,
+                at: { ms: R1640 - S5, kinds: ['five_hour'], skip },
+                headless: attended ? 'off' : 'wait',
+                work: skip,
+                autoStop: true,
+              }),
+            ),
+          )
+          out.push(badgeView(phase, { reserve: 10, test: skip, mode: 'hold', blink: skip, until: '16:40' }).text)
         }
   return out
 }

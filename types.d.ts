@@ -8,6 +8,8 @@ export type Spare10Hold = {
   poke: (args: { from: string }) => Promise<string>
   /** The autoResume setting in force: noun calls route to the newest copy of spare10. */
   auto: () => Promise<boolean>
+  /** The spans in force: noun calls route to the newest copy of spare10. */
+  spans: () => Promise<{ lastMinutes: number; weeklyLastHours: number }>
 }
 
 declare module 'claude-code' {

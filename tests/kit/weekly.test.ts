@@ -1,7 +1,30 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, ElementQuery, FoundElement } from 'claude-code/testing'
 import type { ToolCallResult } from 'claude-code'
-import { DAY, LATER, MARGIN, RESETS, SOON, T0, TICK, WEEK_RESETS, bash, begin, cmd, drain, measure, pastDue, step, stopRec, typed, world } from '../helpers/world.ts'
+import {
+  DAY,
+  LATER,
+  MARGIN,
+  OPENS,
+  RESETS,
+  SKIP,
+  SOON,
+  T0,
+  TICK,
+  WEEK_OPENS,
+  WEEK_RESETS,
+  WEEK_SKIP,
+  bash,
+  begin,
+  cmd,
+  drain,
+  measure,
+  pastDue,
+  step,
+  stopRec,
+  typed,
+  world,
+} from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
 // The weekly window through the engine (0.2 design B32, 2.1 to 2.9, 3.1, 3.2, 3.5, 5.6, and the 8.3
@@ -10,12 +33,13 @@ import type { World } from '../helpers/world.ts'
 
 const RESETS_MS = Date.parse(RESETS)
 const WEEK_MS = Date.parse(WEEK_RESETS)
+const WEEK_OPENS_MS = Date.parse(WEEK_OPENS) // the weekly skip start: 8 h before WEEK_RESETS
 const SOON_MS = Date.parse(SOON)
 
 // ---- 2.1 placeholders, in the machine's zone as the kit runs ----
 
 type Kind = 'five_hour' | 'seven_day'
-type Fact = { kind: Kind; used: number; at: number; reserve?: number; now?: number }
+type Fact = { kind: Kind; used: number; at: number; reserve?: number; now?: number; test?: boolean }
 
 const hhmm = (ms: number): string =>
   new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ms)
@@ -43,10 +67,26 @@ const both = (fs: Fact[]): string => `(${fs.map(clockOf).join(' and ')})`
 const use = (fs: Fact[]): string =>
   fs.length === 1 ? `the ${weekly(fs[0] as Fact)}reserve until ${clockOf(fs[0] as Fact)}` : `both reserves until they reset ${both(fs)}`
 const quiet = (fs: Fact[]): string => (fs.length === 1 ? `until ${clockOf(fs[0] as Fact)}` : `until they reset ${both(fs)}`)
+// Skip near the reset (the shipped spans, skip 2.1): a kind's hold end is its skip start, 20 min (5-hour)
+// or 8 h (weekly) before its reset, and a text names the lead of the kind whose skip start is latest.
+// `off`: the D0.2 timing of a test with spans: 'off', where the hold end is the reset and there is no lead.
+const spanOf = (f: Fact): number => (f.kind === 'five_hour' ? SKIP : WEEK_SKIP)
+const holdOf = (f: Fact, off: boolean): number => (off ? f.at : f.at - spanOf(f))
+const leadOf = (f: Fact): string =>
+  f.kind === 'five_hour'
+    ? `20 min before ${f.test === true ? 'the test window ends' : 'the reset'}`
+    : `8 h before ${f.test === true ? 'the weekly test window ends' : 'the weekly reset'}`
 /** {at}: the latest hold end, in the weekday form when a weekly kind is named. */
-const at = (fs: Fact[]): string => {
-  const latest = Math.max(...fs.map((f) => f.at))
+const at = (fs: Fact[], off = false): string => {
+  const latest = Math.max(...fs.map((f) => holdOf(f, off)))
   return fs.some((f) => f.kind === 'seven_day') ? weekClock(latest, fs.find((f) => f.now !== undefined)?.now) : hhmm(latest)
+}
+/** {at} and, for a skip owner, its {lead}. */
+const when = (fs: Fact[], off = false): string => {
+  if (off) return at(fs, true)
+  const latest = Math.max(...fs.map((f) => holdOf(f, false)))
+  const owner = fs.find((f) => holdOf(f, false) === latest) as Fact
+  return `${at(fs)}, ${leadOf(owner)}`
 }
 const is = (fs: Fact[]): string => (fs.length === 1 ? 'is' : 'are')
 const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
@@ -54,13 +94,13 @@ const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
 // ---- 2.2 the question, autoResume on (the default) ----
 
 const head = (fs: Fact[]): string => `${cap(Rs(fs))} ${is(fs)} reached: ${pf(fs)}.`
-const loopQ = (fs: Fact[]): string =>
+const loopQ = (fs: Fact[], off = false): string =>
   `${head(fs)} All work is on hold. Continue on ${use(fs)}? ` +
-  `If you choose Stop here or do not answer, the work waits until ${at(fs)}. Then spare10 continues it, unless a reserve is still reached.`
-const promptQ = (fs: Fact[]): string =>
+  `If you choose Stop here or do not answer, the work waits until ${when(fs, off)}. Then spare10 continues it, unless a reserve is still reached.`
+const promptQ = (fs: Fact[], off = false): string =>
   `${head(fs)} spare10 holds your prompt and any other work. Continue on ${use(fs)}? ` +
-  `If you do not answer, all of it continues after ${at(fs)}, unless a reserve is still reached. ` +
-  `Stop here gives your prompt back and pauses other work until ${at(fs)}.`
+  `If you do not answer, all of it continues ${off ? 'after' : 'at'} ${when(fs, off)}, unless a reserve is still reached. ` +
+  `Stop here gives your prompt back and pauses other work until ${at(fs, off)}.`
 
 // ---- 2.3 texts the model reads ----
 
@@ -80,8 +120,8 @@ const instruction = (fs: Fact[]): string =>
 // ---- 2.4 notices, 2.7 report, 2.8 replies, 2.9 simulate ----
 
 const continuing = (fs: Fact[]): string => `continuing on ${Rs(fs)}. spare10 stays quiet ${quiet(fs)}.`
-const stoppedNotice = (fs: Fact[]): string =>
-  `stopped at ${Rs(fs)} until ${at(fs)}. Then spare10 continues the work, unless a reserve is still reached. ` +
+const stoppedNotice = (fs: Fact[], off = false): string =>
+  `stopped at ${Rs(fs)} until ${when(fs, off)}. Then spare10 continues the work, unless a reserve is still reached. ` +
   'Type a prompt to be asked again, or run /spare10 resume.'
 const told = (fs: Fact[]): string => `${Rs(fs)} ${is(fs)} reached. spare10 told the agents to wind down.`
 const ARMED = '● armed spare10 steps in at 90% used, or at 90% used of the weekly window.'
@@ -90,8 +130,10 @@ const TRIPPED = '⚠ tripped spare10 holds the next step and asks you.'
 const consentedLine = (fs: Fact[]): string => `⨯ consented you chose to continue. spare10 is quiet ${quiet(fs)}.`
 const consentRow = (f: Fact): string => `until ${clockOf(f)} (you chose to continue)`
 const weeklyOffRow = (from: string): string => `· weekly reserve off. spare10 does not watch the weekly window (from ${from})`
-const simulateWeekly = (used: number, clock: string): string =>
-  `test reading set to ${one(used)}% used of the weekly window, resets ${clock}. It can only raise the real reading. Run /spare10 simulate off to clear it.`
+// Skip 2.9: at or above the trip point the reply says when the weekly reserve opens (`opens`: the skip start).
+const simulateWeekly = (used: number, clock: string, opens?: string): string =>
+  `test reading set to ${one(used)}% used of the weekly window, resets ${clock}. It can only raise the real reading.` +
+  `${opens === undefined ? '' : ` The weekly reserve opens at ${opens}, 8 h before the weekly test window ends.`} Run /spare10 simulate off to clear it.`
 const SIMULATE_OFF = 'test reading cleared. Consent and stop for this window are cleared too.'
 const SIMULATE_WEEKLY_OFF = 'the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.'
 
@@ -186,7 +228,7 @@ test('weekly consent does not cover a 5-hour trip', async ($, on) => {
   expect((await bash($)).deny).toBe(STOP([F5(93)]))
   await w.clock.settle()
   expect(questions(w)).toEqual([loopQ([FW(92)]), loopQ([F5(93)])])
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', RESETS, T0, 'five_hour,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', OPENS, T0, 'five_hour,work,auto,skip'))
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect(w.ran).toEqual(['Bash:main'])
 })
@@ -275,9 +317,10 @@ for (const gate of ['tool', 'step', 'prompt'] as const) {
   test(`a Resume answers only the round after it (${gate} gate): when a later weekly question ends, a new 5-hour window in the reserve asks again`, { timeoutMs: 20_000 }, async ($, on) => {
     const weekEnd = '2026-09-24T18:00:00.000Z' // after the 5-hour reset, so a new 5-hour window starts during the weekly hold
     const weekEndMs = Date.parse(weekEnd)
-    const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: weekEnd })
+    // the D0.2 reset timing: a weekly reset 6 h after T0 is inside the shipped weekly span, and the test moves past both resets
+    const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: weekEnd, spans: 'off' })
     await begin($, w)
-    const q = gate === 'prompt' ? promptQ : loopQ
+    const q = (fs: Fact[]): string => (gate === 'prompt' ? promptQ(fs, true) : loopQ(fs, true))
     const held: Promise<boolean> =
       gate === 'tool'
         ? bash($).then((r) => r.result === 'ran')
@@ -310,10 +353,10 @@ for (const gate of ['tool', 'step', 'prompt'] as const) {
 test('a real 5-hour trip at 93 and simulate 95 weekly: Resume writes SPARE10_CONSENT only, and the next call passes without a second question', async ($, on) => {
   const w = world(on, { pct: 93, weekPct: 50, answer: 'Resume' })
   await begin($, w)
-  expect(await run($, 'simulate 95 weekly')).toBe(simulateWeekly(95, weekClock(WEEK_MS))) // the live weekly reset
+  expect(await run($, 'simulate 95 weekly')).toBe(simulateWeekly(95, weekClock(WEEK_MS), weekClock(WEEK_OPENS_MS))) // the live weekly reset
   expect((await bash($)).result).toBe('ran')
   await w.clock.settle()
-  expect(questions(w)).toEqual([loopQ([F5(93), FW(95)])])
+  expect(questions(w)).toEqual([loopQ([F5(93), { ...FW(95), test: true }])])
   expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${RESETS}`)
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined() // a test kind stays in this copy
   expect((await bash($)).result).toBe('ran')
@@ -359,23 +402,23 @@ test('a weekly Stop here writes a stop until the weekly reset', async ($, on) =>
   w.release('Stop here')
   expect((await Promise.all(held)).map((r) => r.deny)).toEqual([STOP(week), STOP(week)])
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined()
   expect(transcript(w)).toContain(stoppedNotice(week))
   expect((await bash($)).deny).toBe(STOP(week))
   expect((await drain($, step())).text).toBe(PAUSED(week))
   const ui = await mountBadge($)
-  expect(await badge(ui)).toEqual({ text: ` ■ spare10: stopped until ${weekClock(WEEK_MS)}`, color: 'warning' })
+  expect(await badge(ui)).toEqual({ text: ` ■ spare10: stopped until ${weekClock(WEEK_OPENS_MS)}`, color: 'warning' })
   await ui.unmount()
   expect(await status($)).toContain(
-    `■ stopped you chose Stop here. spare10 continues the work after ${weekClock(WEEK_MS)}. Type a prompt to be asked again, or run /spare10 resume.`,
+    `■ stopped you chose Stop here. spare10 continues the work at ${weekClock(WEEK_OPENS_MS)}. Type a prompt to be asked again, or run /spare10 resume.`,
   )
   // The 5-hour window resets: the weekly stop goes on, and nothing is sent.
   await w.clock.set(RESETS_MS + 10 * 60_000)
   w.resetsAt = LATER
   w.pct = 10
   expect((await bash($)).deny).toBe(STOP([FW(92, WEEK_MS, RESETS_MS + 10 * 60_000)]))
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
   expect(w.submitted).toEqual([])
   expect(w.ran).toEqual([])
   expect(w.asked).toHaveLength(1)
@@ -423,7 +466,9 @@ test('a weekly consent stamped with this session counts after a reload', async (
 })
 
 test('/spare10 simulate 95 weekly trips the weekly window, and simulate off clears it', async ($, on) => {
-  const w = world(on, { pct: 50 }) // no weekly entry: the test window is 7 days from now
+  // No weekly entry: the test window is 7 days from now. The D0.2 reset timing: the test sets test windows
+  // shorter than the weekly span (skip 7.4).
+  const w = world(on, { pct: 50, spans: 'off' })
   await begin($, w)
   const end = T0 + 7 * DAY
   const week = [FW(95, end)]
@@ -434,7 +479,7 @@ test('/spare10 simulate 95 weekly trips the weekly window, and simulate off clea
   expect(lines.some((l) => l.startsWith(`· weekly reading test reading · ${pf1(week[0] as Fact)} (in 7 d`))).toBe(true)
   const held = bash($)
   await w.clock.settle()
-  expect(questions(w)).toEqual([loopQ(week)])
+  expect(questions(w)).toEqual([loopQ(week, true)])
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(week))
   await w.clock.settle()
@@ -475,7 +520,7 @@ test('/spare10 simulate 95 weekly with the weekly guard off changes nothing', as
 })
 
 test('tell mode tells each loop once per kind and window, not again when the other window resets', async ($, on) => {
-  const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: SOON, env: TELL, agents: ['a1'] })
+  const w = world(on, { pct: 93, weekPct: 50, weekResetsAt: SOON, env: TELL, agents: ['a1'], spans: 'off' }) // the D0.2 reset timing
   await begin($, w)
   const five = [F5(93)]
   expect(ctx(await bash($))).toEqual([instruction(five)])
@@ -532,9 +577,9 @@ test('a weekly trip alone keeps the armed 5-hour badge rows out: the badge shows
   const held = bash($)
   await w.clock.settle()
   expect(questions(w)).toEqual([loopQ([FW(93)])])
-  expect(await badge(ui)).toEqual({ text: ` ? spare10: waiting for you until ${weekClock(WEEK_MS)}`, color: 'warning' })
+  expect(await badge(ui)).toEqual({ text: ` ? spare10: waiting for you until ${weekClock(WEEK_OPENS_MS)}`, color: 'warning' })
   expect(await status($)).toContain(
-    `? asking a question is open. Held work waits until you answer, or until ${weekClock(WEEK_MS)}. If no dialog shows, run /spare10 resume or /spare10 stop.`,
+    `? asking a question is open. Held work waits until you answer, or until ${weekClock(WEEK_OPENS_MS)}. If no dialog shows, run /spare10 resume or /spare10 stop.`,
   )
   w.release('Resume')
   expect((await held).result).toBe('ran')
@@ -602,14 +647,14 @@ test('/spare10 stop on a weekly trip stops until the weekly reset, and a refused
   await begin($, w)
   const week = [FW(92)]
   expect(await run($, 'stop')).toBe(
-    `stopped at the reserve until ${weekClock(WEEK_MS)}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
+    `stopped at the reserve until ${weekClock(WEEK_OPENS_MS)}, 8 h before the weekly reset. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
   )
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,auto'))
-  expect(await run($, 'stop')).toBe(`already stopped until ${weekClock(WEEK_MS)}.`)
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,auto,skip'))
+  expect(await run($, 'stop')).toBe(`already stopped until ${weekClock(WEEK_OPENS_MS)}.`)
   expect((await bash($)).deny).toBe(STOP(week))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
   expect(w.asked).toEqual([])
 })
 
@@ -656,11 +701,11 @@ test('both windows tripped: Stop here stops until the later reset and names both
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(two))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'five_hour,seven_day,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'five_hour,seven_day,work,auto,skip'))
   expect(transcript(w)).toContain(stoppedNotice(two))
   expect((await drain($, step())).text).toBe(PAUSED(two))
   const ui = await mountBadge($)
-  expect(await badge(ui)).toEqual({ text: ` ■ spare10: stopped until ${weekClock(WEEK_MS)}`, color: 'warning' })
+  expect(await badge(ui)).toEqual({ text: ` ■ spare10: stopped until ${weekClock(WEEK_OPENS_MS)}`, color: 'warning' })
   await ui.unmount()
 })
 
@@ -670,10 +715,10 @@ test('/spare10 stop with a weekly question open refuses the held work until the 
   const held = bash($)
   await w.clock.settle()
   expect(questions(w)).toEqual([loopQ([FW(92)])])
-  expect(await run($, 'stop')).toBe(`stopped. Held work is refused. spare10 continues it after ${weekClock(WEEK_MS)}.`)
+  expect(await run($, 'stop')).toBe(`stopped. Held work is refused. spare10 continues it at ${weekClock(WEEK_OPENS_MS)}, 8 h before the weekly reset.`)
   expect((await held).deny).toBe(STOP([FW(92)]))
   await w.clock.settle()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,work,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,work,auto,skip'))
   expect(w.dialogAborted).not.toBe('no') // the dialog is withdrawn
   expect(w.asked).toHaveLength(1)
 })
@@ -692,7 +737,7 @@ test('/spare10 resume and stop below both reserves name both readings', async ($
 })
 
 test('autoResume off: a weekly question waits past its reset, says so once, and a late Resume continues on the new weekly window', async ($, on) => {
-  const w = world(on, { pct: 50, weekPct: 92, weekResetsAt: SOON, env: { SPARE10_AUTO_RESUME: 'off' } })
+  const w = world(on, { pct: 50, weekPct: 92, weekResetsAt: SOON, env: { SPARE10_AUTO_RESUME: 'off' }, spans: 'off' }) // the D0.2 reset timing
   await begin($, w)
   const week = [FW(92, SOON_MS)]
   const held = bash($)
@@ -719,11 +764,11 @@ test('/spare10 stop after a weekly Resume clears the weekly consent, and the nex
   await w.clock.settle()
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBe(`S1 ${WEEK_RESETS}`)
   expect(await run($, 'stop')).toBe(
-    `stopped at the reserve until ${weekClock(WEEK_MS)}. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
+    `stopped at the reserve until ${weekClock(WEEK_OPENS_MS)}, 8 h before the weekly reset. Then spare10 continues any stopped work. Type a prompt to be asked again, or run /spare10 resume.`,
   )
   await w.clock.settle()
   expect(w.env.get('SPARE10_WEEKLY_CONSENT')).toBeUndefined()
-  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_RESETS, T0, 'seven_day,auto'))
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WEEK_OPENS, T0, 'seven_day,auto,skip'))
   expect((await bash($)).deny).toBe(STOP([FW(92)]))
   expect(w.asked).toHaveLength(1)
 })

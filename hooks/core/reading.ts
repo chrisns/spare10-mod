@@ -171,6 +171,37 @@ export function holdEndOf(b: Basis, mem: Memory, now: number, kind: Kind = 'five
   return (mem.noReset?.since ?? now) + windowMs(kind)
 }
 
+// ---- Skip near the reset (B41, B42, B45) ----
+
+/** The skip start of a basis: its reset minus the span. Null when the span is 0 or the reset is unknown. */
+export function skipStartOf(b: Basis, spanMs: number): number | null {
+  if (!(spanMs > 0) || b.kind === 'none' || b.resetsAtMs === null) return null
+  return b.resetsAtMs - spanMs
+}
+
+/** One kind at now: the basis it rests on, whether it is tripped, its skip start while ahead, and whether it is open. */
+export type KindView = { basis: Basis; tripped: boolean; skipAt: number | null; open: boolean }
+
+/**
+ * One kind at now (B41, B45). A kind is open when it is tripped and its skip start has come. A kind
+ * without a reset time is never open (fail safe). A test reading in its skip window yields to a real
+ * trip that is not open, so a test reading never releases a real hold.
+ */
+export function viewOf(real: Basis, withTest: Basis, reserve: number, spanMs: number, now: number): KindView {
+  const one = (b: Basis): KindView => {
+    const tripped = isTripped(b, reserve)
+    const start = skipStartOf(b, spanMs)
+    return { basis: b, tripped, skipAt: start !== null && now < start ? start : null, open: tripped && start !== null && now >= start }
+  }
+  const v = one(withTest)
+  if (withTest.kind !== 'test' || !v.open) return v
+  const r = one(real)
+  return r.tripped && !r.open ? r : v
+}
+
+/** The release margin (4.7): 0 at a skip start, 60 s after a test window, 5 min after a real reset. */
+export const marginOf = (skip: boolean, test: boolean): number => (skip ? 0 : test ? TEST_MARGIN_MS : RESET_MARGIN_MS)
+
 /** SPARE10_SIMULATE and /spare10 simulate: 0 to 100, rounded to one decimal. Junk is none. */
 export function parseTestPct(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined

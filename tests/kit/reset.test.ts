@@ -25,6 +25,8 @@ import type { World } from '../helpers/world.ts'
 // question continues at its due time, the margins, the fresh decision after again, a reading that
 // leaves the reserve, and autoResume off. autoResume is on unless a test sets SPARE10_AUTO_RESUME.
 // Every test calls begin, because the ticker exists only after session.start (4.9).
+// The D0.2 reset path: spans off. Every world has spans: 'off' (skip design 7.4), so a question
+// and a stop continue at the reset plus the margin. tests/kit/skip.test.ts runs the shipped spans.
 // Every expected text is spelled out from design section 2 here, not taken from hooks/core/text.ts,
 // so a drift in the texts or the reset logic fails a test.
 
@@ -97,7 +99,7 @@ const noConsent = (w: World): void => {
 // ---- B33: an unanswered question continues at its due time ----
 
 test('an unanswered question continues after the margin: the dialog is withdrawn and three loops run', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1', 'a2'] })
+  const w = world(on, { spans: 'off', pct: 93, agents: ['a1', 'a2'] })
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   const req = drain($, step('a2', 'T2'))
@@ -122,7 +124,7 @@ test('an unanswered question continues after the margin: the dialog is withdrawn
 })
 
 test('the reset writes no consent', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { spans: 'off', pct: 93 })
   await begin($, w)
   // Released before the reset, while RESETS is still ahead: a consent written here would be visible.
   const first = bash($)
@@ -152,7 +154,7 @@ test('the reset writes no consent', SLOW, async ($, on) => {
 })
 
 test('a question still waits one tick before the 5-minute margin', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1'] })
+  const w = world(on, { spans: 'off', pct: 93, agents: ['a1'] })
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   await w.clock.settle()
@@ -176,7 +178,7 @@ test('a question still waits one tick before the 5-minute margin', SLOW, async (
 })
 
 test('a test reading in 2m continues held work after its 60 s margin', async ($, on) => {
-  const w = world(on, { pct: 50 })
+  const w = world(on, { spans: 'off', pct: 50 })
   await begin($, w)
   const ends = T0 + 2 * MIN
   const set = (await $.command.run(cmd('simulate 95 in 2m'))).text
@@ -204,7 +206,7 @@ test('a test reading in 2m continues held work after its 60 s margin', async ($,
 })
 
 test('a test reading over a real trip does not shorten the real hold', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { spans: 'off', pct: 93 })
   await begin($, w)
   const ends = T0 + 2 * MIN
   await $.command.run(cmd('simulate 95 in 2m'))
@@ -234,7 +236,7 @@ test('a test reading over a real trip does not shorten the real hold', SLOW, asy
 // ---- B33, B38: at the due time every held loop decides afresh ----
 
 test('at the 5-hour reset with the weekly window in the reserve: a new weekly question holds every loop, and no call reaches core in between', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, weekPct: 80, agents: ['a1'] })
+  const w = world(on, { spans: 'off', pct: 93, weekPct: 80, agents: ['a1'] })
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   const req = drain($, step('a1', 'T1'))
@@ -265,7 +267,7 @@ test('at the 5-hour reset with the weekly window in the reserve: a new weekly qu
 })
 
 test('a sense that fails at the due time releases nothing, and the next check releases', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1'] })
+  const w = world(on, { spans: 'off', pct: 93, agents: ['a1'] })
   await begin($, w)
   const held = [bash($), bash($, 'a1')]
   await w.clock.settle()
@@ -288,7 +290,7 @@ test('a sense that fails at the due time releases nothing, and the next check re
 })
 
 test('a sense that fails in the round after again refuses the call', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1'] })
+  const w = world(on, { spans: 'off', pct: 93, agents: ['a1'] })
   await begin($, w)
   const held = bash($)
   const req = drain($, step('a1', 'T1'))
@@ -309,7 +311,7 @@ test('a sense that fails in the round after again refuses the call', SLOW, async
 })
 
 test('a reading that leaves the reserve before the due time releases held work within a minute', async ($, on) => {
-  const w = world(on, { pct: 93, agents: ['a1'] })
+  const w = world(on, { spans: 'off', pct: 93, agents: ['a1'] })
   await begin($, w)
   const held = bash($)
   const req = drain($, step('a1', 'T1'))
@@ -332,7 +334,7 @@ test('a reading that leaves the reserve before the due time releases held work w
 })
 
 test('without resetsAt a hold ends one window after the first sight, not at the one-hour fallback', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: null })
+  const w = world(on, { spans: 'off', pct: 93, resetsAt: null })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -357,7 +359,7 @@ test('without resetsAt a hold ends one window after the first sight, not at the 
 // ---- autoResume off (0.1 behaviour) ----
 
 test('autoResume off: the question waits past the reset, B6 once, and a stop sends nothing', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, env: { SPARE10_AUTO_RESUME: 'off' } })
+  const w = world(on, { spans: 'off', pct: 93, env: { SPARE10_AUTO_RESUME: 'off' } })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -396,7 +398,7 @@ test('autoResume off: the question waits past the reset, B6 once, and a stop sen
 })
 
 test('SPARE10_AUTO_RESUME=off switches it off for the run', async ($, on) => {
-  const w = world(on, { pct: 93, answer: 'Stop here', env: { SPARE10_AUTO_RESUME: 'off' } })
+  const w = world(on, { spans: 'off', pct: 93, answer: 'Stop here', env: { SPARE10_AUTO_RESUME: 'off' } })
   await begin($, w)
   await w.clock.settle()
   expect(transcript(w).filter((t) => t.startsWith('SPARE10_AUTO_RESUME='))).toEqual([])
@@ -419,7 +421,7 @@ test('SPARE10_AUTO_RESUME=off switches it off for the run', async ($, on) => {
 })
 
 test('a bad SPARE10_AUTO_RESUME value warns, and autoResume stays on', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, env: { SPARE10_AUTO_RESUME: 'maybe' } })
+  const w = world(on, { spans: 'off', pct: 93, env: { SPARE10_AUTO_RESUME: 'maybe' } })
   await begin($, w)
   await w.clock.settle()
   expect(count(transcript(w), BAD_AUTO)).toBe(1)
@@ -436,7 +438,7 @@ test('a bad SPARE10_AUTO_RESUME value warns, and autoResume stays on', SLOW, asy
 })
 
 test('a question that names both windows stays up until the later due time', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: SOON, weekPct: 92, weekResetsAt: RESETS })
+  const w = world(on, { spans: 'off', pct: 93, resetsAt: SOON, weekPct: 92, weekResetsAt: RESETS })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()

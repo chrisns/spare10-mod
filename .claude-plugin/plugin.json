@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "spare10",
   "version": "0.2.0",
-  "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. After the reset, it continues by itself.",
+  "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. Shortly before the reset, it lets work use the reserve.",
   "author": {
     "name": "Chris Nesbitt-Smith"
   },
@@ -33,6 +33,22 @@
       "min": 0,
       "max": 99
     },
+    "lastMinutes": {
+      "type": "number",
+      "title": "Open reserve before 5-hour reset (min)",
+      "description": "This many minutes before the 5-hour window resets, spare10 stops guarding the reserve and lets all work use it, because the quota refreshes soon. 0 switches this off. 0 to 299, one decimal at most. SPARE10_LAST_MINUTES overrides it for one run.",
+      "default": 20,
+      "min": 0,
+      "max": 299
+    },
+    "weeklyLastHours": {
+      "type": "number",
+      "title": "Open weekly reserve before weekly reset (h)",
+      "description": "This many hours before the weekly window resets, spare10 stops guarding the weekly reserve and lets all work use it. 0 switches this off. 0 to 167, one decimal at most. SPARE10_WEEKLY_LAST_HOURS overrides it for one run.",
+      "default": 8,
+      "min": 0,
+      "max": 167
+    },
     "pausePrompt": {
       "type": "string",
       "title": "Pause prompt",
@@ -42,7 +58,7 @@
     "autoResume": {
       "type": "boolean",
       "title": "Continue at the reset",
-      "description": "On: a few minutes after the reset of the window that tripped, spare10 continues held and stopped work by itself. Stop here then means stop until the reset. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
+      "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
       "default": true
     },
     "headless": {

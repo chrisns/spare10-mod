@@ -1,12 +1,14 @@
 import { test, expect } from 'claude-code/testing'
 import { atText, factsOf, headlessText, pausedText, stopReply, stopText } from '../../hooks/core/text.ts'
-import { RESETS, bash, begin, cmd, drain, step, stepAbove, world } from '../helpers/world.ts'
+import { OPENS, RESETS, bash, begin, cmd, drain, step, stepAbove, world } from '../helpers/world.ts'
 
 // What Stop does to each kind of loop (design 4.8, 11.4 stop.test.ts): a refused main step ends its
 // turn, so a blocking Stop hook cannot re-prompt it.
 
 const F93 = factsOf({ kind: 'live', pct: 93, resetsAtMs: Date.parse(RESETS) }, 10)
-const AT = atText(Date.parse(RESETS), ['five_hour']) // {at} with autoResume on
+// {at} with autoResume on: with the shipped spans the skip start, 20 min before RESETS (skip 2.8).
+const AT = atText(Date.parse(OPENS), ['five_hour'])
+const LEAD = '20 min before the reset'
 
 test('a refused main step in an attended session ends the turn with turn.abort', async ($, on) => {
   const w = world(on, { pct: 93, answer: 'dismiss' })
@@ -71,7 +73,7 @@ test('/spare10 stop after Resume denies the next call and refuses the next step'
   expect((await bash($)).result).toBe('ran')
   await w.clock.settle()
   expect(w.env.get('SPARE10_CONSENT')).toBe(`S1 ${RESETS}`)
-  expect((await $.command.run(cmd('stop'))).text).toBe(stopReply('tripped', F93, undefined, { at: AT }))
+  expect((await $.command.run(cmd('stop'))).text).toBe(stopReply('tripped', F93, undefined, { at: AT, lead: LEAD }))
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
   expect((await bash($)).deny).toBe(stopText(F93))
   await drain($, step(undefined, 'T4'))
