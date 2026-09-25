@@ -4,6 +4,7 @@ import {
   NO_SPANS,
   childHeadless,
   flagOnlyInShell,
+  floorOf,
   fromOptions,
   parseAutoResume,
   parseBadge,
@@ -11,6 +12,7 @@ import {
   parseLastMinutes,
   parsePausePrompt,
   parseReserve,
+  parseResumeFloor,
   parseScope,
   parseSwitch,
   parseWeeklyLastHours,
@@ -75,6 +77,8 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyReserve: 10,
     lastMinutes: 20,
     weeklyLastHours: 8,
+    resumeFloor: 5,
+    weeklyResumeFloor: 5,
     pausePrompt: null,
     autoResume: true,
     headless: 'off',
@@ -88,6 +92,8 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyReserve: 10,
     lastMinutes: 20,
     weeklyLastHours: 8,
+    resumeFloor: 5,
+    weeklyResumeFloor: 5,
     pausePrompt: 'Wrap up.',
     autoResume: true,
     headless: 'stop',
@@ -192,7 +198,19 @@ test('parseHeadless takes wait', () => {
 
 test('fromOptions fills weeklyReserve 10 and autoResume true', () => {
   const d = fromOptions({})
-  expect(Object.keys(d).sort()).toEqual(['autoResume', 'badge', 'headless', 'lastMinutes', 'pausePrompt', 'reserve', 'scope', 'weeklyLastHours', 'weeklyReserve'])
+  expect(Object.keys(d).sort()).toEqual([
+    'autoResume',
+    'badge',
+    'headless',
+    'lastMinutes',
+    'pausePrompt',
+    'reserve',
+    'resumeFloor',
+    'scope',
+    'weeklyLastHours',
+    'weeklyReserve',
+    'weeklyResumeFloor',
+  ])
   expect(d.weeklyReserve).toBe(10)
   expect(d.autoResume).toBe(true)
   expect(fromOptions({ weeklyReserve: 0, autoResume: false, headless: 'wait' })).toEqual({ ...DEFAULTS, weeklyReserve: 0, autoResume: false, headless: 'wait' })
@@ -209,6 +227,8 @@ test('withEnv: SPARE10_WEEKLY_RESERVE and SPARE10_AUTO_RESUME override, bad valu
     weeklyReserve: 'option',
     lastMinutes: 'option',
     weeklyLastHours: 'option',
+    resumeFloor: 'option',
+    weeklyResumeFloor: 'option',
     pausePrompt: 'option',
     autoResume: 'option',
     headless: 'option',
@@ -339,7 +359,7 @@ test('parseWeeklyLastHours takes 0 to 167 with one decimal', () => {
 
 test('fromOptions fills lastMinutes 20 and weeklyLastHours 8', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(9)
+  expect(Object.keys(d)).toHaveLength(11)
   expect(d.lastMinutes).toBe(20)
   expect(d.weeklyLastHours).toBe(8)
   expect(fromOptions({ lastMinutes: 0, weeklyLastHours: 0 })).toEqual({ ...DEFAULTS, lastMinutes: 0, weeklyLastHours: 0 })
@@ -401,4 +421,97 @@ test('spanOf gives minutes and hours in ms, and 0 when off', () => {
   expect(spanOf(NO_SPANS, 'five_hour')).toBe(0)
   expect(spanOf(NO_SPANS, 'seven_day')).toBe(0)
   expect(NO_SPANS).toEqual({ lastMinutes: 0, weeklyLastHours: 0 })
+})
+
+// ---- The resume floor (floor design 5, 7.2) ----
+
+test('parseResumeFloor takes 0 to 99 with one decimal', () => {
+  expect(parseResumeFloor(0)).toBe(0)
+  expect(parseResumeFloor(5)).toBe(5)
+  expect(parseResumeFloor('2.55')).toBe(2.6)
+  expect(parseResumeFloor(' 7 ')).toBe(7)
+  expect(parseResumeFloor(99)).toBe(99)
+  expect(parseResumeFloor(-0.01)).toBe(0) // rounds to 0, never -0
+  expect(Object.is(parseResumeFloor(-0.01), -0)).toBe(false)
+  for (const bad of [100, 99.96, -1, 'x', '', ' ', null, undefined, true, Number.NaN]) expect(parseResumeFloor(bad)).toBeUndefined()
+})
+
+test('fromOptions fills resumeFloor 5 and weeklyResumeFloor 5', () => {
+  const d = fromOptions({})
+  expect(Object.keys(d)).toHaveLength(11)
+  expect(d.resumeFloor).toBe(5)
+  expect(d.weeklyResumeFloor).toBe(5)
+  expect(fromOptions({ resumeFloor: 0, weeklyResumeFloor: 2.54 })).toEqual({ ...DEFAULTS, resumeFloor: 0, weeklyResumeFloor: 2.5 })
+  expect(fromOptions({ resumeFloor: '3', weeklyResumeFloor: 12 })).toEqual({ ...DEFAULTS, resumeFloor: 3, weeklyResumeFloor: 12 })
+  // Out of range: the default, without a word (an option has no warning, as weeklyReserve).
+  expect(fromOptions({ resumeFloor: 100, weeklyResumeFloor: -1 })).toEqual(DEFAULTS)
+  expect(fromOptions({ resumeFloor: 'lots', weeklyResumeFloor: '' })).toEqual(DEFAULTS)
+})
+
+test('withEnv: SPARE10_RESUME_FLOOR and SPARE10_WEEKLY_RESUME_FLOOR override, bad values warn', () => {
+  const plain = withEnv(DEFAULTS, {})
+  expect(plain.from.resumeFloor).toBe('option')
+  expect(plain.from.weeklyResumeFloor).toBe('option')
+  expect(plain.warnings).toEqual([])
+  const set = withEnv(DEFAULTS, { resumeFloor: '0', weeklyResumeFloor: '2.5' })
+  expect(set.resumeFloor).toBe(0)
+  expect(set.weeklyResumeFloor).toBe(2.5)
+  expect(set.from.resumeFloor).toBe('env')
+  expect(set.from.weeklyResumeFloor).toBe('env')
+  expect(set.warnings).toEqual([])
+  const bad = withEnv({ ...DEFAULTS, resumeFloor: 3 }, { resumeFloor: 'x', weeklyResumeFloor: '100' })
+  expect(bad.resumeFloor).toBe(3)
+  expect(bad.weeklyResumeFloor).toBe(5)
+  expect(bad.from.resumeFloor).toBe('option')
+  expect(bad.from.weeklyResumeFloor).toBe('option')
+  expect(bad.warnings).toEqual([
+    'SPARE10_RESUME_FLOOR="x" is not 0 to 99. spare10 uses 3.',
+    'SPARE10_WEEKLY_RESUME_FLOOR="100" is not 0 to 99. spare10 uses 5.',
+  ])
+})
+
+test('withEnv warns about a floor at or above its reserve, and not for 0 or an unwatched weekly window', () => {
+  const at = withEnv(DEFAULTS, { resumeFloor: '10' })
+  expect(at.warnings).toEqual(['the resume floor (10%) is not below the reserve (10%), so it does nothing. Set it below the reserve, or to 0.'])
+  expect(withEnv(DEFAULTS, { resumeFloor: '9.9' }).warnings).toEqual([])
+  expect(withEnv(DEFAULTS, { resumeFloor: '0', weeklyResumeFloor: '0' }).warnings).toEqual([])
+  expect(withEnv(DEFAULTS, { weeklyResumeFloor: '12' }).warnings).toEqual([
+    'the weekly resume floor (12%) is not below the weekly reserve (10%), so it does nothing. Set it below the weekly reserve, or to 0.',
+  ])
+  // The weekly warning needs the weekly window watched.
+  expect(withEnv({ ...DEFAULTS, weeklyReserve: 0 }, { weeklyResumeFloor: '12' }).warnings).toEqual([])
+  // A reserve that an env value lowers counts: the default floor 5 at a reserve of 5 warns.
+  expect(withEnv(DEFAULTS, { reserve: '5' }).warnings).toEqual([
+    'the resume floor (5%) is not below the reserve (5%), so it does nothing. Set it below the reserve, or to 0.',
+  ])
+  // The B27 warnings come first, then the floor warnings (after the overrides).
+  expect(withEnv(DEFAULTS, { resumeFloor: '12', weeklyReserve: 'x' }).warnings).toEqual([
+    'SPARE10_WEEKLY_RESERVE="x" is not 0 or 1 to 99. spare10 uses 10.',
+    'the resume floor (12%) is not below the reserve (10%), so it does nothing. Set it below the reserve, or to 0.',
+  ])
+})
+
+test('floorOf gives the floor in force per kind, and 0 when off or not below the reserve', () => {
+  expect(floorOf(DEFAULTS, 'five_hour')).toBe(5)
+  expect(floorOf(DEFAULTS, 'seven_day')).toBe(5)
+  expect(floorOf({ ...DEFAULTS, resumeFloor: 0 }, 'five_hour')).toBe(0)
+  expect(floorOf({ ...DEFAULTS, resumeFloor: 0 }, 'seven_day')).toBe(5) // floors are per window (B54)
+  expect(floorOf({ ...DEFAULTS, resumeFloor: 10 }, 'five_hour')).toBe(0)
+  expect(floorOf({ ...DEFAULTS, resumeFloor: 9.9 }, 'five_hour')).toBe(9.9)
+  expect(floorOf({ ...DEFAULTS, reserve: 5 }, 'five_hour')).toBe(0)
+  expect(floorOf({ ...DEFAULTS, weeklyReserve: 20, weeklyResumeFloor: 12 }, 'seven_day')).toBe(12)
+  expect(floorOf({ ...DEFAULTS, weeklyReserve: 0 }, 'seven_day')).toBe(0)
+})
+
+test('unreadEnv keeps the option floors', () => {
+  const u = unreadEnv({ ...DEFAULTS, resumeFloor: 3, weeklyResumeFloor: 0 })
+  expect(u.resumeFloor).toBe(3)
+  expect(u.weeklyResumeFloor).toBe(0)
+  expect(u.from.resumeFloor).toBe('option')
+  expect(u.from.weeklyResumeFloor).toBe('option')
+  expect(u.warnings).toEqual([])
+  // Its floor warnings come from the options.
+  expect(unreadEnv({ ...DEFAULTS, resumeFloor: 15 }).warnings).toEqual([
+    'the resume floor (15%) is not below the reserve (10%), so it does nothing. Set it below the reserve, or to 0.',
+  ])
 })

@@ -2,7 +2,7 @@ import { test, expect } from 'claude-code/testing'
 import { badgeLabel, badgeView } from '../../hooks/core/badge.ts'
 import type { Mode, Phase } from '../../hooks/core/decide.ts'
 
-const view = (phase: Phase, over: { reserve?: number; test?: boolean; mode?: Mode; blink?: boolean; until?: string } = {}) =>
+const view = (phase: Phase, over: { reserve?: number; test?: boolean; mode?: Mode; blink?: boolean; until?: string; to?: string } = {}) =>
   badgeView(phase, { reserve: 10, test: false, mode: 'hold', blink: true, ...over })
 
 const LABELLED: Phase[] = ['off', 'waiting', 'armed', 'consented', 'open', 'stopped', 'asking', 'told', 'reserve']
@@ -103,4 +103,13 @@ test('open shows reserve open until the clock, and plain without it', () => {
   expect(view('open', { until: 'Mon 09:00', reserve: 40 }).text).toBe('↻ spare10 (40%): reserve open until Mon 09:00')
   expect(view('open')).toEqual({ text: '↻ spare10: reserve open', color: 'warning', pulse: false })
   expect(view('open', { blink: false, until: '16:40' })).toEqual(view('open', { blink: true, until: '16:40' }))
+})
+
+test('consented shows resumed until the end point, and the 0.2 row without one', () => {
+  expect(view('consented', { to: '95' })).toEqual({ text: '⨯ spare10: resumed until 95% used', color: 'warning', pulse: false })
+  expect(view('consented', { to: '97.5', test: true })).toEqual({ text: '⨯ spare10 (test): resumed until 97.5% used', color: 'warning', pulse: false })
+  expect(view('consented', { to: '95', reserve: 15 })).toEqual({ text: '⨯ spare10 (15%): resumed until 95% used', color: 'warning', pulse: false })
+  expect(view('consented')).toEqual({ text: '⨯ spare10', color: 'warning', pulse: false })
+  // Only the consented row names it.
+  expect(view('armed', { to: '95' }).text).toBe('● spare10')
 })

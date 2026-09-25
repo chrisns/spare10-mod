@@ -1,8 +1,9 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { SessionMeasureInput } from 'claude-code'
-import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world02 as world } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The reading through the engine (design section 6, 11.4 reading.test.ts). Written from the spec:
 // every expected text below is built here from the section 2 templates, not from hooks/core/text.ts.
 

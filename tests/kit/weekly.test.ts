@@ -25,10 +25,11 @@ import {
   step,
   stopRec,
   typed,
-  world,
+  world02 as world,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The weekly window through the engine (0.2 design B32, 2.1 to 2.9, 3.1, 3.2, 3.5, 5.6, and the 8.3
 // weekly.test.ts table). Written from the spec: every expected text is built here from section 2,
 // not taken from hooks/core/text.ts, so a drift in the texts or in the per-kind logic fails here.

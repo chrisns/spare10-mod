@@ -4,6 +4,7 @@ import {
   NO_SPANS,
   childHeadless,
   flagOnlyInShell,
+  floorOf,
   fromOptions,
   questionTimeout,
   reserveOf,
@@ -18,36 +19,53 @@ import {
   CHECK_MS,
   TICK_MS,
   afterFailure,
+  answers,
+  answersQuestion,
   askVerdict,
+  buried,
+  bury,
   consentCounts,
   consentCovers,
+  coveringConsent,
   decide,
+  endOf,
+  endedFloor,
   extendedReal,
+  floorEnded,
   formatConsent,
   formatStopped,
+  fullCovers,
   heldPast,
   holdsPast,
   isOverdue,
   joinReal,
-  joinable,
+  joinableAt,
+  keyStage,
   mergeStopped,
+  noteSlot,
   parseConsent,
   parseStopped,
   phaseOf,
   shouldAbortTurn,
   skipTag,
+  slotList,
+  stageKey,
   stopAction,
   stopDue,
+  unbury,
+  withoutFloor,
 } from './core/decide.ts'
-import type { Holder, Mode, Outcome, Phase, Site, StoppedRecord, Verdict } from './core/decide.ts'
+import type { Answered, Consent, ConsentSlots, Holder, Mode, Outcome, Phase, Site, StoppedRecord, Tomb, Verdict, Viewed } from './core/decide.ts'
 import {
   FALLBACK_MS,
   KINDS,
   anchoredOf,
   asAnchored,
+  atPoint,
   basis,
   holdEndOf,
   inResetMargin,
+  inWindow,
   initialMemory,
   isTripped,
   limitOf,
@@ -55,6 +73,8 @@ import {
   newer,
   parseReset,
   parseSimulate,
+  pctOf,
+  pointOf,
   sawLive,
   sawMeasure,
   skipStartOf,
@@ -79,6 +99,7 @@ import {
   consentWarning,
   debugLine,
   factsOf,
+  fmtPct,
   headlessText,
   leadText,
   notPerson,
@@ -113,8 +134,11 @@ import type { View } from './core/badge.ts'
 // stopped work at the reset (4 of the 0.2 design). The gates decide in rounds (5.3).
 // Skip near the reset: a tripped kind in the last span before its reset is open. It never gates, and no
 // stop holds it (B41, B44). While its skip start is ahead, that start is its hold end, with no margin (B42).
+// The resume floor (floor B48 to B55): a Resume at the reserve consents only until the floor point. A
+// consent to the floor applies while the reading is below its end point, and a gate path ends it for
+// good when its own basis reaches that point (B52). Then the kind gates again: the second question.
 
-type Ctx = { site: Site; agentId?: string; person?: boolean; resumed?: readonly Kind[] } // resumed: the kinds of the Resume that ended the last round
+type Ctx = { site: Site; agentId?: string; person?: boolean; resumed?: readonly Answered[] } // resumed: what the Resume that ended the last round answered (B50)
 type KindSense = {
   kind: Kind
   reserve: number
@@ -130,6 +154,10 @@ type KindSense = {
   seed: boolean
   realIn: boolean // TS1: the real reading, beneath any test reading, is tripped and not open
   realReset: number | null // TS1: the reset of the real reading, null when unknown
+  floor: number // B48: the floor in force in %, 0 when none (also for an unattended run, B55)
+  point: number | null // B48: pointOf(floor), null when floor is 0
+  atFloor: boolean // B48: tripped, not open, and the view reading at or past point
+  realPct: number | undefined // TS1, B52: the pct of the real basis
 }
 type Sensed = { cfg: Effective; now: number; kinds: KindSense[]; tripped: boolean; attended: boolean }
 type Acted = { verdict: Verdict; stopped: boolean; gating: KindSense[]; holders: Holder[] } // holders: TS1
@@ -137,7 +165,7 @@ type Settled = Outcome | 'again' // again: ended without an answer (4.5)
 type Raiser = { signal: AbortSignal }
 type Question = {
   kinds: Kind[] // the gating kinds when it opened, five_hour first
-  ends: Partial<Record<Kind, { end: number; test: boolean; skipAt?: number }>> // consent bound, test flag and skip start per kind
+  ends: Partial<Record<Kind, QuestionEnd>> // consent bound, test flag, skip start and end point per kind
   latestEnd: number // the latest consent bound (the B6 note of a question that is not a skip owner)
   real: Holder[] // TS1: its kinds whose real reading gated when it opened, with their resets, for a Stop here whose sense fails
   stopEnd: number // the latest stop end of its kinds: the until of a Stop here with autoResume off
@@ -169,8 +197,10 @@ type Via =
   | 'reset'
   | 'quota'
   | 'time limit'
+type QuestionEnd = { end: number; test: boolean; skipAt?: number; to?: number } // to: the tier of a kind asked at the reserve (B50)
 type Release = { raw: string; record: StoppedRecord; cancelled: boolean }
-type Split = { gating: KindSense[]; open: KindSense[] } // skip 3.3
+type Split = { gating: KindSense[]; open: KindSense[]; consented: Array<{ k: KindSense; c: Consent }> } // skip 3.3, floor 4.2
+type Sourced = { c: Consent; from: 'slot' | 'test' | 'env'; raw?: string } // raw: the env text, for the compare-and-set of B52
 type Taken = { record: StoppedRecord } & Ended // takeOverdueStop's result (skip 4.6)
 type Late = { record?: StoppedRecord; ended?: Ended; until?: { at: string; lead?: string } } // settle's result for a Stop (B46)
 type Wake = { p: Promise<'woke'>; fire: () => void }
@@ -183,7 +213,8 @@ type Seen = {
   attended: boolean
   open: KindSense[] // tripped, not consented, and open (skip 3.3)
   gating: KindSense[] // tripped, not consented, and not open (skip 3.3)
-  consent: Partial<Record<Kind, number>> // consent that covers each kind's window
+  consent: Partial<Record<Kind, Consent>> // the consent in force of each kind (full first)
+  ended: Partial<Record<Kind, Consent>> // a consent to the floor whose end point the view reading reached (B52, not yet ended by a gate)
   stop?: StoppedRecord // the stop that applies
   question?: Question // this copy's open question
   toldCount: number
@@ -219,8 +250,9 @@ const mem: Record<Kind, Memory> = noKinds(initialMemory)
 let seedLoaded = false
 let test: Partial<Record<Kind, Anchored>> = {}
 let testFromEnvDone = false
-let consentCache: Partial<Record<Kind, number>> = {}
-let testConsent: Partial<Record<Kind, number>> = {} // a Resume on a test reading: never in the env, cleared with the test reading
+let consentCache: Partial<Record<Kind, ConsentSlots>> = {}
+let testConsent: Partial<Record<Kind, ConsentSlots>> = {} // a Resume on a test reading: never in the env, cleared with the test reading
+const tombs: Partial<Record<Kind, Tomb[]>> = {} // B52: the real consents to the floor that a gate of this copy ended
 let consentEpoch = 0
 const fallbackEnd: Partial<Record<Kind, number>> = {} // R11: one fallback window end per kind and episode
 let startWarnings: string[] = []
@@ -237,7 +269,7 @@ const stepped = new Set<string>()
 const refusedTurns: string[] = []
 const HOLDING = new WeakSet<object>()
 const told: Record<Kind, { windowEnd: number; keys: Set<string> }> = noKinds(() => ({ windowEnd: 0, keys: new Set<string>() }))
-const toldNoticeFor: Record<Kind, number> = noKinds(() => 0) // window end of the last B12 notice
+const toldNoticeFor: Record<Kind, string> = noKinds(() => '') // `${windowEnd}:${stage}` of the last B12 notice (B51)
 const unattendedNoteFor: Record<Kind, number> = noKinds(() => 0) // window end of the last B15 debug line
 const openNoteFor: Record<Kind, number> = noKinds(() => 0) // window end of the last open B15 debug line (skip 2.5)
 let tickerWanted = false // session.start: enabled, and attended or wait
@@ -284,6 +316,8 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
   const weeklyReserve = await $.env.get('SPARE10_WEEKLY_RESERVE')
   const lastMinutes = await $.env.get('SPARE10_LAST_MINUTES')
   const weeklyLastHours = await $.env.get('SPARE10_WEEKLY_LAST_HOURS')
+  const resumeFloor = await $.env.get('SPARE10_RESUME_FLOOR')
+  const weeklyResumeFloor = await $.env.get('SPARE10_WEEKLY_RESUME_FLOOR')
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
   const headless = await $.env.get('SPARE10_HEADLESS')
@@ -294,6 +328,8 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
     ...(weeklyReserve !== undefined && { weeklyReserve }),
     ...(lastMinutes !== undefined && { lastMinutes }),
     ...(weeklyLastHours !== undefined && { weeklyLastHours }),
+    ...(resumeFloor !== undefined && { resumeFloor }),
+    ...(weeklyResumeFloor !== undefined && { weeklyResumeFloor }),
     ...(pausePrompt !== undefined && { pausePrompt }),
     ...(autoResume !== undefined && { autoResume }),
     ...(headless !== undefined && { headless }),
@@ -394,6 +430,8 @@ function sensesOf(cfg: Effective, bases: Bases, spans: Spans, now: number): Kind
     const b = v.basis
     const windowEnd = windowEndFor(kind, b, now)
     if (v.tripped && v.skipAt !== null) addEdge(v.skipAt) // the ticker redraws at the skip start (skip 4.1)
+    const floor = floorOf(cfg, kind) // B48
+    const point = floor > 0 ? pointOf(floor) : null
     return {
       kind,
       reserve,
@@ -409,9 +447,22 @@ function sensesOf(cfg: Effective, bases: Bases, spans: Spans, now: number): Kind
       seed: b.kind === 'seed',
       realIn: rv.tripped && !rv.open,
       realReset: real.kind === 'none' ? null : real.resetsAtMs,
+      floor,
+      point,
+      atFloor: v.tripped && !v.open && atPoint(b, point),
+      realPct: real.kind === 'none' ? undefined : real.pct,
     }
   })
 }
+
+/** B55: an unattended run never asks, so it has no floor in force: no stage and no floor names. */
+const noFloor = (k: KindSense): KindSense => ({ ...k, floor: 0, point: null, atFloor: false })
+
+/** B48: the end point of a Resume on a kind: its floor point when it is at the reserve with a floor in force. */
+const resumeTo = (k: KindSense): number | undefined => (k.tripped && !k.open && !k.atFloor && k.point !== null ? k.point : undefined)
+
+/** A consent of a question's kind: its bound, and its end point when it was asked at the reserve (B49). */
+const consentOfEnd = (end: QuestionEnd): Consent => ({ until: end.end, ...(end.to === undefined ? {} : { to: end.to }) })
 
 /** TS1: a kind whose real reading gates now, as heldPast reads it. */
 const realHolder = (k: KindSense): Holder => ({ kind: k.kind, resetsAtMs: k.realReset })
@@ -439,12 +490,19 @@ async function isBg($: EngineInterface): Promise<boolean> {
   return bgKind
 }
 
-/** The consent end of a kind in force: this copy's caches, and an env value that belongs to this process (3.5, 9.3). */
-async function consentMs($: EngineInterface, kind: Kind, attendedNow: boolean, testBasis: boolean): Promise<number> {
+/**
+ * The consents of a kind (floor 4.2): this copy's slots, the test slots on a test basis, and an env value
+ * that belongs to this process (3.5, 9.3) with its raw text. A clear during the read gives the slots only.
+ * An env value that a tomb of this copy buries is no consent, and it goes by compare-and-set (B52).
+ */
+async function consentsOf($: EngineInterface, kind: Kind, attendedNow: boolean, testBasis: boolean): Promise<Sourced[]> {
   const epoch = consentEpoch
   // Two branches, so each $.env.get keeps a literal name.
   const raw = kind === 'seven_day' ? await $.env.get('SPARE10_WEEKLY_CONSENT') : await $.env.get('SPARE10_CONSENT')
-  const c = parseConsent(raw)
+  const read = parseConsent(raw)
+  const dead = read !== undefined && buried(tombs[kind], read)
+  if (dead) void unsetIfSame($, kind, raw).catch(() => undefined)
+  const c = dead ? undefined : read
   const counts =
     c !== undefined &&
     consentCounts(c.sessionId, {
@@ -452,24 +510,105 @@ async function consentMs($: EngineInterface, kind: Kind, attendedNow: boolean, t
       bg: attendedNow && c.sessionId === undefined ? await isBg($) : false,
       ids: attendedNow && c.sessionId !== undefined ? [...pastIds, await $.session.id()] : [],
     })
-  const cached = consentCache[kind] ?? 0
-  if (epoch !== consentEpoch) return cached // a clear ran meanwhile: this read is stale
-  return Math.max(cached, testBasis ? (testConsent[kind] ?? 0) : 0, counts ? c.until : 0)
+  if (epoch !== consentEpoch) return slotsOf(kind, false) // a clear ran meanwhile: this read is stale
+  const env: Sourced[] = counts ? [{ c: { until: c.until, ...(c.to === undefined ? {} : { to: c.to }) }, from: 'env', ...(raw === undefined ? {} : { raw }) }] : []
+  return [...slotsOf(kind, testBasis), ...env]
 }
 
-function noteConsent(kind: Kind, until: number, isTest: boolean): void {
-  if (isTest) testConsent[kind] = Math.max(testConsent[kind] ?? 0, until)
-  else consentCache[kind] = Math.max(consentCache[kind] ?? 0, until)
+/** This copy's consents of a kind as they are now: the slots, and the test slots on a test basis. */
+const slotsOf = (kind: Kind, testBasis: boolean): Sourced[] => [
+  ...slotList(consentCache[kind]).map((x): Sourced => ({ c: x, from: 'slot' })),
+  ...(testBasis ? slotList(testConsent[kind]).map((x): Sourced => ({ c: x, from: 'test' })) : []),
+]
+
+/** A Resume of this copy. A new real consent to the floor lifts the tombs that bury it (B52). */
+function noteConsent(kind: Kind, c: Consent, isTest: boolean): void {
+  if (isTest) {
+    testConsent[kind] = noteSlot(testConsent[kind], c)
+    return
+  }
+  consentCache[kind] = noteSlot(consentCache[kind], c)
+  if (c.to !== undefined) tombs[kind] = unbury(tombs[kind], c)
 }
 
-async function writeConsent($: EngineInterface, kind: Kind, until: number, now: number, isTest: boolean): Promise<void> {
-  if (until <= now) return // never for a window that has ended (R10)
-  noteConsent(kind, until, isTest)
-  addEdge(until)
+/**
+ * A Resume's consent of one kind. A consent to the floor never replaces a full value of this process
+ * for the same window in the env (floor 3.3): the stronger tier stays. `noted`: the caller noted the
+ * consent in this copy's slots when it decided (settle), so a split that ended it since stays ended.
+ */
+async function writeConsent($: EngineInterface, kind: Kind, c: Consent, now: number, isTest: boolean, noted = false): Promise<void> {
+  if (c.until <= now) return // never for a window that has ended (R10)
+  if (!noted) noteConsent(kind, c, isTest)
+  addEdge(c.until)
   if (isTest) return // a Resume on a test reading never carries into real use (3.5)
   sid = await $.session.id() // stamped: only this process honours it in an attended session (9.3)
-  if (kind === 'seven_day') await $.env.set('SPARE10_WEEKLY_CONSENT', formatConsent(sid, until))
-  else await $.env.set('SPARE10_CONSENT', formatConsent(sid, until))
+  if (buried(tombs[kind], c)) return // B52: a split ended it since the Resume
+  const value = formatConsent(sid, c.until, c.to)
+  if (kind === 'seven_day') {
+    if (c.to !== undefined && fullCovers(parseConsent(await $.env.get('SPARE10_WEEKLY_CONSENT')), [...pastIds, sid], c.until, now)) return
+    await $.env.set('SPARE10_WEEKLY_CONSENT', value)
+  } else {
+    if (c.to !== undefined && fullCovers(parseConsent(await $.env.get('SPARE10_CONSENT')), [...pastIds, sid], c.until, now)) return
+    await $.env.set('SPARE10_CONSENT', value)
+  }
+  // B52: a split that ended this consent to the floor while it was written (the reading passed its point
+  // meanwhile) removed its slot and buried it. The late write must not bring it back: unset it by
+  // compare-and-set. A split that ends it after this check finds the value in its sweep.
+  if (c.to !== undefined && (buried(tombs[kind], c) || !holdsConsent(consentCache[kind], c, now))) await unsetIfSame($, kind, value)
+}
+
+/** This copy's slots still hold a consent at least as strong as `c` for its window: `c` did not end. */
+const holdsConsent = (slots: ConsentSlots | undefined, c: Consent, now: number): boolean =>
+  slotList(slots).some((x) => consentCovers(x.until, now, c.until) && (x.to === undefined || x.to >= (c.to ?? 0)))
+
+/** The consent bound of a kind's real reading: the view window, or beneath a test reading the real reset (TS1). */
+const realBound = (k: KindSense, now: number): number => (k.test ? (k.realReset ?? now + FALLBACK_MS) : k.windowEnd)
+
+/**
+ * B52: the consents to the floor of a tripped, not open kind whose own basis has reached their end point
+ * end for good. A real consent ends by the real reading, a test consent by the test reading. This copy's
+ * slots go at once (synchronously). A real consent also gets a tomb at once, and a sweep unsets the env
+ * value that the tomb buries, fire and forget. `failed`: the env read failed, so `list` has only the
+ * slots. Then a tomb buries each real consent to the floor of the window whose end point the real reading
+ * reached. Never throws.
+ */
+function endFloors($: EngineInterface, k: KindSense, list: readonly Sourced[], now: number, failed = false): void {
+  let ended = false
+  for (const e of list) {
+    if (e.c.to === undefined) continue
+    const test = e.from === 'test'
+    const pct = test ? pctOf(k.basis) : k.realPct
+    const bound = test ? k.windowEnd : realBound(k, now)
+    if (pct === undefined || !floorEnded(e.c, now, bound, pct, k.point)) continue
+    if (test) {
+      testConsent[k.kind] = withoutFloor(testConsent[k.kind]) // never in the env, so no tomb
+      continue
+    }
+    if (e.from === 'slot') consentCache[k.kind] = withoutFloor(consentCache[k.kind])
+    tombs[k.kind] = bury(tombs[k.kind], { until: e.c.until, to: e.c.to }, now)
+    ended = true
+  }
+  if (failed && k.realPct !== undefined) {
+    tombs[k.kind] = bury(tombs[k.kind], { until: realBound(k, now), to: k.realPct }, now)
+    ended = true
+  }
+  if (ended) void sweep($, k.kind).catch(() => undefined)
+}
+
+/** B52: unsets the env value of a kind that a tomb of this copy buries. It reads the value first. */
+async function sweep($: EngineInterface, kind: Kind): Promise<void> {
+  const raw = kind === 'seven_day' ? await $.env.get('SPARE10_WEEKLY_CONSENT') : await $.env.get('SPARE10_CONSENT')
+  const c = parseConsent(raw)
+  if (c !== undefined && buried(tombs[kind], c)) await unsetIfSame($, kind, raw)
+}
+
+/** B52: unsets a consent value only while it still holds the raw text that the split read. */
+async function unsetIfSame($: EngineInterface, kind: Kind, raw: string | undefined): Promise<void> {
+  if (raw === undefined) return
+  // Two branches, so each $.env call keeps a literal name.
+  if (kind === 'seven_day') {
+    if ((await $.env.get('SPARE10_WEEKLY_CONSENT')) === raw) await $.env.set('SPARE10_WEEKLY_CONSENT', undefined)
+  } else if ((await $.env.get('SPARE10_CONSENT')) === raw) await $.env.set('SPARE10_CONSENT', undefined)
 }
 
 async function clearConsent($: EngineInterface): Promise<void> {
@@ -479,17 +618,33 @@ async function clearConsent($: EngineInterface): Promise<void> {
   await Promise.all([$.env.set('SPARE10_CONSENT', undefined), $.env.set('SPARE10_WEEKLY_CONSENT', undefined)])
 }
 
-/** After /clear or /resume: a consent stamped with an ended id of this process takes the new id. */
+/**
+ * After /clear or /resume: a consent stamped with an ended id of this process takes the new id, with its
+ * end point. Each write goes only over the raw value read first (floor 3.3): a consent that a gate ended
+ * or a second Resume replaced meanwhile stays as it is now. A consent that a tomb buries is never
+ * written again, and a gate that buries it during the write unsets the new value (B52).
+ */
 async function restampConsent($: EngineInterface): Promise<void> {
   const epoch = consentEpoch
-  const five = parseConsent(await $.env.get('SPARE10_CONSENT'))
-  const week = parseConsent(await $.env.get('SPARE10_WEEKLY_CONSENT'))
-  const ended = (c: typeof five): c is { until: number; sessionId: string } => c?.sessionId !== undefined && pastIds.has(c.sessionId)
+  const fiveRaw = await $.env.get('SPARE10_CONSENT')
+  const weekRaw = await $.env.get('SPARE10_WEEKLY_CONSENT')
+  const five = parseConsent(fiveRaw)
+  const week = parseConsent(weekRaw)
+  const ended = (c: typeof five): c is { until: number; sessionId: string; to?: number } =>
+    c?.sessionId !== undefined && pastIds.has(c.sessionId)
   if (!ended(five) && !ended(week)) return
   const id = await $.session.id()
   if (epoch !== consentEpoch) return // cleared meanwhile
-  if (ended(five) && id !== five.sessionId) await $.env.set('SPARE10_CONSENT', formatConsent(id, five.until))
-  if (ended(week) && id !== week.sessionId) await $.env.set('SPARE10_WEEKLY_CONSENT', formatConsent(id, week.until))
+  if (ended(five) && id !== five.sessionId && (await $.env.get('SPARE10_CONSENT')) === fiveRaw && !buried(tombs.five_hour, five)) {
+    const value = formatConsent(id, five.until, five.to)
+    await $.env.set('SPARE10_CONSENT', value)
+    if (buried(tombs.five_hour, five)) await unsetIfSame($, 'five_hour', value)
+  }
+  if (ended(week) && id !== week.sessionId && (await $.env.get('SPARE10_WEEKLY_CONSENT')) === weekRaw && !buried(tombs.seven_day, week)) {
+    const value = formatConsent(id, week.until, week.to)
+    await $.env.set('SPARE10_WEEKLY_CONSENT', value)
+    if (buried(tombs.seven_day, week)) await unsetIfSame($, 'seven_day', value)
+  }
 }
 
 /**
@@ -611,19 +766,37 @@ async function sense($: EngineInterface): Promise<Sensed> {
   const kinds = sensesOf(cfg, bases, await spansFor($, cfg, bases), now)
   noteBasis($, kinds)
   const tripped = kinds.some((k) => k.tripped)
-  return { cfg, now, kinds, tripped, attended: tripped ? await isAttended($) : attended === true }
+  const att = tripped ? await isAttended($) : attended === true
+  return { cfg, now, kinds: att ? kinds : kinds.map(noFloor), tripped, attended: att } // B55
 }
 
 /**
- * Skip 3.3: the tripped kinds that are not consented, split into those that gate and those that are
- * open. Never throws: an unreadable consent is not consent.
+ * Skip 3.3: the tripped kinds, split into those with a consent that applies (B49), those that gate and
+ * those that are open. An open kind whose only covering consent is a consent to the floor is open (floor
+ * 1.3 item 7). B52: a consent to the floor of a kind that is not open ends for good when its own basis
+ * reaches its end point, also when the env read fails. Never throws: an unreadable consent is not consent.
  */
 async function splitOf($: EngineInterface, s: { kinds: readonly KindSense[]; now: number; attended: boolean }): Promise<Split> {
-  const out: Split = { gating: [], open: [] }
+  const out: Split = { gating: [], open: [], consented: [] }
   for (const k of s.kinds) {
     if (!k.tripped) continue
-    const until = await consentMs($, k.kind, s.attended, k.test).catch(() => 0) // unreadable: not consented
-    if (consentCovers(until, s.now, k.windowEnd)) continue
+    const read = await consentsOf($, k.kind, s.attended, k.test).then(
+      (list) => ({ list, failed: false }),
+      () => ({ list: slotsOf(k.kind, k.test), failed: true }),
+    )
+    if (!k.open) endFloors($, k, read.list, s.now, read.failed) // B52: sync slots and tombs, void env
+    const list = read.failed ? [] : read.list // unreadable: not consented
+    const c = coveringConsent(
+      list.map((e) => e.c),
+      s.now,
+      k.windowEnd,
+      pctOf(k.basis) ?? 0,
+      k.point,
+    )
+    if (c !== undefined && !(k.open && c.to !== undefined)) {
+      out.consented.push({ k, c })
+      continue
+    }
     if (k.open) out.open.push(k)
     else out.gating.push(k)
   }
@@ -638,8 +811,9 @@ async function gatingOf($: EngineInterface, s: Sensed): Promise<KindSense[]> {
 /**
  * TS1: the kinds whose real reading gates now. A kind whose view is its real reading gates as the view
  * says, so it is in `gating`. Beneath a test reading, the real reading gates when it is tripped, not open
- * and not consented: one read of the real consent, never a Resume on the test reading (3.5). A real
- * reading without a reset time takes the one-hour bound. Never throws: an unreadable consent is not consent.
+ * and no real consent applies on the real reading (B49): one read of the real consent, never a Resume on
+ * the test reading (3.5). A real reading without a reset time takes the one-hour bound. It only reads:
+ * the next split ends a real consent to the floor (B52). Never throws: an unreadable consent is not consent.
  */
 async function holdersOf(
   $: EngineInterface,
@@ -653,23 +827,40 @@ async function holdersOf(
       if (gating.some((g) => g.kind === k.kind)) out.push(realHolder(k))
       continue
     }
-    const until = await consentMs($, k.kind, s.attended, false).catch(() => 0)
-    if (!consentCovers(until, s.now, k.realReset ?? s.now + FALLBACK_MS)) out.push(realHolder(k))
+    const list = await consentsOf($, k.kind, s.attended, false).catch((): Sourced[] => [])
+    const bound = k.realReset ?? s.now + FALLBACK_MS
+    const c = coveringConsent(
+      list.map((e) => e.c),
+      s.now,
+      bound,
+      k.realPct ?? 0,
+      k.point,
+    )
+    if (c === undefined) out.push(realHolder(k))
   }
   return out
 }
 
+/** B51: a loop's told key carries the stage of the kind: a second tell at the floor. */
 function toldHas(k: KindSense, key: string): boolean {
   const t = told[k.kind]
-  return t.windowEnd === k.windowEnd && t.keys.has(key)
+  return t.windowEnd === k.windowEnd && t.keys.has(stageKey(key, k.atFloor))
 }
 
+/** B50: a kind as the gate sees it: its view percentage and basis. */
+const viewOf1 = (k: KindSense): Viewed => ({ kind: k.kind, pct: pctOf(k.basis) ?? 0, test: k.test })
+
 async function act($: EngineInterface, s: Sensed, ctx: Ctx): Promise<Acted> {
-  // The round after a Resume leaves out the kinds it answered: only a kind the dialog did not name asks again (B38).
+  // The round after a Resume leaves out the kinds it answered: only a kind the dialog did not name asks
+  // again (B38). B50: only on the Resume's basis and below its end point, so no step passes the floor.
   const resumed = ctx.resumed ?? []
-  const gating = s.cfg.enabled ? (await gatingOf($, s)).filter((k) => !resumed.includes(k.kind)) : []
+  const viewOfKind = (kind: Kind): Viewed => {
+    const k = s.kinds.find((x) => x.kind === kind)
+    return k === undefined ? { kind, pct: 0, test: false } : viewOf1(k)
+  }
+  const gating = s.cfg.enabled ? (await gatingOf($, s)).filter((k) => !answers(resumed, viewOf1(k))) : []
   // TS1: the kinds whose real reading gates. They keep a stop past its end, and a Stop here names them.
-  const holders = s.cfg.enabled ? (await holdersOf($, s, gating)).filter((h) => !resumed.includes(h.kind)) : []
+  const holders = s.cfg.enabled ? (await holdersOf($, s, gating)).filter((h) => !answers(resumed, viewOfKind(h.kind))) : []
   const consented = s.cfg.enabled && s.tripped && gating.length === 0
   const stopped =
     s.cfg.enabled && s.attended && !consented
@@ -711,20 +902,32 @@ async function act($: EngineInterface, s: Sensed, ctx: Ctx): Promise<Acted> {
 /**
  * The figures of some kinds, five_hour first. A hold end that is not the reset (a reading without a
  * reset time, or a skip start ahead) rides along for {at}. `owner`: a skip owner, whose kinds with a
- * skip start ahead carry their span for {lead} (skip 2.1).
+ * skip start ahead carry their span for {lead} (skip 2.1). A kind at the floor carries its floor, so
+ * the texts name it (B48). `toOf`: the end point of the consent that the text describes (floor 6.6).
  */
-function factsFrom(ks: readonly KindSense[], now: number, owner = false): Facts[] {
+function factsFrom(ks: readonly KindSense[], now: number, owner = false, toOf?: (k: KindSense) => number | undefined): Facts[] {
   return ks.map((k) => {
     const f = factsOf(k.basis, k.reserve, undefined, k.kind, now)
     const reset = k.basis.kind === 'none' ? undefined : k.basis.resetsAtMs
+    const to = toOf?.(k)
     return {
       ...f,
       ...(reset !== undefined && k.holdEnd !== reset ? { holdEnd: k.holdEnd } : {}),
       ...(k.test ? { test: true } : {}),
       ...(owner && k.skipAt !== null ? { span: k.span } : {}),
+      ...(k.atFloor ? { floor: k.floor } : {}),
+      ...(to === undefined ? {} : { to }),
     }
   })
 }
+
+/** Floor 6.6: the end point now of a covering consent to the floor, for the texts of a consented kind. */
+const consentEnd =
+  (consents: ReadonlyArray<{ k: KindSense; c: Consent }>) =>
+  (k: KindSense): number | undefined => {
+    const c = consents.find((x) => x.k.kind === k.kind)?.c
+    return c?.to === undefined ? undefined : endOf(c.to, k.point)
+  }
 
 /** The kinds a text names: the gating kinds, else the tripped ones. */
 const namedKinds = (s: Sensed, a: Acted): KindSense[] => (a.gating.length > 0 ? a.gating : s.kinds.filter((k) => k.tripped))
@@ -739,6 +942,15 @@ function refusalText(kind: 'stop' | 'paused' | 'headless', s: Sensed, a: Acted):
 const tellText = (s: Sensed, a: Acted): string => pauseInstruction(factsFrom(namedKinds(s, a), s.now), s.cfg.pausePrompt)
 
 const namedOf = (q: Question): Named[] => q.kinds.map((kind) => ({ kind, test: q.ends[kind]?.test === true }))
+
+/** B50: what a Resume of this question answers per kind: its basis, and its end point when asked at the reserve. */
+const answeredOf = (q: Question | undefined): Answered[] =>
+  q === undefined
+    ? []
+    : q.kinds.map((kind) => {
+        const end = q.ends[kind]
+        return { kind, test: end?.test === true, ...(end?.to === undefined ? {} : { to: end.to }) }
+      })
 const namedStop = (r: StoppedRecord): Named[] => (r.kinds ?? ['five_hour']).map((kind) => ({ kind, test: r.test === true }))
 
 // ---- The hold (4.4, 5.4) ----
@@ -828,8 +1040,9 @@ async function decidedElsewhere($: EngineInterface, key: string): Promise<Outcom
   let covered = q.kinds.length > 0
   for (const kind of q.kinds) {
     const end = q.ends[kind]
-    const until = end === undefined ? 0 : await consentMs($, kind, !q.silent, end.test).catch(() => 0)
-    if (end === undefined || !consentCovers(until, now, end.end)) {
+    // B50 item 3: a consent answers a kind at a matching tier. A consent to the floor never answers a kind asked at the floor.
+    const list = end === undefined ? [] : await consentsOf($, kind, !q.silent, end.test).catch((): Sourced[] => [])
+    if (end === undefined || !list.some((e) => answersQuestion(e.c, end, now))) {
       covered = false
       break
     }
@@ -966,17 +1179,20 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
   const g = namedKinds(s, a)
   if (openKey !== undefined) {
     const open = questions.get(openKey)
-    if (open !== undefined && joinable(outcomes.get(openKey), open.kinds, g.map((k) => k.kind))) {
+    if (open !== undefined && joinableAt(outcomes.get(openKey), answeredOf(open), g.map(viewOf1))) {
       if (opener === 'loop') open.loops += 1
       return openKey // join (synchronous check: no race)
     }
-    // A settled again, or a settled Resume that did not name a kind that gates now: a new question.
+    // A settled again, or a settled Resume that does not answer a kind that gates now (B50): a new question.
   }
   seq += 1
   const key = `${ENV}:${seq}`
   openKey = key
   const ends: Question['ends'] = {}
-  for (const k of g) ends[k.kind] = { end: k.windowEnd, test: k.test, ...(k.skipAt === null ? {} : { skipAt: k.skipAt }) }
+  for (const k of g) {
+    const to = resumeTo(k) // B48, B50: the tier of the question per kind
+    ends[k.kind] = { end: k.windowEnd, test: k.test, ...(k.skipAt === null ? {} : { skipAt: k.skipAt }), ...(to === undefined ? {} : { to }) }
+  }
   const latestEnd = Math.max(...g.map((k) => k.windowEnd))
   const real = a.holders.filter((h) => g.some((k) => k.kind === h.kind))
   const holdEnd = Math.max(...g.map((k) => k.holdEnd))
@@ -1002,7 +1218,7 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
     since: s.now,
     mode: modeOf(s.cfg),
     opener,
-    facts: factsFrom(g, s.now, skip),
+    facts: factsFrom(g, s.now, skip, resumeTo),
     waiting: 0,
     handoffs: 0,
     noted: false,
@@ -1097,7 +1313,7 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
   if (outcome === 'resume' && q !== undefined) {
     for (const kind of q.kinds) {
       const end = q.ends[kind]
-      if (end !== undefined) noteConsent(kind, end.end, end.test)
+      if (end !== undefined) noteConsent(kind, consentOfEnd(end), end.test) // B49: each kind at its tier
     }
   }
   wakeAll()
@@ -1108,14 +1324,17 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
     if (outcome === 'resume') {
       for (const kind of q.kinds) {
         const end = q.ends[kind]
-        if (end !== undefined) await writeConsent($, kind, end.end, now, end.test) // each kind's own test flag
+        if (end !== undefined) await writeConsent($, kind, consentOfEnd(end), now, end.test, true) // each kind's own test flag, noted above
       }
       await clearStopped($)
       if (via !== 'command') {
         const open = q.kinds.filter((kind) => (q.ends[kind]?.end ?? 0) > now)
         $.ui.log(
           open.length > 0
-            ? notice.continuing(q.facts.filter((f) => open.includes(f.kind ?? 'five_hour')))
+            ? notice.continuing(
+                q.facts.filter((f) => open.includes(f.kind ?? 'five_hour')),
+                q.mode,
+              )
             : notice.newWindowFor(q.kinds),
         )
       }
@@ -1211,23 +1430,30 @@ const openQuestion = (): string | undefined => (openKey !== undefined && !outcom
 
 // ---- Tell mode (5) ----
 
-/** A loop is told when some gating kind lacks its key. The claim adds the key to every gating kind. */
+/**
+ * A loop is told when some gating kind lacks its key of the kind's stage (B51). The claim adds the key
+ * of its stage to every gating kind. So each loop is told once at the reserve and once at the floor.
+ */
 function claimTold(gating: readonly KindSense[], key: string): boolean {
   let fresh = false
   for (const k of gating) {
     if (told[k.kind].windowEnd !== k.windowEnd) told[k.kind] = { windowEnd: k.windowEnd, keys: new Set() }
-    if (told[k.kind].keys.has(key)) continue
-    told[k.kind].keys.add(key)
+    const staged = stageKey(key, k.atFloor)
+    if (told[k.kind].keys.has(staged)) continue
+    told[k.kind].keys.add(staged)
     fresh = true
   }
   return fresh
 }
 
+/** B51: the mark of the B12 notice per kind: its window and stage. */
+const toldMark = (k: KindSense): string => `${k.windowEnd}:${k.atFloor ? 'floor' : 'reserve'}`
+
 function noteTold($: EngineInterface, s: Sensed, a: Acted, key: string): void {
   $.ui.log(debugLine.told(key), { to: 'debug' })
   const ks = namedKinds(s, a)
-  if (ks.every((k) => toldNoticeFor[k.kind] === k.windowEnd)) return
-  for (const k of ks) toldNoticeFor[k.kind] = k.windowEnd
+  if (ks.every((k) => toldNoticeFor[k.kind] === toldMark(k))) return
+  for (const k of ks) toldNoticeFor[k.kind] = toldMark(k)
   $.ui.log(notice.told(factsFrom(ks, s.now)))
   redraw($)
 }
@@ -1360,7 +1586,9 @@ function pruneEdges(now: number): void {
 /** At session.start: the ends another copy wrote, so this copy redraws at them. */
 async function rebuildEdges($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  for (const kind of KINDS) addEdge(await consentMs($, kind, attended === true, false).catch(() => 0))
+  for (const kind of KINDS) {
+    for (const e of await consentsOf($, kind, attended === true, false).catch((): Sourced[] => [])) addEdge(e.c.until)
+  }
   const st = parseStopped(await $.env.get('SPARE10_STOPPED').catch(() => undefined))
   if (st !== undefined && st.sessionId === (await $.session.id().catch(() => sid))) {
     addEdge(st.windowEnd)
@@ -1584,16 +1812,26 @@ async function seen($: EngineInterface): Promise<Seen> {
   const cfg = await settings($)
   const now = await $.clock.now()
   const bases = await currentBases($, now)
-  const kinds = sensesOf(cfg, bases, await spansFor($, cfg, bases), now)
-  const tripped = kinds.some((k) => k.tripped)
+  const sensed = sensesOf(cfg, bases, await spansFor($, cfg, bases), now)
+  const tripped = sensed.some((k) => k.tripped)
   const att = await isAttended($)
-  const consent: Partial<Record<Kind, number>> = {}
+  const kinds = att ? sensed : sensed.map(noFloor) // B55
+  const consent: Partial<Record<Kind, Consent>> = {}
+  const ended: Partial<Record<Kind, Consent>> = {}
   const gating: KindSense[] = []
   const openKinds: KindSense[] = []
   for (const k of kinds) {
-    const until = await consentMs($, k.kind, att, k.test)
-    if (consentCovers(until, now, k.windowEnd)) consent[k.kind] = until
-    else if (k.tripped && k.open) openKinds.push(k)
+    // As splitOf classifies (floor 4.2), but it only reads: it never ends a consent (B52).
+    const list = (await consentsOf($, k.kind, att, k.test)).map((e) => e.c)
+    const pct = pctOf(k.basis) ?? 0
+    const c = coveringConsent(list, now, k.windowEnd, pct, k.point)
+    if (c !== undefined && !(k.open && c.to !== undefined)) {
+      consent[k.kind] = c
+      continue
+    }
+    const e = endedFloor(list, now, k.windowEnd, pct, k.point)
+    if (e !== undefined) ended[k.kind] = e
+    if (k.tripped && k.open) openKinds.push(k)
     else if (k.tripped) gating.push(k)
   }
   const holders = cfg.enabled && att ? await holdersOf($, { kinds, now, attended: att }, gating) : [] // TS1
@@ -1602,8 +1840,13 @@ async function seen($: EngineInterface): Promise<Seen> {
   const prefix = `${sid ?? ''}:`
   const toldKeys = new Set<string>()
   for (const k of gating) {
+    // B51: the loops told at the kind's current stage, so at the floor the tripped row shows until the first tell there.
     const t = told[k.kind]
-    if (t.windowEnd === k.windowEnd) for (const key of t.keys) if (key.startsWith(prefix)) toldKeys.add(key)
+    if (t.windowEnd !== k.windowEnd) continue
+    for (const key of t.keys) {
+      const ks = keyStage(key)
+      if (key.startsWith(prefix) && ks.atFloor === k.atFloor) toldKeys.add(ks.base)
+    }
   }
   const open = openQuestion()
   const question = open === undefined ? undefined : questions.get(open)
@@ -1628,6 +1871,7 @@ async function seen($: EngineInterface): Promise<Seen> {
     open: openKinds,
     gating,
     consent,
+    ended,
     ...(stop === undefined ? {} : { stop }),
     ...(question === undefined ? {} : { question }),
     toldCount: toldKeys.size,
@@ -1638,8 +1882,20 @@ async function seen($: EngineInterface): Promise<Seen> {
 /**
  * 2.6: the clock at which a stop or an open question continues by itself. A skip stop shows its end in
  * both autoResume modes. The open row: the earliest reset among the open kinds, the reserve lost first.
+ * Floor 2.6: the consented row names the end point now of the covered, not open kind nearest to it.
  */
-function untilOf(p: Seen): { until?: string } {
+function untilOf(p: Seen): { until?: string; to?: string } {
+  if (p.phase === 'consented') {
+    let best: { d: number; to: number } | undefined
+    for (const k of p.kinds) {
+      const c = p.consent[k.kind]
+      if (!k.tripped || k.open || c?.to === undefined) continue
+      const end = endOf(c.to, k.point)
+      const d = end - (pctOf(k.basis) ?? 0)
+      if (best === undefined || d < best.d) best = { d, to: end }
+    }
+    return best === undefined ? {} : { to: fmtPct(best.to) }
+  }
   if (p.phase === 'open') {
     const first = [...p.open].sort((a, b) => resetOf(a) - resetOf(b))[0]
     return first === undefined ? {} : { until: clockText(resetOf(first), first.kind, undefined, p.now) }
@@ -1704,6 +1960,10 @@ async function bgWarnings($: EngineInterface): Promise<string[]> {
   if (lastMinutes !== undefined) set.push(['SPARE10_LAST_MINUTES', lastMinutes])
   const weeklyLastHours = await $.env.get('SPARE10_WEEKLY_LAST_HOURS')
   if (weeklyLastHours !== undefined) set.push(['SPARE10_WEEKLY_LAST_HOURS', weeklyLastHours])
+  const resumeFloor = await $.env.get('SPARE10_RESUME_FLOOR')
+  if (resumeFloor !== undefined) set.push(['SPARE10_RESUME_FLOOR', resumeFloor])
+  const weeklyResumeFloor = await $.env.get('SPARE10_WEEKLY_RESUME_FLOOR')
+  if (weeklyResumeFloor !== undefined) set.push(['SPARE10_WEEKLY_RESUME_FLOOR', weeklyResumeFloor])
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
   if (pausePrompt !== undefined) set.push(['SPARE10_PAUSE_PROMPT', pausePrompt])
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
@@ -1740,7 +2000,23 @@ async function statusText($: EngineInterface): Promise<string> {
       : st?.kinds !== undefined && (st.auto === true || st.skip === true)
         ? { ms: st.windowEnd, kinds: st.kinds, skip: st.skip === true }
         : undefined
-  const weeklyConsent = p.consent.seven_day
+  // Floor 2.7: the consent rows name the end point now of a consent to the floor, or where one ended.
+  const kindOfSeen = (kind: Kind): KindSense | undefined => p.kinds.find((k) => k.kind === kind)
+  const rowOf = (kind: Kind): { consentUntil?: number; consentTo?: number; consentEnded?: boolean } => {
+    const k = kindOfSeen(kind)
+    const point = k?.point ?? null
+    const c = p.consent[kind]
+    if (c !== undefined) return { consentUntil: c.until, ...(c.to === undefined ? {} : { consentTo: endOf(c.to, point) }) }
+    const e = p.ended[kind]
+    return e?.to === undefined || k === undefined || !k.tripped || k.open ? {} : { consentTo: endOf(e.to, point), consentEnded: true }
+  }
+  const consented = p.kinds.filter((k) => k.tripped && !k.open && p.consent[k.kind] !== undefined)
+  const consentedFacts = factsFrom(
+    consented,
+    p.now,
+    false,
+    consentEnd(consented.map((k) => ({ k, c: p.consent[k.kind] ?? { until: 0 } }))),
+  )
   return statusReport({
     phase: p.phase,
     mode: modeOf(p.cfg),
@@ -1757,14 +2033,14 @@ async function statusText($: EngineInterface): Promise<string> {
     basis: five,
     ...(five.kind === 'none' ? {} : { facts: factsOf(five, p.cfg.reserve) }),
     now: p.now,
-    ...(p.consent.five_hour === undefined ? {} : { consentUntil: p.consent.five_hour }),
+    ...rowOf('five_hour'),
     toldCount: p.toldCount,
     warnings,
     weekly: {
       reserve: p.cfg.weeklyReserve,
       from: p.cfg.from.weeklyReserve,
       basis: week,
-      ...(weeklyConsent === undefined ? {} : { consentUntil: weeklyConsent }),
+      ...rowOf('seven_day'),
     },
     autoResume: { on: p.cfg.autoResume, from: p.cfg.from.autoResume },
     ...(at === undefined ? {} : { at }),
@@ -1780,6 +2056,13 @@ async function statusText($: EngineInterface): Promise<string> {
     // The open kinds, only while no kind gates: the asking line then says that new work goes on, and a
     // window that still gates would hold that new work.
     ...(p.open.length === 0 || p.gating.length > 0 ? {} : { open: factsFrom(p.open, p.now) }),
+    floors: {
+      resumeFloor: p.cfg.resumeFloor,
+      resumeFloorFrom: p.cfg.from.resumeFloor,
+      weeklyResumeFloor: p.cfg.weeklyResumeFloor,
+      weeklyResumeFloorFrom: p.cfg.from.weeklyResumeFloor,
+    },
+    ...(consentedFacts.length === 0 ? {} : { consented: consentedFacts }),
   })
 }
 
@@ -1802,23 +2085,50 @@ async function resumeCommand($: EngineInterface): Promise<string> {
   const open = openQuestion()
   if (open !== undefined) {
     const q = questions.get(open)
+    if (q !== undefined && sNow !== undefined) raiseAtFloor(q, sNow)
     await settle($, open, 'resume', 'command')
-    return resumeReply('asking', q?.facts)
+    return resumeReply('asking', q?.facts, undefined, undefined, q?.mode)
   }
   const s = sNow ?? (await sense($))
+  const mode = modeOf(cfg)
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
   if (read.length === 0) return resumeReply('none')
   if (!s.tripped) return resumeReply('below', factsFrom(read, s.now))
   const split = await splitOf($, s)
   const gating = split.gating
   if (gating.length === 0 && split.open.length > 0) return resumeReply('open', factsFrom(split.open, s.now)) // B44: nothing to resume
-  if (gating.length === 0) return resumeReply('consented', factsFrom(s.kinds.filter((k) => k.tripped), s.now))
+  if (gating.length === 0) {
+    // Floor 2.8: the facts come from the consents that cover each kind, never from the stage. The floor
+    // form names the tripped kinds that are not open. With no consent to the floor, the 0.2 form names them all.
+    const shut = split.consented.filter((x) => !x.k.open)
+    const named = shut.some((x) => x.c.to !== undefined) ? shut : split.consented
+    return resumeReply('consented', factsFrom(named.map((x) => x.k), s.now, false, consentEnd(named)), undefined, undefined, mode)
+  }
   const wasStopped = (await stoppedNow($, s.now, gating, commandHolders(s.kinds))) !== undefined // TS1: also a stop that a kind of it still holds
-  for (const k of gating) await writeConsent($, k.kind, k.windowEnd, s.now, k.test)
+  // The command follows the reading now (floor 1.3 item 2): before the floor to the floor, past it until the reset.
+  for (const k of gating) {
+    const to = resumeTo(k)
+    await writeConsent($, k.kind, { until: k.windowEnd, ...(to === undefined ? {} : { to }) }, s.now, k.test)
+  }
   await clearStopped($)
   redraw($)
   await $.spare10.poke({ from: ENV })
-  return resumeReply(wasStopped ? 'stopped' : 'tripped', factsFrom(gating, s.now))
+  return resumeReply(wasStopped ? 'stopped' : 'tripped', factsFrom(gating, s.now, false, resumeTo), undefined, undefined, mode)
+}
+
+/**
+ * B50 item 4: /spare10 resume on an open question raises a kind to a full Resume when the fresh sense of
+ * that kind is at the floor, on the question's basis and in the question's window. Its facts then follow
+ * the fresh sense, for the reply and the B9 note. Else the question's tier stands.
+ */
+function raiseAtFloor(q: Question, sNow: Sensed): void {
+  for (const k of sNow.kinds) {
+    const end = q.ends[k.kind]
+    if (end?.to === undefined || !k.atFloor || k.test !== end.test || Math.abs(k.windowEnd - end.end) > 60_000) continue
+    const { to: _to, ...full } = end
+    q.ends[k.kind] = full
+    q.facts = byKind([...q.facts.filter((f) => (f.kind ?? 'five_hour') !== k.kind), ...factsFrom([k], sNow.now, q.skip)])
+  }
 }
 
 /**
@@ -1942,8 +2252,12 @@ async function simulateCommand($: EngineInterface, words: readonly string[]): Pr
   if (spec.kind === 'seven_day' && cfg.weeklyReserve <= 0) return simulateReply('weekly-off')
   const now = await $.clock.now()
   const live = limitOf((await $.session.usage().catch(() => undefined))?.rateLimits ?? [], spec.kind)
-  const replaces = test[spec.kind] !== undefined
-  const reading = testReading(spec.pct, spec.kind, live, now, spec.inMs)
+  const old = test[spec.kind]
+  // B53: a strictly higher value without `in`, in the window of the test reading, raises it in place:
+  // the test window, the consent and the stop stay. So a consent to the floor ends at its point.
+  const inPlace = old !== undefined && inWindow(old, now, spec.kind) && spec.inMs === undefined && spec.pct > old.pct
+  const replaces = old !== undefined && !inPlace
+  const reading = inPlace ? { pct: spec.pct, resetsAtMs: old.resetsAtMs } : testReading(spec.pct, spec.kind, live, now, spec.inMs)
   test[spec.kind] = reading
   testFromEnvDone = true
   if (replaces) {
@@ -1956,7 +2270,14 @@ async function simulateCommand($: EngineInterface, words: readonly string[]): Pr
   const testBasis: Basis = { kind: 'test', ...reading }
   const span = spanOf(cfg, spec.kind) // this copy's spans: the newest copy's (a command runs there)
   const f: Facts = { ...factsOf(testBasis, reserve, undefined, spec.kind, now), test: true, ...(span > 0 ? { span } : {}) }
-  return simulateReply('set', f, simulateOpens(testBasis, basis(live, mem[spec.kind], now, undefined, spec.kind), reserve, span, now, f))
+  const realBasis = basis(live, mem[spec.kind], now, undefined, spec.kind)
+  const opens = simulateOpens(testBasis, realBasis, reserve, span, now, f)
+  // Floor 2.9: past the floor of the kind, unless open at once. The real reading in the reserve beneath.
+  const floor = floorOf(cfg, spec.kind)
+  const pastFloor = floor > 0 && spec.pct >= pointOf(floor) && opens !== 'now' ? floor : undefined
+  const rv = viewOf(realBasis, realBasis, reserve, span, now)
+  const realIn = rv.tripped && !rv.open && (pctOf(realBasis) ?? 100) < spec.pct
+  return simulateReply(inPlace ? 'raised' : 'set', f, opens, pastFloor, realIn)
 }
 
 /**
@@ -2112,7 +2433,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if ((e.tool as string) === 'AskUserQuestion' || next.origin.plugin !== 'engine') return next(e) // 4.10
     let closed = false // after again: a failed sense refuses (B38)
-    let resumed: readonly Kind[] = [] // one round only: a later round decides afresh on every kind
+    let resumed: readonly Answered[] = [] // one round only: a later round decides afresh on every kind
     let last: { s: Sensed; a: Acted } | undefined
     for (;;) {
       let s: Sensed
@@ -2142,7 +2463,7 @@ export const register: Register = (on, options) => {
       last = { s, a }
       const key = ensureQuestion($, 'loop', s, a)
       const out = await hold($, next.signal, key, () => next.budget.remainingMs)
-      resumed = out === 'resume' ? (questions.get(key)?.kinds ?? []) : []
+      resumed = out === 'resume' ? answeredOf(questions.get(key)) : []
       if (out === 'resume') {
         closed = false
         continue
@@ -2174,7 +2495,7 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) stepped.add(e.agentId)
     let closed = false // after again: a failed sense refuses (B38)
-    let resumed: readonly Kind[] = [] // one round only
+    let resumed: readonly Answered[] = [] // one round only
     let last: { s: Sensed; a: Acted } | undefined
     for (;;) {
       let r: { s: Sensed; a: Acted; out: Settled | 'aborted' }
@@ -2200,7 +2521,7 @@ export const register: Register = (on, options) => {
         }
         const v = a.verdict
         if (v.kind === 'pass' || v.kind === 'tell') return yield* next(e)
-        resumed = out === 'resume' && key !== undefined ? (questions.get(key)?.kinds ?? []) : []
+        resumed = out === 'resume' && key !== undefined ? answeredOf(questions.get(key)) : []
         if (v.kind === 'hold' && out === 'resume') {
           closed = false
           continue
@@ -2229,8 +2550,9 @@ export const register: Register = (on, options) => {
       let wasStopped = false
       let personResume = false
       let closed = false
-      let resumed: readonly Kind[] = [] // one round only
+      let resumed: readonly Answered[] = [] // one round only
       let last: { s: Sensed; a: Acted } | undefined
+      let lastKey: string | undefined // B50 item 5: the question whose Resume the B9 note describes
       for (;;) {
         let s: Sensed
         try {
@@ -2246,7 +2568,7 @@ export const register: Register = (on, options) => {
         if (a === undefined || a.verdict.kind !== 'hold') {
           const note =
             personResume && wasStopped && last !== undefined
-              ? resumeContext(factsFrom(namedKinds(last.s, last.a), last.s.now)) // B9: a person's Resume cleared the stop
+              ? resumeContext((lastKey === undefined ? undefined : questions.get(lastKey)?.facts) ?? factsFrom(namedKinds(last.s, last.a), last.s.now)) // B9: a person's Resume cleared the stop
               : await takeOverdueStop($, { ...s, holders: a?.holders ?? [] }).then(
                   (t) => (t?.record.work === true ? resetContext(t.reset, t.open) : undefined),
                   () => undefined,
@@ -2255,8 +2577,9 @@ export const register: Register = (on, options) => {
         }
         last = { s, a }
         const key = ensureQuestion($, 'prompt', s, a)
+        lastKey = key
         const out = await hold($, next.signal, key, () => next.budget.remainingMs)
-        resumed = out === 'resume' ? (questions.get(key)?.kinds ?? []) : []
+        resumed = out === 'resume' ? answeredOf(questions.get(key)) : []
         if (out === 'resume') {
           personResume = true
           closed = false

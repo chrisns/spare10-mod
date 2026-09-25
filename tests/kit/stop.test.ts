@@ -68,7 +68,7 @@ test('a main step answered Stop here ends its turn too', async ($, on) => {
 })
 
 test('/spare10 stop after Resume denies the next call and refuses the next step', async ($, on) => {
-  const w = world(on, { pct: 93, answer: 'Resume' })
+  const w = world(on, { floors: 'off', pct: 93, answer: 'Resume' })
   await begin($, w)
   expect((await bash($)).result).toBe('ran')
   await w.clock.settle()

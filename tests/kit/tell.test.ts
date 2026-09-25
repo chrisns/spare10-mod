@@ -1,8 +1,9 @@
 import { test, expect } from 'claude-code/testing'
 import type { Plugin } from 'claude-code/testing'
 import type { ToolCallResult } from 'claude-code'
-import { LATER, RESETS, bash, begin, clear, cmd, drain, step, typed, world } from '../helpers/world.ts'
+import { LATER, RESETS, bash, begin, clear, cmd, drain, step, typed, world02 as world } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // Tell mode through the engine (design 2.3, 5, 11.4 tell.test.ts). The kit cannot pass options, so
 // SPARE10_PAUSE_PROMPT switches the mode. Every expected text is written out from DESIGN section 2
 // (and ruling R7), not taken from hooks/core/text.ts, so a wrong text there fails here too.

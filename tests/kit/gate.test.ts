@@ -1,8 +1,9 @@
 import { test, expect } from 'claude-code/testing'
 import type { ToolCallResult } from 'claude-code'
 import { atText, debugLine, factsOf, notice, questionText, resumeReply, stopReply, stopText } from '../../hooks/core/text.ts'
-import { HOUR, OPENS, RESETS, SKIP, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, real5, slowAsk, step, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, OPENS, RESETS, SKIP, T0, TICK, above, auditor, bash, begin, clear, cmd, drain, measure, real5, slowAsk, step, stopRec, typed, world02 as world } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The gate through the engine (design 11.4, gate.test.ts): one question for every held loop,
 // every answer class, the carrier, the hand-off, decisions from another copy, forks and failures.
 

@@ -1,7 +1,8 @@
 import { test, expect } from 'claude-code/testing'
 import { atText, factsOf, notStarted, notice, questionText, resumeContext } from '../../hooks/core/text.ts'
-import { OPENS, RESETS, SKIP, bash, begin, drain, real5, step, stopRe, typed, world } from '../helpers/world.ts'
+import { OPENS, RESETS, SKIP, bash, begin, drain, real5, step, stopRe, typed, world02 as world } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The person's prompts in hold mode (design B8 to B11, 11.4 prompt.test.ts).
 
 const F93 = factsOf({ kind: 'live', pct: 93, resetsAtMs: Date.parse(RESETS) }, 10)

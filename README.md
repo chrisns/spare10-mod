@@ -45,7 +45,7 @@ The plugin name is `spare10`.
    claude plugin install spare10@spare10
    ```
 
-   The install can say that 9 `userConfig` options are not set yet.
+   The install can say that 11 `userConfig` options are not set yet.
    You do not have to set them. The defaults apply until you change them in `/config`.
 
 3. Start a new Claude Code session in a terminal.
@@ -67,11 +67,13 @@ If spare10 does not load:
   Run `claude doctor`. If it shows **Invalid settings**, correct that entry.
 - A `"0"` in the `env` block of a project's `.claude/settings.json` switches function hooks off in that project.
 
-To test the question, type `/spare10 simulate 95`, then send a prompt.
+To test the question, type `/spare10 simulate 92`, then send a prompt.
 Choose **Stop here**, and the test uses no quota.
+Choose **Resume**, then type `/spare10 simulate 96` and send a prompt.
+Then you see the second question at the floor.
 Type `/spare10 simulate off` to clear the test reading.
 If the 5-hour window resets in less than 20 minutes, the reserve is open, and spare10 does not ask.
-Then use `/spare10 simulate 95 in 1h`.
+Then use `/spare10 simulate 92 in 1h`.
 See [Skip near the reset](#skip-near-the-reset).
 
 ## Screenshots
@@ -94,6 +96,8 @@ When the reserve opens, spare10 continues the stopped work by itself:
 
 The last three screenshots use a test reading from `/spare10 simulate`.
 So they show `(test)` and a test window.
+The screenshots come from spare10-mod 0.2, which had no floor.
+So the question in them does not name the floor.
 
 ## What spare10 does
 
@@ -103,6 +107,9 @@ At the reserve of either window, spare10 holds all work at the next step.
 It then asks you one question in the Claude Code dialog: **Stop here** or **Resume**.
 **Resume** continues all held work from the point where it stopped.
 **Stop here** ends the work at its next step, but the session stays open.
+A **Resume** lasts until the floor: by default until 5% is left.
+There spare10 holds the work again and asks a second question.
+A second **Resume** lets the work use the rest of the window, until the reset.
 
 Shortly before a window resets, spare10 opens its reserve.
 Then all work can use it, and spare10 asks nothing.
@@ -172,7 +179,7 @@ All other held steps join it.
 
 ```
  ☐ spare10
-Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 14:00? If you choose Stop here or do not answer, the work waits until 13:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.
+Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 95% used? Until 13:40, spare10 asks you again at 95% used. If you choose Stop here or do not answer, the work waits until 13:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.
 ❯ 1. Stop here
   2. Resume
   3. Type something.
@@ -180,10 +187,18 @@ Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on
 Enter to select · ↑/↓ to navigate · Esc to cancel
 ```
 
+This is the first question.
+A **Resume** here lasts until the floor, by default 95% used.
+At the floor, spare10 asks a second question.
+See [The resume floor](#the-resume-floor).
+
 At 13:40 the reserve opens, 20 minutes before the reset.
+From then on, spare10 asks nothing, also past the floor.
 See [Skip near the reset](#skip-near-the-reset).
 With an open time of 0, the question says `the work waits until 14:00`.
-With **Continue at the reset** off, the question ends at `Continue on the reserve until 14:00?`
+It also says `At 95% used, spare10 asks you again.`, because no reserve opens before the reset.
+With **Continue at the reset** off, the question ends at `Until 13:40, spare10 asks you again at 95% used.`
+With a floor of 0, the question asks `Continue on the reserve until 14:00?`, as in spare10-mod 0.2.
 
 The weekly window has the same question, with the weekly wording.
 Its times show the weekday, such as `Mon 09:00`.
@@ -191,7 +206,7 @@ A reset more than 6 days away also shows the date, such as `Thu 1 Oct 11:00`.
 When both windows are in the reserve, one question names both:
 
 ```
-Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on both reserves until they reset (14:00 and Mon 09:00)? If you choose Stop here or do not answer, the work waits until Mon 01:00, 8 h before the weekly reset. Then spare10 continues it, unless a reserve is still reached.
+Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on both reserves until 95% used? Until its reserve opens, spare10 asks you again at 95% used of either window. If you choose Stop here or do not answer, the work waits until Mon 01:00, 8 h before the weekly reset. Then spare10 continues it, unless a reserve is still reached.
 ```
 
 The question names the windows that are in the reserve when it opens.
@@ -213,8 +228,10 @@ All other answers are **Stop here**: Esc, `Chat about this`, other text, and a d
 - Each held model request goes out.
 - A held prompt enters.
 - The model reads nothing extra, because it does not know that it waited.
-- spare10 stays quiet until each window that the question names resets.
-- The transcript shows `spare10: continuing on your 10% reserve. spare10 stays quiet until 14:00.`
+- spare10 stays quiet until the floor, by default 95% used.
+  If the window resets first, it stays quiet until the reset.
+  At the floor, it asks you again. See [The resume floor](#the-resume-floor).
+- The transcript shows `spare10: continuing on your 10% reserve until 95% used. Until 13:40, spare10 asks you again at 95% used.`
 
 **Stop here**:
 
@@ -238,6 +255,74 @@ The model reads one of these texts after a Stop:
 spare10: the user stopped work at the quota reserve (into your 10% reserve · 9% of quota left · resets 14:00). Stop now and wait for the user. Do not call any further tools.
 spare10: work stopped at the quota reserve (into your 10% reserve · 9% of quota left · resets 14:00). No model request was sent, so this task is not finished. Wait for the user.
 ```
+
+### The resume floor
+
+A **Resume** at the reserve does not spend the whole reserve.
+It lasts until the floor.
+By default the floor is 5% left, which is 95% used.
+If the window resets first, the **Resume** lasts until the reset.
+
+At the floor, spare10 holds all work again and asks the second question:
+
+```
+ ☐ spare10
+Your 5% floor is reached: 96% used · 4% left · resets 14:00. All work is on hold. Continue on the last 4% until 14:00? If you choose Stop here or do not answer, the work waits until 13:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.
+```
+
+The second question names what is left now.
+This can be less than the floor, because the reading can pass the floor between two steps.
+A second **Resume** lets the work use the rest, until the reset.
+spare10 does not ask again about that window before the reset.
+The transcript shows `spare10: continuing on your 5% floor. spare10 stays quiet until 14:00.`
+**Stop here** works as at the first question.
+The stop notice and the texts for Claude then name `your 5% floor`.
+
+Example: the reserve is 10%, the floor is 5%, and the 5-hour window resets at 14:00.
+
+- At 91% used, spare10 holds the work and asks the first question. You choose **Resume**.
+- The work goes on with no question. The badge shows `⨯ spare10: resumed until 95% used`.
+- The reading passes the floor, for example to 96% used.
+  At the next step, spare10 holds the work and asks the second question. You choose **Resume**.
+- The work goes on until 14:00 with no question. The badge shows `⨯ spare10`.
+
+To see the two questions with a test reading, type `/spare10 simulate 91 in 1h`.
+Send a prompt, and choose **Resume**.
+Then type `/spare10 simulate 96`, and send a prompt again.
+The higher value keeps your first answer, so the second question shows.
+
+The first **Resume** ends for good at the floor.
+If the reading falls again before the reset, spare10 asks the first question again.
+
+If the reading is past the floor when spare10 first asks, you get only the second question.
+Its **Resume** lasts until the reset.
+If the reading passes the floor while the first question waits, a **Resume** shows the second question at once.
+
+Each window has its own floor.
+The weekly floor is 5% of the weekly window by default.
+Set the floors in `/config`. `0` switches a floor off. Then a **Resume** lasts until the reset.
+A floor at or above its reserve does nothing, and spare10 warns you.
+
+`/spare10 resume` follows the reading at the time of the command:
+
+- Before the floor, it continues until the floor.
+  It replies `spare10: you can use the reserve until 95% used. Until 13:40, spare10 asks you again at 95% used.`
+- Past the floor, it continues until the reset.
+  It replies `spare10: you can use the last 4% until 14:00.`
+
+You cannot skip the second question with it. Set the floor to `0` for that.
+
+While a reserve is open near the reset, spare10 asks nothing, also past the floor.
+So the question says until when spare10 asks again, such as `Until 13:40`.
+
+With a pause prompt, spare10 does not hold the work at the floor.
+It tells each agent again, with the text `You have reached the floor of the quota reserve for this session`.
+The transcript shows `spare10: your 5% floor is reached. spare10 told the agents to wind down.`
+A prompt that you send before the main loop gets that text asks the second question.
+See [The pause prompt](#the-pause-prompt).
+
+Unattended runs never ask, so the floor changes nothing there.
+See [Unattended runs](#unattended-runs).
 
 ### Skip near the reset
 
@@ -384,7 +469,7 @@ spare10 then gates their model requests like all other steps.
 Set a pause prompt to tell the agents to wind down instead of stopping them.
 Then spare10 does not hold the agents.
 It holds only a prompt that you send before the main loop gets the instruction.
-Each loop gets this text once per window, on its next tool result:
+Each loop gets this text at the reserve, on its next tool result:
 
 ```
 spare10 budget guard. You have reached the safe usage limit for this session (into your 10% reserve · 9% of quota left · resets 14:00). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.
@@ -396,11 +481,19 @@ The tool still runs.
 The transcript shows `spare10: your 10% reserve is reached. spare10 told the agents to wind down.` once per window.
 Until the main loop gets the instruction, a prompt that you send still asks first.
 Its question says `spare10 holds your prompt.`
+It also says `Until 13:40, spare10 tells the agents to wind down at 95% used.`
 With **Continue at the reset** on, the question ends like this:
 `If you do not answer, your prompt goes in at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives it back to you.`
-If you choose **Resume**, no agent gets the instruction in that window.
+If you choose **Resume**, no agent gets the instruction until the floor.
 If you choose **Stop here**, spare10 drops the prompt and puts the text back.
 Nothing else stops.
+
+At the floor, each loop gets the instruction again, once.
+Its first sentence then reads `You have reached the floor of the quota reserve for this session (into your 5% floor · 4% of quota left · resets 14:00).`
+The transcript shows `spare10: your 5% floor is reached. spare10 told the agents to wind down.` once per window.
+Until the main loop gets this second instruction, a prompt that you send asks the second question.
+If you choose **Resume** there, no agent gets the instruction again in that window.
+With a floor of 0, each loop gets the instruction once per window, as in spare10-mod 0.2.
 
 While the reserve is open, no agent gets the instruction, and your prompts go in with no question.
 An agent that got the instruction before that time gets no message to go on.
@@ -423,7 +516,8 @@ The rows without a label, such as `⚠ Pausing at next step`, show no ` (test)`.
 | `⚠ spare10 quota unavailable` | Claude Code reports no 5-hour quota. spare10 lets all work through. |
 | `⧗ spare10` | There is no reading yet. spare10 lets all work through. |
 | `● spare10` | Usage is below each reserve. |
-| `⨯ spare10` | You chose to continue. spare10 is quiet until the window resets. |
+| `⨯ spare10: resumed until 95% used` | You chose to continue at the reserve. At 95% used, spare10 asks you again. |
+| `⨯ spare10` | You chose to continue until the window resets. |
 | `↻ spare10: reserve open until 14:00` | The reset is near. spare10 lets all work use the reserve until 14:00. |
 | `■ spare10: stopped until 13:40` | You chose **Stop here**. The stop ends at 13:40, when the reserve opens. With **Continue at the reset** on, spare10 then continues any stopped work. |
 | `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself. **Continue at the reset** is off, or was off at the stop. The stop ends at the reset. |
@@ -437,6 +531,7 @@ That is the time when the reserve opens, or the reset.
 After a reset, spare10 continues the work about 5 minutes later.
 A stop that ends when the reserve opens always shows its time, also with **Continue at the reset** off.
 The time in the `↻` row is the reset.
+The `⨯` row with `resumed until` names the floor point that comes first.
 A weekly time shows the weekday, such as `Mon 09:00`.
 The badge does not tell you which window tripped.
 Type `/spare10` to see both windows.
@@ -449,8 +544,8 @@ The vscode and mobile surfaces have no footer, so there the dialog is the only s
 
 | Command | What it does |
 |---|---|
-| `/spare10` or `/spare10 status` | Shows the phase, the reserves, the open times, the readings, the consents, what happens at the reset and any warnings. |
-| `/spare10 resume` | Continues on the reserve until the window resets. It answers an open question with **Resume**. |
+| `/spare10` or `/spare10 status` | Shows the phase, the reserves, the open times, the floors, the readings, the consents, what happens at the reset and any warnings. |
+| `/spare10 resume` | Continues on the reserve until the floor, or past the floor until the window resets. It answers an open question with **Resume**. |
 | `/spare10 stop` | Stops at the reserve now. It answers an open question with **Stop here**. |
 
 `/spare10` runs at once, also while a turn runs.
@@ -461,13 +556,15 @@ Use `/spare10 resume` or `/spare10 stop` when no dialog shows, or from a remote 
 `/spare10` prints a report like this:
 
 ```
-spare10: version 0.2.0
+spare10: version 0.3.0
 
   ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.
   · reserve        10% of the 5-hour window (from /config)
   · weekly reserve 10% of the weekly window (from /config)
   · reserve opens  in the last 20 min of the 5-hour window (from /config)
   · weekly opens   in the last 8 h of the weekly window (from /config)
+  · resume floor   5%: after a Resume, spare10 asks again at 95% used (from /config)
+  · weekly floor   5%: after a Resume, spare10 asks again at 95% used of the weekly window (from /config)
   · at the reserve stop and ask you
   · at the reset   continue by itself (from /config)
   · reading        live · 42% used · 58% left · resets 14:00 (in 2 h 14 min)
@@ -477,7 +574,7 @@ spare10: version 0.2.0
   · guarded        yes (scope all)
   · claude -p      runs started here: stop
 
-/spare10 resume   continue on the reserve until the window resets
+/spare10 resume   continue on the reserve until the floor, or past the floor until the reset
 /spare10 stop     stop at the reserve now
 ```
 
@@ -486,9 +583,16 @@ Claude Code puts `spare10: ` in front of each reply and each transcript line of 
 - The `reserve opens` and `weekly opens` rows show the open times and where they come from.
   `only at the reset` means that the open time is 0.
   `spare10 could not read the env` means that spare10 uses an open time of 0 until it can read the variables.
+- The `resume floor` and `weekly floor` rows show the floors and where they come from.
+  `off` means that a **Resume** lasts until the reset.
+  `does nothing` means that the floor is at or above its reserve, such as `12% does nothing, because it is not below the reserve`.
+  In an unattended run, the rows say that the floor does nothing, because the run never asks.
+- The `consent` row shows the end of a **Resume** at the reserve, such as `until 95% used or 14:00`.
+  When the reading reaches it, the row says `ended at 95% used`.
 - The `at the reset` row says `continue by itself` or `wait for your answer`.
 - With a weekly reserve of 0, the `weekly reserve` row says `off`.
-  Then the `weekly opens`, `weekly reading` and `weekly consent` rows do not show.
+  Then the `weekly opens`, `weekly floor`, `weekly reading` and `weekly consent` rows do not show.
+- When neither floor applies, the last lines say `/spare10 resume   continue on the reserve until the window resets`.
 - If the reset check does not run in this session, the report shows this warning:
   `⚠ spare10 cannot check the reset in this session. Type a prompt to continue after the reset.`
 
@@ -497,6 +601,15 @@ While a reserve is open, the phase line reads like this:
 ```
   ↻ open           the reset is near. Your 10% reserve is open until 14:00, so spare10 lets all work through.
 ```
+
+After a **Resume** at the reserve, the phase line and the consent row read like this:
+
+```
+  ⨯ consented      you chose to continue. Until 13:40, spare10 asks you again at 95% used.
+  · consent        until 95% used or 14:00 (you chose to continue)
+```
+
+A second `/spare10 resume` before the floor replies `spare10: already resumed until 95% used. Until 13:40, spare10 asks you again at 95% used.`
 
 `/spare10 stop` works only inside the reserve, when spare10 is tripped or you chose to continue.
 Below the trip point it changes nothing.
@@ -573,13 +686,16 @@ To stop that work too, run `/spare10 stop`.
 
 ### How long a choice lasts
 
-- **Resume** lasts until the window resets.
-  A **Resume** on a weekly trip lasts until the weekly reset.
-  When the question names both windows, **Resume** covers each window until its own reset.
+- **Resume** at the reserve lasts until the floor, by default 95% used.
+  If the window resets first, it lasts until the reset.
+  A second **Resume** at the floor lasts until the window resets.
+  A **Resume** on a weekly trip does the same with the weekly floor and the weekly reset.
+  When the question names both windows, **Resume** covers each window on its own.
   It applies to this process and to the `claude -p` runs that it starts.
   `/clear` and `/resume` inside the session keep it.
 - A **Resume** on a test reading applies only while that test reading applies.
   A reload, a new `/spare10 simulate` value or `/spare10 simulate off` ends it.
+  A higher value without `in` keeps it.
 - **Stop here** lasts until the reserve opens, or until the window resets when it does not open before.
   It applies to this conversation only.
   With **Continue at the reset** on, spare10 then continues the stopped work.
@@ -609,7 +725,7 @@ A background session does not take the consent of another session.
 It asks on its own.
 A background session gets its environment from the `claude daemon`, not from your terminal.
 The daemon can start from a session that you started with one of these variables:
-`SPARE10=off`, `SPARE10_RESERVE`, `SPARE10_WEEKLY_RESERVE`, `SPARE10_LAST_MINUTES`, `SPARE10_WEEKLY_LAST_HOURS`, `SPARE10_PAUSE_PROMPT` or `SPARE10_AUTO_RESUME`.
+`SPARE10=off`, `SPARE10_RESERVE`, `SPARE10_WEEKLY_RESERVE`, `SPARE10_LAST_MINUTES`, `SPARE10_WEEKLY_LAST_HOURS`, `SPARE10_RESUME_FLOOR`, `SPARE10_WEEKLY_RESUME_FLOOR`, `SPARE10_PAUSE_PROMPT` or `SPARE10_AUTO_RESUME`.
 Then every background session that the daemon starts gets these values.
 spare10 shows a warning in each background session that has them.
 
@@ -667,6 +783,8 @@ A change of option reloads the plugin.
 | Weekly reserve (%) | `10` | `0`, or 1 to 99, one decimal at most | The part of the weekly window that you keep. `0` switches the weekly guard off. |
 | Open reserve before 5-hour reset (min) | `20` | 0 to 299, one decimal at most | In this many last minutes of the 5-hour window, spare10 lets all work use the reserve. `0` switches this off. |
 | Open weekly reserve before weekly reset (h) | `8` | 0 to 167, one decimal at most | The same for the weekly window, in hours. `0` switches this off. |
+| Resume floor (%) | `5` | 0 to 99, one decimal at most | After a **Resume** at the 5-hour reserve, spare10 asks again when this much is left. `0` switches this off. A value at or above the reserve does nothing. |
+| Weekly resume floor (%) | `5` | 0 to 99, one decimal at most | The same for the weekly window. |
 | Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. |
 | Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". Off: work waits for you. |
 | Unattended runs (-p, SDK) | `off` | `off`, `prompt`, `stop`, `wait` | What spare10 does inside the reserve when nobody can answer. See [Unattended runs](#unattended-runs). |
@@ -689,6 +807,8 @@ Set them before you start Claude Code.
 | `SPARE10_WEEKLY_RESERVE` | Replaces the weekly reserve: `0`, or 1 to 99. `0` switches the weekly guard off. |
 | `SPARE10_LAST_MINUTES` | Replaces the open time of the 5-hour window, 0 to 299 minutes. `0` switches it off. |
 | `SPARE10_WEEKLY_LAST_HOURS` | Replaces the open time of the weekly window, 0 to 167 hours. `0` switches it off. |
+| `SPARE10_RESUME_FLOOR` | Replaces the resume floor, 0 to 99. `0` switches it off. |
+| `SPARE10_WEEKLY_RESUME_FLOOR` | Replaces the weekly resume floor, 0 to 99. `0` switches it off. |
 | `SPARE10_PAUSE_PROMPT` | Replaces the pause prompt. A set but empty value forces stop and ask. |
 | `SPARE10_AUTO_RESUME` | `on` or `off`. Replaces **Continue at the reset**. |
 | `SPARE10_HEADLESS` | Replaces the unattended policy: `off`, `prompt`, `stop` or `wait`. |
@@ -699,7 +819,8 @@ A variable wins over `/config`.
 spare10 ignores a bad value and logs a warning at the start of the session.
 If spare10 cannot read the variables at all, it sets both open times to 0 until a read succeeds.
 Then it keeps each reserve until the reset.
-`/spare10` shows where the reserve, the weekly reserve, the open times and the scope switch come from.
+The floors keep their `/config` values.
+`/spare10` shows where the reserve, the weekly reserve, the open times, the floors and the scope switch come from.
 In an attended session, it also shows where the setting for the reset comes from.
 In an unattended run, it also shows where the policy comes from.
 
@@ -709,6 +830,9 @@ spare10 also writes some variables into the process environment:
   It starts with the id of the session that wrote it.
   An interactive session takes only its own value.
   A `claude -p` run takes any value that it inherits, for the current window only.
+  After a **Resume** at the reserve, the value ends with the floor point, such as `to:95`.
+  Then the consent ends at 95% used, and spare10 removes the value.
+  A value without it, such as a value from spare10-mod 0.2, lasts until the reset.
 - `SPARE10_WEEKLY_CONSENT` does the same for the weekly window.
   It has the same form as `SPARE10_CONSENT`.
 - `SPARE10_STOPPED` records a **Stop here** for this conversation.
@@ -733,7 +857,7 @@ A `SPARE10_WEEKLY_CONSENT` value that lies after the current weekly window has n
 If you edit `pluginConfigs` in a settings file by hand, use the correct JSON types:
 
 ```json
-{ "pluginConfigs": { "spare10@spare10": { "options": { "reserve": 15, "weeklyReserve": 5, "lastMinutes": 30, "autoResume": false, "badge": false } } } }
+{ "pluginConfigs": { "spare10@spare10": { "options": { "reserve": 15, "weeklyReserve": 5, "lastMinutes": 30, "resumeFloor": 3, "weeklyResumeFloor": 2, "autoResume": false, "badge": false } } } }
 ```
 
 A value of the wrong type, or out of range, stops spare10 from loading.
@@ -800,6 +924,11 @@ A `claude -p` that a `SPARE10=on` session starts inherits the variable, so the p
 A guarded session sets `SPARE10_HEADLESS=stop` for its child runs (see [Scope](#scope)).
 It does this also when its own policy is `wait`.
 
+Unattended runs never ask, so the floor changes nothing there.
+The `prompt` policy tells each agent once per window, and its text names the reserve.
+A `claude -p` run can take a **Resume** at the reserve from the session that started it.
+Then that **Resume** ends at the floor point, and the policy of the run applies from there.
+
 The Claude Code desktop and IDE hosts are unattended in this version.
 In these hosts, spare10 only watches by default.
 To protect such a session, set the policy to `prompt` or `stop`.
@@ -817,6 +946,7 @@ To keep a run from a wait of days, start it with `SPARE10_WEEKLY_RESERVE=0`.
 
 - `wait` ignores **Continue at the reset**. It always continues when the reserve opens, or after the reset.
 - A consent that the run inherits from its parent session still applies.
+  A consent from a **Resume** at the reserve ends at its floor point.
 - After the release, the turn goes on, and the run ends as usual.
 - A `-p` run has no quota reading at its start.
   If only the shared reading of another session trips it, spare10 lets one step go.
@@ -905,8 +1035,8 @@ After the reading trips, a failure holds or refuses the step.
 | Continue | Start `claude --resume` again | The held step runs |
 | After the reset | You run `claude --resume` yourself | spare10 continues held and stopped work, unless you switch this off |
 | Pre-flight | A panel before the process starts | The same question at your prompt |
-| Consent for the window | `disarmedUntil` in `state.json` | `SPARE10_CONSENT` and `SPARE10_WEEKLY_CONSENT` in the process environment |
-| Pause prompt | `PreToolUse` additional context | `tool.call` result context, once per loop |
+| Consent for the window | `disarmedUntil` in `state.json` | `SPARE10_CONSENT` and `SPARE10_WEEKLY_CONSENT` in the process environment, with the floor point |
+| Pause prompt | `PreToolUse` additional context | `tool.call` result context, once per loop at the reserve and once at the floor |
 | Background sessions | `claude stop` and a batch panel | Each `--bg` session asks in the agent view |
 | Diagnostics | `spare10 doctor` | `/spare10` |
 | Badge | Status-line text | Text at the right of the prompt footer |
@@ -918,6 +1048,7 @@ After the reading trips, a failure holds or refuses the step.
 - spare10 asks one question per process. It does not share one question across terminals, `--bg` sessions and pane teammates.
 - spare10 does not switch to a cheaper model instead of stopping.
 - The dialog has no choice between "stop until the reset" and "stop for good". Use the **Continue at the reset** option, `/clear` or `/exit`.
+- The dialog has no choice between "until the floor" and "until the reset". Use the **Resume floor** option.
 - spare10 keeps no list of stopped runs across sessions. To see stopped background jobs, use `claude agents`.
 
 ### Known limitations
@@ -967,6 +1098,15 @@ After the reading trips, a failure holds or refuses the step.
 43. **The open time uses the clock of your computer.** A clock that runs fast opens the reserve early by the same amount. The work then still uses the reserve of the window that ends.
 44. **spare10 opens a reserve only when it knows the reset time.** A reading without a reset time keeps the guard until the reset.
 45. **With a pause prompt, a stop can end while a window is still in its reserve.** This can happen when a stop covers both windows, or a test window over the real quota. It can also happen after you lower an open time, or when a reset time moves. A quota read that fails as you type `/spare10 stop` can also end it. Without a pause prompt, spare10 then asks you again. With a pause prompt, spare10 tells Claude again to wind down, and the work continues.
+46. **If the reading passes the floor while the first question waits, a Resume shows the second question at once.**
+47. **A Resume at the reserve ends for good at the floor point.** If the reading falls again in the same window, spare10 asks again.
+48. **After an upgrade from 0.2 while a question is open, answer that question once.** The old copy cannot read a consent to the floor.
+49. **With a pause prompt, each agent gets the text twice per window**: at the reserve and at the floor.
+50. **With a reserve of 5% or less, the default floor does nothing.** spare10 warns at each start. Set the floor lower, or to 0.
+51. **A Resume on a test reading also covers the real reading beneath it.** This holds while the test reading is the higher one. `/spare10 simulate` warns you when the real reading is in the reserve.
+52. **An early limit reset can leave an old consent in force.** A Resume lasts until the reset time that spare10 read then. When a window resets early, that consent can cover the new window until the old reset time.
+53. **A failed quota read can keep an ended floor consent.** This needs a failed read, a reset time that moved, and then a fall of the reading. Then held work below the floor can continue without a second Resume.
+54. **After a Resume, a fall and a new trip in the same window, spare10 can ask each copy again.** This happens after a plugin reload, when two copies of spare10 run. Answer each question once.
 
 ## Develop
 
@@ -1015,6 +1155,9 @@ tests/kit/skip.test.ts           kit tests of the reserve that opens near the re
 tests/kit/skip-hold.test.ts      kit tests of held work and questions near the reset
 tests/kit/skip-stop.test.ts      kit tests of stops, commands, the badge and the report near the reset
 tests/kit/stop-past.test.ts      kit tests of a stop that holds past its end, also after a reload, and of /spare10 stop over a stop
+tests/kit/floor.test.ts          kit tests of the resume floor: both questions, stops, the badge, the report and the open reserve
+tests/kit/floor-gate.test.ts     kit tests of the floor at each gate: both windows, the options, stops, the open reserve, a pause prompt and unattended runs
+tests/kit/floor-state.test.ts    kit tests of the consent value with the floor, the commands, the report, the badge and the test seam
 .fixtures/stophook.json          a Stop hook for live check LC3
 docs/live-checks.md              the live checks, as a runbook
 .claude/CLAUDE.md                notes for Claude Code. Not at the root, where validate --strict warns.
@@ -1051,11 +1194,11 @@ The command takes this form:
 /spare10 simulate <percent> [5h|weekly] [in <n>s|m|h|d]
 ```
 
-- `/spare10 simulate 95` sets a test reading of 95% used for the 5-hour window. Only you can run it.
-- `/spare10 simulate 95 weekly` sets a test reading for the weekly window.
+- `/spare10 simulate 92` sets a test reading of 92% used for the 5-hour window. Only you can run it.
+- `/spare10 simulate 92 weekly` sets a test reading for the weekly window.
   The words `5h`, `5-hour`, `five_hour`, `weekly`, `7d` and `seven_day` name a window, in any case.
   Without a window word, the test reading is for the 5-hour window.
-- `/spare10 simulate 95 in 22m` sets a test window that ends in 22 minutes.
+- `/spare10 simulate 92 in 22m` sets a test window that ends in 22 minutes.
   The time is 10 s at least, and the window length at most.
 - A test window has an open time too.
   With the default open time, `in 22m` opens the reserve 2 minutes later, with no margin.
@@ -1068,11 +1211,15 @@ The command takes this form:
   If that live reading is in the reserve, spare10 waits 5 minutes after the reset, not 60 s.
   Without a live reading, it ends 5 hours from now, or 7 days for the weekly window.
 - Each window has one test reading.
-  A new value for a window also clears the consent and the stop.
+  A new value for a window clears the consent and the stop.
+  A higher value without `in` is different: it raises the test reading in place, and your answers stay.
+  So `/spare10 simulate 96` after a **Resume** at 91% shows the second question.
+  The same value again, a lower value or a value with `in` starts a new test.
 - `/spare10 simulate off` clears both test readings, both consents and the stop.
-- With a weekly reserve of 0, `/spare10 simulate 95 weekly` changes nothing.
-- `SPARE10_SIMULATE` at launch takes the same words for a `-p` run, such as `95`, `95 weekly` or `95 weekly in 2m`.
+- With a weekly reserve of 0, `/spare10 simulate 92 weekly` changes nothing.
+- `SPARE10_SIMULATE` at launch takes the same words for a `-p` run, such as `92`, `92 weekly` or `92 weekly in 2m`.
   There, `in` counts from the first gated event.
+  spare10 reads it once per load, so it never raises a test reading in place.
 
 A test reading can only raise the real reading.
 It never releases a hold that the real reading causes, because spare10 reads the real quota before each release.
@@ -1082,15 +1229,27 @@ While it applies, `/spare10` shows `test reading`, and the labelled badge rows s
 The rows `⚠ Pausing at next step` and `⚠ Winding down at next step` have no label.
 A **Resume** on a test reading never goes into `SPARE10_CONSENT` or `SPARE10_WEEKLY_CONSENT`.
 So a reload or a real trip past the test reading asks you again.
+While the test reading is the higher one, a **Resume** on it also covers the real reading beneath it.
+So run a test only while the real reading is below the reserve.
 A stop on a test reading reads the real quota at its end.
 If the real quota is in the reserve, the stop continues.
 
 The reply to `/spare10 simulate` says when the reserve opens:
 
 ```
-spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
-spare10: test reading set to 95% used, resets 14:10. It can only raise the real reading. The test window ends within 20 min, so the reserve is open at once. Run /spare10 simulate off to clear it.
-spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.
+spare10: test reading set to 92% used, resets 14:22. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
+spare10: test reading set to 92% used, resets 14:10. It can only raise the real reading. The test window ends within 20 min, so the reserve is open at once. Run /spare10 simulate off to clear it.
+spare10: test reading set to 92% used, resets 14:22. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.
+```
+
+The last reply warns you that a **Resume** on the test reading also covers the real reading.
+It gives this warning when the real reading is in the reserve and below the test reading.
+
+A value at or past the floor adds `This is past your 5% floor.` to the reply.
+A raise in place has its own reply:
+
+```
+spare10: test reading raised to 96% used, resets 14:22. Your earlier answers stay. It can only raise the real reading. This is past your 5% floor. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
 ```
 
 ### Live checks

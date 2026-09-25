@@ -201,7 +201,7 @@ async function loopStop($: Engine, w: World): Promise<string | undefined> {
 // ---- Stops with autoResume on: the skip start is the stop's end (B42, 3.5, 4.2) ----
 
 test('Stop here on a held loop: the stop lasts until the skip start with its lead, and that tick sends one resume prompt with the open wording', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { floors: 'off', pct: 93 })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -235,7 +235,7 @@ test('Stop here on a held loop: the stop lasts until the skip start with its lea
 })
 
 test('Stop here on a prompt question: a stop with no work until the skip start, and there it ends with the open notice and nothing sent', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { floors: 'off', pct: 93 })
   await begin($, w)
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
@@ -295,7 +295,7 @@ test('/spare10 stop on the open loop question before the skip start names it wit
 })
 
 test('a weekly Stop here lasts until the weekly skip start, and that tick sends the resume prompt with the weekly open wording', SLOW, async ($, on) => {
-  const w = world(on, { pct: 50, weekPct: 92, weekResetsAt: WEEK_NEAR })
+  const w = world(on, { floors: 'off', pct: 50, weekPct: 92, weekResetsAt: WEEK_NEAR })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -317,7 +317,7 @@ test('a weekly Stop here lasts until the weekly skip start, and that tick sends 
 })
 
 test('/spare10 stop on a weekly question inside the 5-hour skip window stops the weekly window until its skip start, and the 5-hour reset releases nothing', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, weekPct: 92 })
+  const w = world(on, { floors: 'off', pct: 93, weekPct: 92 })
   await begin($, w)
   const at = O_MS + 5 * MIN
   await w.clock.set(at)
@@ -343,6 +343,7 @@ test('a stop whose owner is not a skip start keeps the D0.2 margin, and its rele
   // 5 min) lies after the 5-hour skip start, so the question and the stop are no skip owner (B42).
   const W38 = Date.parse('2026-09-24T14:38:00.000Z')
   const w = world(on, {
+    floors: 'off',
     pct: 93,
     weekPct: 92,
     weekResetsAt: new Date(W38).toISOString(),
@@ -379,6 +380,7 @@ test('a stop whose owner is not a skip start keeps the D0.2 margin, and its rele
 test('merge: a skip Stop on a prompt question over a stop whose due is later drops the skip tag, so the margin stands', SLOW, async ($, on) => {
   const W38 = Date.parse('2026-09-24T14:38:00.000Z')
   const w = world(on, {
+    floors: 'off',
     pct: 93,
     weekPct: 92,
     weekResetsAt: new Date(W38).toISOString(),
@@ -407,7 +409,7 @@ test('merge: a skip Stop on a prompt question over a stop whose due is later dro
 })
 
 test('merge: /spare10 stop, then a Stop on a prompt question: both end at the skip start, so the merged stop keeps the skip tag', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { floors: 'off', pct: 93 })
   await begin($, w)
   expect(await run($, 'stop')).toBe(stopTrippedAuto(`${hhmm(O_MS)}, ${LEAD}`))
   await w.clock.settle()
@@ -429,12 +431,16 @@ test('merge: /spare10 stop, then a Stop on a prompt question: both end at the sk
 })
 
 test('a test window over a real trip: the test stop is extended to the real skip start with the empty-event notice, and continues there', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92 })
+  const w = world(on, { floors: 'off', pct: 92 })
   await begin($, w)
   const end = T0 + 22 * MIN
   const start = T0 + 2 * MIN
   expect(await run($, 'simulate 95 in 22m')).toBe(
-    simSet('95% used', hhmm(end), ' The real reading is also in the reserve, so the test window does not open it.'),
+    simSet(
+      '95% used',
+      hhmm(end),
+      ' The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve.',
+    ),
   )
   const held = bash($)
   await w.clock.settle()
@@ -463,7 +469,7 @@ const TEST_SPANS: Array<{ name: string; env: Record<string, string>; span: strin
 ]
 for (const c of TEST_SPANS) {
   test(`Stop here on a test window in 22m (${c.name}): the stop keeps the test tag with the skip tag, and the open resume prompt names the test window`, SLOW, async ($, on) => {
-    const w = world(on, { pct: 50, env: c.env })
+    const w = world(on, { floors: 'off', pct: 50, env: c.env })
     await begin($, w)
     const end = T0 + 22 * MIN
     const lead = testLead(c.span)
@@ -492,7 +498,7 @@ for (const c of TEST_SPANS) {
 // ---- B46: a Stop after the skip start ----
 
 test('/spare10 stop on the question after its skip start and before the check (autoResume on): the soon reply, no past time, one resume prompt at the next tick', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: OFF_TICK })
+  const w = world(on, { floors: 'off', pct: 93, resetsAt: OFF_TICK })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -515,7 +521,7 @@ test('/spare10 stop on the question after its skip start and before the check (a
 })
 
 test('Stop here on a prompt question after its skip start (autoResume on, no work): nothing is written, the open late notice, and new work goes on', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: OFF_TICK })
+  const w = world(on, { floors: 'off', pct: 93, resetsAt: OFF_TICK })
   await begin($, w)
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
@@ -535,7 +541,7 @@ test('Stop here on a prompt question after its skip start (autoResume on, no wor
 })
 
 test('Stop here after the skip start while the weekly window gates: the weekly kind is stopped as usual until its own skip start (B46)', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: OFF_TICK, weekPct: 50 })
+  const w = world(on, { floors: 'off', pct: 93, resetsAt: OFF_TICK, weekPct: 50 })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -617,7 +623,7 @@ for (const verb of ['stop', 'resume'] as const) {
 // ---- Stops with autoResume off: the stop end (B43) ----
 
 test('autoResume off: Stop here on a held loop stops until the skip start without auto, and the next prompt after it goes in with no question and no note', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -737,7 +743,7 @@ test('/spare10 stop and resume inside the skip window: nothing to do, nothing wr
 // ---- Consent (3.4) ----
 
 test('a Resume before the skip start consents until the reset: the skip start changes nothing, and /spare10 stop inside the window keeps the consent', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { floors: 'off', pct: 93 })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -761,7 +767,7 @@ test('a Resume before the skip start consents until the reset: the skip start ch
 })
 
 test('/spare10 resume on a skip stop before the skip start consents until the reset, and the skip start sends nothing', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93 })
+  const w = world(on, { floors: 'off', pct: 93 })
   await begin($, w)
   expect(await loopStop($, w)).toBe(STOP(mf(93)))
   expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', O_MS, T0, `five_hour,work,auto,skip,${real5(RESETS)}`))
@@ -778,7 +784,7 @@ test('/spare10 resume on a skip stop before the skip start consents until the re
 })
 
 test('/spare10 resume inside the 5-hour skip window with the weekly window in the reserve consents the weekly window only', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, weekPct: 92 })
+  const w = world(on, { floors: 'off', pct: 93, weekPct: 92 })
   await begin($, w)
   await w.clock.set(O_MS + 5 * MIN)
   expect(await run($, 'resume')).toBe(`you can use the weekly reserve until ${wk(WR_MS)}.`)
@@ -792,7 +798,7 @@ test('/spare10 resume inside the 5-hour skip window with the weekly window in th
 })
 
 test('autoResume off: the question stays past the skip start, the badge keeps asking, the report says new work goes on, and a late Resume consents until the reset', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -818,7 +824,7 @@ test('autoResume off: the question stays past the skip start, the badge keeps as
 })
 
 test('autoResume off: /spare10 resume on the question after its skip start answers the question and consents until the reset (4.2)', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -1017,7 +1023,10 @@ test('a failed read of one span variable sets both spans to 0: the rows say so, 
   expect(row(lines, 'weekly opens')).toBe(ROW_WEEK_OPENS('only at the reset (spare10 could not read the env)'))
   const held = bash($)
   await w.clock.settle()
-  expect(questions(w)).toEqual([loopQ(93, R_MS, loopAfter(hhmm(R_MS)))])
+  // A failed read keeps the option floors (floor 1.3 item 9): the first question with spans of 0.
+  expect(questions(w)).toEqual([
+    `Your 10% reserve is reached: ${pf(93)}. All work is on hold. Continue on the reserve until 95% used? At 95% used, spare10 asks you again.${loopAfter(hhmm(R_MS))}`,
+  ])
   w.release('Stop here')
   expect((await held).deny).toBe(STOP(mf(93)))
   await w.clock.settle()
@@ -1051,13 +1060,13 @@ const SIMS: Sim[] = [
   },
   {
     name: 'SPARE10_LAST_MINUTES=0 adds nothing',
-    opts: { pct: 50, env: { SPARE10_LAST_MINUTES: '0' } },
+    opts: { floors: 'off', pct: 50, env: { SPARE10_LAST_MINUTES: '0' } },
     args: 'simulate 95 in 22m',
     reply: () => simSet('95% used', hhmm(T0 + 22 * MIN)),
   },
   {
     name: 'a real trip that is open by itself does not keep the test window from opening',
-    opts: { pct: 92 },
+    opts: { floors: 'off', pct: 92 },
     at: O_MS + MIN,
     args: 'simulate 95 in 22m',
     reply: () => simSet('95% used', hhmm(O_MS + 23 * MIN), ` The reserve opens at ${hhmm(O_MS + 3 * MIN)}, ${testLead()}.`),
@@ -1075,18 +1084,18 @@ const SIMS: Sim[] = [
   },
   {
     name: 'a weekly test window over a real weekly trip',
-    opts: { pct: 50, weekPct: 92 },
+    opts: { floors: 'off', pct: 50, weekPct: 92 },
     args: 'simulate 95 weekly in 482m',
     reply: () =>
       simSet(
         '95% used of the weekly window',
         wk(T0 + 482 * MIN),
-        ' The real weekly reading is also in the weekly reserve, so the weekly test window does not open it.',
+        ' The real weekly reading is also in the weekly reserve, so the weekly test window does not open it. A Resume on the test reading also lets real work use the weekly reserve.',
       ),
   },
   {
     name: 'SPARE10_WEEKLY_LAST_HOURS=0 adds nothing for the weekly window',
-    opts: { pct: 50, env: { SPARE10_WEEKLY_LAST_HOURS: '0' } },
+    opts: { floors: 'off', pct: 50, env: { SPARE10_WEEKLY_LAST_HOURS: '0' } },
     args: 'simulate 95 weekly in 482m',
     reply: () => simSet('95% used of the weekly window', wk(T0 + 482 * MIN)),
   },
@@ -1151,7 +1160,7 @@ async function simStop($: Engine, w: World): Promise<void> {
 }
 
 test('TS1: a test skip start off the tick grid over a real trip: in the gap before the tick the stop still holds, a subagent call is refused with no second dialog, and the tick extends the stop', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, agents: ['a1'] })
+  const w = world(on, { floors: 'off', pct: 92, agents: ['a1'] })
   await simStop($, w)
   const sub = bash($, 'a1')
   await w.clock.settle()
@@ -1173,7 +1182,7 @@ test('TS1: a test skip start off the tick grid over a real trip: in the gap befo
 })
 
 test('TS1: /spare10 resume in that gap consents until the real reset, and the next call runs', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92 })
+  const w = world(on, { floors: 'off', pct: 92 })
   await simStop($, w)
   expect(await run($, 'resume')).toBe(RESUMED_STOPPED)
   await w.clock.settle()
@@ -1187,7 +1196,7 @@ test('TS1: /spare10 resume in that gap consents until the real reset, and the ne
 })
 
 test('TS1: /spare10 stop in that gap keeps the stop, and the tick extends it to the real skip start', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92 })
+  const w = world(on, { floors: 'off', pct: 92 })
   await simStop($, w)
   expect(await run($, 'stop')).toBe(alreadyStopped(hhmm(O_MS)))
   await w.clock.settle()
@@ -1201,7 +1210,7 @@ test('TS1: /spare10 stop in that gap keeps the stop, and the tick extends it to 
 })
 
 test('TS1 tell mode: in that gap a told main call stays refused, and a person prompt is held instead of let in with a note to continue', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, env: TELL })
+  const w = world(on, { floors: 'off', pct: 92, env: TELL })
   await begin($, w)
   expect((await bash($)).result).toBe('ran') // told on the real reading
   await w.clock.set(SIM_AT)
@@ -1224,7 +1233,7 @@ test('TS1 tell mode: in that gap a told main call stays refused, and a person pr
 })
 
 test('TS1 B47: a skip stop whose span a newer copy set to 0 still holds past its until: a told call is refused, a prompt is held, and /spare10 resume consents', { ...SLOW, plugins: [newerCopy] }, async ($, on) => {
-  const w = world(on, { pct: 93, resetsAt: OFF_TICK, env: TELL })
+  const w = world(on, { floors: 'off', pct: 93, resetsAt: OFF_TICK, env: TELL })
   await begin($, w)
   expect((await bash($)).result).toBe('ran') // told
   expect(await run($, 'stop')).toBe(stopTrippedAuto(`${hhmm(OO_MS)}, ${LEAD}`))
@@ -1250,7 +1259,7 @@ test('TS1 B47: a skip stop whose span a newer copy set to 0 still holds past its
 })
 
 test('TS1 autoResume off: a Stop here that ends at a test skip start over a real trip still holds until the real skip start, then ends by time', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 92, env: AUTO_OFF })
   await begin($, w)
   await w.clock.set(SIM_AT)
   await run($, 'simulate 95 in 22m')
@@ -1286,7 +1295,7 @@ const TICK_AFTER = T0 + 5 * TICK // the first tick after SIM_OPENS
 const TICK_OO = OO_MS + 15_000 // the first tick after OFF_OPENS
 
 test('TS1 bound, autoResume off: a skip stop from the last window does not hold a trip in the next window, which asks again', SLOW, async ($, on) => {
-  const w = world(on, { pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   expect(await loopStop($, w)).toBe(STOP(mf(93)))
   expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', O_MS, T0, `five_hour,work,skip,${real5(RESETS)}`))
@@ -1304,7 +1313,7 @@ test('TS1 bound, autoResume off: a skip stop from the last window does not hold 
 })
 
 test('TS1 bound, autoResume off: a weekly skip stop from the last weekly window does not hold a weekly trip in the next one, which asks again', SLOW, async ($, on) => {
-  const w = world(on, { pct: 50, weekPct: 93, weekResetsAt: WEEK_NEAR, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 50, weekPct: 93, weekResetsAt: WEEK_NEAR, env: AUTO_OFF })
   await begin($, w)
   expect(await loopStop($, w)).toBe(STOP(mfW(93, WN_MS)))
   expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', WNO_MS, T0, `seven_day,work,skip,${real7(WEEK_NEAR)}`))
@@ -1326,7 +1335,7 @@ test('TS1 bound, autoResume off: a weekly skip stop from the last weekly window 
 })
 
 test('TS1 bound, autoResume off: a test skip stop over a real reading below the reserve does not hold a later real trip in the same window, which asks again', SLOW, async ($, on) => {
-  const w = world(on, { pct: 50, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 50, env: AUTO_OFF })
   await begin($, w)
   await run($, 'simulate 95 in 22m')
   expect(await loopStop($, w)).toBe(STOP(mf(95, T0 + 22 * MIN)))
@@ -1346,7 +1355,7 @@ test('TS1 bound, autoResume off: a test skip stop over a real reading below the 
 })
 
 test('TS1: /spare10 stop while the tick writes the extension keeps the stop: no takeover, and the extension stands', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92 })
+  const w = world(on, { floors: 'off', pct: 92 })
   await simStop($, w)
   w.envSetDelayMs = 20_000 // the extension write of the tick takes 20 s
   await w.clock.set(TICK_AFTER + 1000)

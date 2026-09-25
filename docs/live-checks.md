@@ -13,6 +13,7 @@ Use the cheapest model and one-line prompts, and use `sleep` to make time window
 **Release gate.**
 LC1, LC2, LC3, LC5, LC4, LC6, LC7 and LC8 must pass before each release.
 For 0.2, LC17 to LC24 and LC26 to LC31 must also pass, and LC25 must run once.
+For 0.3, LC32 to LC37 must also pass.
 LC18b is optional.
 LC9 to LC16 are optional or regression checks.
 
@@ -52,12 +53,17 @@ A test reading trips spare10 at any time, far from the real reserve.
 - `/spare10 simulate off` clears both test readings, both consents and the stop.
 - `SPARE10_SIMULATE` at launch takes the same words for a `-p` run, such as `95` or `95 weekly in 2m`.
   spare10 reads it once per load. There, `in` counts from the first gated event.
+  It never raises a test reading in place.
 - A test reading can only raise the real reading. It never releases a hold that the real reading causes.
 - While it applies, `/spare10` shows `test reading`, and the labelled badge rows show `(test)`.
   The rows `⚠ Pausing at next step` and `⚠ Winding down at next step` have no label, so they show no `(test)`.
 - A Resume on a test reading stays in spare10's memory.
   It never goes into `SPARE10_CONSENT` or `SPARE10_WEEKLY_CONSENT`.
 - A new `/spare10 simulate` value for a window clears the consent and the stop, as `off` does.
+- A strictly higher value without `in` raises the test reading in place.
+  The test window, the consent and the stop stay.
+  So `/spare10 simulate 96` after a Resume at 91 shows the second question.
+  The same value again, a lower value or a value with `in` starts a new test.
 - A test window has an open time, as a real window has.
   With the default open times, a test window shorter than 20 minutes is open at once.
   For the weekly window, this is a test window shorter than 8 hours.
@@ -87,10 +93,25 @@ With the default open times, the set reply has one more sentence before `Run /sp
 spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
 spare10: test reading set to 95% used, resets 14:10. It can only raise the real reading. The test window ends within 20 min, so the reserve is open at once. Run /spare10 simulate off to clear it.
 spare10: test reading set to 95% used of the weekly window, resets Thu 22:02. It can only raise the real reading. The weekly reserve opens at Thu 14:02, 8 h before the weekly test window ends. Run /spare10 simulate off to clear it.
-spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.
+spare10: test reading set to 95% used, resets 14:22. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.
 ```
 
 A test percentage below the trip point gives no such sentence.
+The last reply has the sentence `A Resume on the test reading also lets real work use the reserve.` only when the real reading is below the test reading.
+
+A raise in place has its own reply:
+
+```
+spare10: test reading raised to 93% used, resets 14:22. Your earlier answers stay. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
+```
+
+With the **floor start command** (see [Setup](#setup)), the default floors apply.
+Then a test reading at or past 95% used adds the sentence `This is past your 5% floor.`:
+
+```
+spare10: test reading set to 96% used, resets 14:22. It can only raise the real reading. This is past your 5% floor. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
+spare10: test reading raised to 96% used, resets 14:22. Your earlier answers stay. It can only raise the real reading. This is past your 5% floor. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
+```
 
 Claude Code puts `spare10: ` in front of each reply and each transcript line of spare10.
 spare10 does not write it into these texts itself.
@@ -116,12 +137,15 @@ Its hooks line must list these registrations:
 engine.create, session.start, session.end, session.measure, tool.call, tool.call{tool=/"^AskUserQuestion$"/}, turn.step, prompt.submit, command.run{command=spare10}, ui.render{component=SessionMode}
 ```
 
-The hooks line did not change in 0.2.
+The hooks line did not change in 0.2 or 0.3.
 The other lines of the listing must also name these entries, new in 0.2:
 
 - `calls`: `$.prompt.submit`, `$.spare10.auto` and `$.spare10.spans`
 - `env reads`: `SPARE10_AUTO_RESUME`, `SPARE10_LAST_MINUTES`, `SPARE10_WEEKLY_CONSENT`, `SPARE10_WEEKLY_LAST_HOURS` and `SPARE10_WEEKLY_RESERVE`
 - `env writes`: `SPARE10_WEEKLY_CONSENT`
+
+The `env reads` line must also name `SPARE10_RESUME_FLOOR` and `SPARE10_WEEKLY_RESUME_FLOOR`, new in 0.3.
+The `calls` and `env writes` lines did not change in 0.3.
 
 The `session.end` hook redraws the badge after `/clear` and an in-session `/resume` (LC5).
 
@@ -130,7 +154,7 @@ Use it for each new session, unless a check gives a different one:
 
 ```sh
 : > /tmp/s10.log
-tmux send-keys -t s10 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+tmux send-keys -t s10 'SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
 ```
 
 This is the **reset start command**.
@@ -139,7 +163,20 @@ The checks of the reset path use it:
 
 ```sh
 : > /tmp/s10.log
-tmux send-keys -t s10 'SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+tmux send-keys -t s10 'SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+```
+
+Both commands switch the resume floors off.
+So the texts of LC1 to LC31 stay as in 0.2, and `/spare10 simulate 95` shows the first question.
+Each interactive launch line that LC3 to LC31 spell out also switches the floors off.
+The `claude -p` lines stay as they are, because an unattended run has no floor.
+
+This is the **floor start command**.
+It keeps the default floors of 5%. LC32 to LC34 use it:
+
+```sh
+: > /tmp/s10.log
+tmux send-keys -t s10 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
 ```
 
 The start command sets the function-hooks flag in the shell on purpose.
@@ -181,13 +218,16 @@ With the reset start command, the texts have `HH:MM` where these checks show `OP
 
 **Expected:**
 
-- The status report prints. Its first line is `spare10: version 0.2.0`.
+- The status report prints. Its first line is `spare10: version 0.3.0`.
 - No line of the report and no transcript line shows `spare10: spare10:`.
 - The phase detail and every field value start in one column.
 - The report shows the rows `weekly reserve`, `at the reset`, `weekly reading` and `weekly consent`.
 - The report shows `reserve opens  in the last 20 min of the 5-hour window (from /config)`.
 - The report shows `weekly opens   in the last 8 h of the weekly window (from /config)`.
 - The `at the reset` row reads `continue by itself (from /config)`.
+- The report shows `resume floor   off. A Resume lasts until the reset (from SPARE10_RESUME_FLOOR)`.
+- The report shows `weekly floor   off. A Resume lasts until the weekly reset (from SPARE10_WEEKLY_RESUME_FLOOR)`.
+- The last lines include `/spare10 resume   continue on the reserve until the window resets`.
 - In the `● armed` phase, the detail reads `spare10 steps in at 90% used, or at 90% used of the weekly window.`
 - The reading line reads `live · NN% used · NN% left · resets HH:MM (in D)`. The word `resets` shows only once.
 - The report shows this warning, unless a settings file or a `--settings` file already sets the flag:
@@ -241,7 +281,7 @@ Type `/exit`, then send this start command:
 
 ```sh
 : > /tmp/s10.log
-tmux send-keys -t s10 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --settings .fixtures/stophook.json --debug-file /tmp/s10.log' Enter
+tmux send-keys -t s10 'SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --settings .fixtures/stophook.json --debug-file /tmp/s10.log' Enter
 ```
 
 The new process has no consent and no test reading.
@@ -367,7 +407,7 @@ Type `/exit`, then send this start command:
 
 ```sh
 : > /tmp/s10.log
-tmux send-keys -t s10 "SPARE10_PAUSE_PROMPT='Commit nothing. Stop.' CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log" Enter
+tmux send-keys -t s10 "SPARE10_PAUSE_PROMPT='Commit nothing. Stop.' SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log" Enter
 ```
 
 **Steps:**
@@ -567,7 +607,7 @@ Type `/exit`, then send this start command:
 
 ```sh
 : > /tmp/s10.log
-tmux send-keys -t s10 'SPARE10_AUTO_RESUME=off SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+tmux send-keys -t s10 'SPARE10_AUTO_RESUME=off SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0 SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
 ```
 
 **Steps:**
@@ -719,7 +759,7 @@ Type `/exit`, then send this start command:
 
 ```sh
 : > /tmp/s10-lc25.log
-tmux send-keys -t s10 'SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10-lc25.log' Enter
+tmux send-keys -t s10 'SPARE10_LAST_MINUTES=0 SPARE10_WEEKLY_LAST_HOURS=0 SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10-lc25.log' Enter
 ```
 
 **Steps:**
@@ -824,7 +864,7 @@ Type `/exit`, then send this start command:
 
 ```sh
 : > /tmp/s10.log
-tmux send-keys -t s10 'SPARE10_AUTO_RESUME=off CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+tmux send-keys -t s10 'SPARE10_AUTO_RESUME=off SPARE10_RESUME_FLOOR=0 SPARE10_WEEKLY_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
 ```
 
 **Steps:**
@@ -934,6 +974,242 @@ Then start a new session from the start command, without `SPARE10_LAST_MINUTES`.
 Cost: about 5 minutes.
 
 **Leaves:** no test reading, no consent and no stop. Make sure that you restored the setting.
+
+## Resume floor checks
+
+These checks are new in 0.3.
+They test the resume floor with the default floors of 5%.
+LC32 to LC37 are in the release gate for 0.3.
+Each check takes less than 5 minutes.
+LC34 and LC36 make no model request.
+
+**Precondition of LC32 to LC35.**
+The `reading` row and the `weekly reading` row of `/spare10` show less than 90% used.
+So neither real reading is in its reserve.
+A **Resume** on a test reading also covers the real reading beneath it.
+So a real reading in the reserve changes what these checks show.
+Else wait for the reset.
+
+The checks use `in 1h`, so the test window opens its reserve 40 minutes later.
+In these checks, `HH:MM` is the end of the test window, and `OPEN` is 20 minutes before it.
+A raise with `/spare10 simulate 96` keeps the test window, so `HH:MM` and `OPEN` stay.
+The checks use the two-step prompt of [Weekly window and reset checks](#weekly-window-and-reset-checks).
+
+LC32 to LC34 run in one session from the **floor start command**.
+Each of them ends with `/spare10 simulate off`.
+
+### LC32 The second question
+
+**Start:** a new session from the floor start command. No test reading is set.
+
+**Steps:**
+
+1. Type `/spare10`.
+2. Send the two-step prompt with `/tmp/s10-lc32`.
+   While `sleep` runs, type `/spare10 simulate 91 in 1h`.
+3. When the dialog shows, choose Resume. Look at the badge. Then type `/spare10`.
+4. Send the two-step prompt with `/tmp/s10-lc32b`.
+   While `sleep` runs, type `/spare10 simulate 96`.
+5. When the dialog shows, make sure that `/tmp/s10-lc32b` does not exist yet.
+   Choose Resume. Look at the badge. Then type `/spare10`.
+6. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- After step 1, the report shows `resume floor   5%: after a Resume, spare10 asks again at 95% used (from /config)`.
+- After step 1, the report shows `weekly floor   5%: after a Resume, spare10 asks again at 95% used of the weekly window (from /config)`.
+- After step 1, the last lines include `/spare10 resume   continue on the reserve until the floor, or past the floor until the reset`.
+- Step 2 replies `spare10: test reading set to 91% used, resets HH:MM. It can only raise the real reading. The reserve opens at OPEN, 20 min before the test window ends. Run /spare10 simulate off to clear it.`
+- The first dialog has the first question:
+  `Your 10% reserve is reached: 91% used · 9% left · resets HH:MM. All work is on hold. Continue on the reserve until 95% used? Until OPEN, spare10 asks you again at 95% used. If you choose Stop here or do not answer, the work waits until OPEN, 20 min before the test window ends. Then spare10 continues it, unless a reserve is still reached.`
+- After step 3, the transcript shows `spare10: continuing on your 10% reserve until 95% used. Until OPEN, spare10 asks you again at 95% used.`
+- After step 3, `/tmp/s10-lc32` exists.
+- After step 3, the badge shows `⨯ spare10 (test): resumed until 95% used`.
+- After step 3, the phase line reads `⨯ consented      you chose to continue. Until OPEN, spare10 asks you again at 95% used.`
+- After step 3, the consent row reads `consent        until 95% used or HH:MM (you chose to continue)`.
+- In step 4, no dialog shows before the raise.
+- Step 4 replies `spare10: test reading raised to 96% used, resets HH:MM. Your earlier answers stay. It can only raise the real reading. This is past your 5% floor. The reserve opens at OPEN, 20 min before the test window ends. Run /spare10 simulate off to clear it.`
+- The second dialog has the second question:
+  `Your 5% floor is reached: 96% used · 4% left · resets HH:MM. All work is on hold. Continue on the last 4% until HH:MM? If you choose Stop here or do not answer, the work waits until OPEN, 20 min before the test window ends. Then spare10 continues it, unless a reserve is still reached.`
+- After step 5, the transcript shows `spare10: continuing on your 5% floor. spare10 stays quiet until HH:MM.`
+- After step 5, `/tmp/s10-lc32b` exists.
+- After step 5, the badge shows `⨯ spare10 (test)`.
+- After step 5, the consent row reads `consent        until HH:MM (you chose to continue)`.
+
+**Settles:** the two questions in the real dialog and the raise in place.
+It also settles the consent to the floor, the badge and the report.
+Cost: two short turns.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop.
+
+### LC33 Stop here at the second question
+
+**Start:** the session from LC32, with no test reading, no consent and no stop.
+
+**Steps:**
+
+1. Do LC32 steps 2 to 4, with `/tmp/s10-lc33` and `/tmp/s10-lc33b`.
+2. When the second dialog shows, choose Stop here.
+3. Type `/spare10 resume`.
+4. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- After step 2, `/tmp/s10-lc33b` does not exist.
+- After step 2, the held Bash call gets the STOP text with the floor:
+  `spare10: the user stopped work at the quota reserve (into your 5% floor · 4% of quota left · resets HH:MM). Stop now and wait for the user. Do not call any further tools.`
+  Or the next request gets the PAUSED text with the same figures:
+  `spare10: work stopped at the quota reserve (into your 5% floor · 4% of quota left · resets HH:MM). No model request was sent, so this task is not finished. Wait for the user.`
+- After step 2, the transcript shows `spare10: stopped at your 5% floor until OPEN, 20 min before the test window ends. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.`
+- After step 2, the badge shows `■ spare10 (test): stopped until OPEN`.
+- Step 3 replies `spare10: resumed. You can use the last 4% until HH:MM. Type a prompt to continue.`
+- After step 3, the badge shows `⨯ spare10 (test)`.
+
+**Settles:** Stop here at the floor, the floor names in the model texts, and `/spare10 resume` past the floor.
+Cost: two short turns.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop.
+
+### LC34 `/spare10 resume` before and past the floor
+
+**Start:** the session from LC33, with no test reading, no consent and no stop.
+This check sends no prompt.
+
+**Steps:**
+
+1. Type `/spare10 simulate 91 in 1h`. Then type `/spare10 resume`.
+2. Type `/spare10 resume` again.
+3. Type `/spare10 simulate 96`. Then type `/spare10`.
+4. Type `/spare10 resume`.
+5. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- Step 1 replies `spare10: you can use the reserve until 95% used. Until OPEN, spare10 asks you again at 95% used.`
+- Step 2 replies `spare10: already resumed until 95% used. Until OPEN, spare10 asks you again at 95% used.`
+- After step 3, the phase line is `⚠ tripped`.
+- After step 3, the consent row reads `consent        ended at 95% used (you chose to continue until then)`.
+- Step 4 replies `spare10: you can use the last 4% until HH:MM.`
+
+**Settles:** the two tiers of `/spare10 resume`, and the consent rows of the report.
+Cost: no model request.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop. Type `/exit` before LC35.
+
+### LC35 Tell mode at the floor
+
+**Start:** a new session with a pause prompt and the default floors.
+Send this start command:
+
+```sh
+: > /tmp/s10.log
+tmux send-keys -t s10 'SPARE10_PAUSE_PROMPT="Say done and stop." CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+```
+
+**Steps:**
+
+1. Type `/spare10 simulate 91 in 1h`. Then send `Run touch /tmp/s10-lc35a`.
+2. When the dialog shows, choose Resume.
+3. Send the two-step prompt with `/tmp/s10-lc35b`.
+   While `sleep` runs, type `/spare10 simulate 96`.
+4. When the turn ends, type `/spare10`.
+5. Type `/spare10 simulate off`. Then type `/spare10 simulate 96 in 1h`.
+6. Send `Run touch /tmp/s10-lc35c`.
+7. When the dialog shows, choose Stop here.
+8. Clear the prompt box. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- After step 1, the dialog has the first question in the tell wording:
+  `Your 10% reserve is reached: 91% used · 9% left · resets HH:MM. spare10 holds your prompt. Continue on the reserve until 95% used? Until OPEN, spare10 tells the agents to wind down at 95% used. If you do not answer, your prompt goes in at OPEN, 20 min before the test window ends, unless a reserve is still reached. Stop here gives it back to you.`
+- After step 2, the transcript shows `spare10: continuing on your 10% reserve until 95% used. Until OPEN, spare10 tells the agents to wind down at 95% used.`
+- After step 2, `/tmp/s10-lc35a` exists, and the transcript has no `told the agents` line.
+- In step 3, no dialog shows. The `touch` runs, and `/tmp/s10-lc35b` exists.
+- After step 3, the transcript shows `spare10: your 5% floor is reached. spare10 told the agents to wind down.` one time.
+- After step 3, the debug log has `spare10: told <session id>:main` one time. The debug line does not name the stage.
+- After step 3, the model says done and stops.
+- After step 4, the phase line reads `⏸ told           the wind-down went to 1 agent(s).`
+- Step 5 replies `spare10: test reading set to 96% used, resets HH:MM. It can only raise the real reading. This is past your 5% floor. The reserve opens at OPEN, 20 min before the test window ends. Run /spare10 simulate off to clear it.`
+- After step 6, the dialog has the second question in the tell wording:
+  `Your 5% floor is reached: 96% used · 4% left · resets HH:MM. spare10 holds your prompt. Continue on the last 4% until HH:MM? If you do not answer, your prompt goes in at OPEN, 20 min before the test window ends, unless a reserve is still reached. Stop here gives it back to you.`
+- After step 7, Claude Code shows this line:
+  `Prompt dropped by a hook: spare10: not started. This session is inside your 5% floor until HH:MM. Send the prompt again to be asked again, or run /spare10 resume.`
+- After step 7, `Run touch /tmp/s10-lc35c` is back in the prompt box, and `/tmp/s10-lc35c` does not exist.
+
+**Settles:** tell mode at the floor in the real host.
+Each loop gets a second tell at the floor, and a prompt at the floor asks the second question.
+Cost: three short turns.
+
+**Leaves:** no test reading, no consent and no stop. Type `/exit` before LC36.
+
+### LC36 Options and variables
+
+**Start:** a new session with a floor above the reserve and a bad weekly floor.
+Send this start command:
+
+```sh
+: > /tmp/s10.log
+tmux send-keys -t s10 'SPARE10_RESUME_FLOOR=12 SPARE10_WEEKLY_RESUME_FLOOR=x CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+```
+
+**Steps:**
+
+1. Look at the start of the session. Then type `/spare10`.
+2. Type `/spare10 simulate 91 in 1h`. Then type `/spare10 resume`.
+3. Type `/spare10 simulate off`. Then type `/exit`.
+4. Send this start command. Then type `/spare10`.
+
+   ```sh
+   : > /tmp/s10.log
+   tmux send-keys -t s10 'SPARE10_RESUME_FLOOR=0 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file /tmp/s10.log' Enter
+   ```
+
+**Expected:**
+
+- At the start, the transcript shows `spare10: the resume floor (12%) is not below the reserve (10%), so it does nothing. Set it below the reserve, or to 0.`
+- At the start, the transcript shows `spare10: SPARE10_WEEKLY_RESUME_FLOOR="x" is not 0 to 99. spare10 uses 5.`
+- After step 1, the report shows `resume floor   12% does nothing, because it is not below the reserve (from SPARE10_RESUME_FLOOR)`.
+- After step 1, the report shows `weekly floor   5%: after a Resume, spare10 asks again at 95% used of the weekly window (from /config)`.
+- After step 1, the report shows both warnings as `⚠` lines.
+- Step 2 replies `spare10: you can use the reserve until HH:MM.`, as in 0.2.
+- After step 4, the report shows `resume floor   off. A Resume lasts until the reset (from SPARE10_RESUME_FLOOR)`.
+
+**Settles:** a floor that does nothing, a bad value, and the floor rows of the report.
+Cost: no model request.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop.
+
+### LC37 Unattended runs with an inherited consent to the floor
+
+**Start:** a shell in the repo folder. This check needs no interactive session.
+If your `scope` option is `opt-in`, add `SPARE10=on` to the commands.
+
+**Steps:**
+
+```sh
+U=$(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)   # macOS. GNU date: date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ
+: > /tmp/s10-p.log
+time SPARE10_SIMULATE="93 in 2h" SPARE10_HEADLESS=stop SPARE10_CONSENT="S0 $U to:95" CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "Run touch /tmp/s10-lc37a" --plugin-dir . --model haiku --output-format json --debug-file /tmp/s10-p.log; echo "exit $?"
+: > /tmp/s10-p.log
+time SPARE10_SIMULATE="96 in 2h" SPARE10_HEADLESS=stop SPARE10_CONSENT="S0 $U to:95" CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "Run touch /tmp/s10-lc37b" --plugin-dir . --model haiku --output-format json --debug-file /tmp/s10-p.log; echo "exit $?"
+```
+
+**Expected:**
+
+- The first run creates `/tmp/s10-lc37a`.
+- The second run does not create `/tmp/s10-lc37b`.
+- The `result` of the second run starts `spare10 stopped this unattended run at the quota reserve (into your 10% reserve · 4% of quota left · resets`.
+  It names the reserve, never the floor.
+- The debug log of the second run has `unattended run inside the reserve (96% used · 4% left · resets HH:MM), policy stop.`
+
+The consent value is real, and a real consent ends only by the real reading.
+The real reading is below 95% used, so the second run does not end the value.
+It refuses because its test reading of 96% is past the floor point of the value.
+
+**Settles:** the consent form of 0.3 in a real environment, and the floor in unattended runs.
+Cost: two small `-p` runs.
+
+**Leaves:** nothing. The `-p` processes have ended.
 
 ## Optional and regression checks
 
@@ -1052,6 +1328,11 @@ This check settles it.
 
 - The job shows `blocked`, with the question and both labels.
 - After `resume`, `/tmp/s10-bg` exists.
+- With the default floors, 95% used is at the floor, so the question is the second question.
+  If the floors are off in the job, it is the first question. Both pass. Record which one you see.
+- The `claude daemon` can start from a session of the start command or the reset start command.
+  Then the job also shows the background warning, and the warning names `SPARE10_RESUME_FLOOR` and `SPARE10_WEEKLY_RESUME_FLOOR`.
+  Record whether the warning shows.
 
 **Settles:** the flag in settings reaches a `--bg` session, and a reply in the agent view answers the question.
 
@@ -1201,6 +1482,13 @@ Keep the old rows.
 | LC29 No stop while the reserve is open | | | | |
 | LC30 Unattended wait and the weekly open time | | | | Record the run time. |
 | LC31 An option change during a question | | | | |
+| LC1 Load and command, 0.3 | | | | Record the `resume floor` and `weekly floor` rows. |
+| LC32 The second question | 2026-09-25 | 2.1.282 | pass, prompt variant | Prompt questions, not a held Bash call. `simulate 91` and a prompt gave the first question, "Continue on the reserve until 95% used?". After Resume the badge read `resumed until 95% used`. `simulate 96` and a prompt gave "Your 5% floor is reached: 96% used · 4% left", with "Continue on the last 4% until 21:20?". A second Resume gave a full consent, and the badge read `⨯ spare10 (test)`. No hook failure or budget error. |
+| LC33 Stop here at the second question | | | | Record whether the stop landed on the Bash call or on the model request. |
+| LC34 `/spare10 resume` before and past the floor | | | | |
+| LC35 Tell mode at the floor | | | | Record whether the model stopped after the floor instruction. |
+| LC36 Options and variables | | | | |
+| LC37 Unattended runs with an inherited consent to the floor | | | | Record the exit code of each run. |
 
 The run of 2026-09-24 found defects D1 to D4.
 The fixes change the texts of LC1, LC2 and LC5, and the badge after `/clear`.
@@ -1211,3 +1499,9 @@ Before the 0.2 release, run the release gate again and add a new row for each ru
 The open reserve near the reset changes the texts of LC1, LC2, LC3, LC4, LC5 and LC11 again.
 It also moves the code of the reset path.
 So run LC17, LC18, LC19 and LC21 again with the reset start command, and run LC26 to LC31.
+
+spare10-mod 0.3 adds the resume floor.
+The start command and the reset start command switch the floors off.
+So the texts of LC1 to LC31 stay as in 0.2, except the version and the floor rows of LC1.
+Before the 0.3 release, run the release gate again, with LC32 to LC37.
+Add a new row for each run.

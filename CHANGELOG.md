@@ -6,6 +6,26 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-25
+
+### Added
+
+- **Resume floor.** A Resume at the reserve now lasts until the floor. By default the floor is 5% left, which is 95% used. If the window resets first, the Resume ends at the reset. At the floor, spare10 holds all work again and asks a second question. A second Resume lasts until the reset. Stop here at either question works as before. The options Resume floor (%) and Weekly resume floor (%) set the floor of each window. Both are 5 by default, and 0 switches a floor off. `SPARE10_RESUME_FLOOR` and `SPARE10_WEEKLY_RESUME_FLOOR` override them for one run. While a reserve is open near the reset, spare10 asks nothing, also past the floor.
+- **Second question.** It has its own wording, such as `Your 5% floor is reached: ... Continue on the last 4% until 14:00?`. If the reading is past the floor when spare10 first asks, only this question shows. The stop notice and the texts for Claude then name the floor.
+- **Warnings.** spare10 warns about a floor at or above its reserve, because such a floor does nothing. It also warns about bad `SPARE10_RESUME_FLOOR` and `SPARE10_WEEKLY_RESUME_FLOOR` values. The background warning names these variables too.
+
+### Changed
+
+- **Question.** At the reserve, the question says where the Resume ends, such as `Continue on the reserve until 95% used?`. It also says until when spare10 asks again.
+- **Consent.** After a Resume at the reserve, `SPARE10_CONSENT` and `SPARE10_WEEKLY_CONSENT` end with the floor point, such as `to:95`. A value from 0.2 has no floor point, so it lasts until the reset.
+- **Consent end.** A Resume at the reserve ends for good at the floor point. If the reading falls again in the same window, spare10 asks again.
+- **Badge.** `⨯ spare10: resumed until 95% used` shows while a Resume at the reserve applies.
+- **Report.** `/spare10` shows the floors and where they come from. It also shows the end of a Resume at the reserve.
+- **Commands.** Before the floor, `/spare10 resume` continues until the floor. Past the floor, it continues until the reset. The reply says which.
+- **Pause prompt.** Each agent gets the pause prompt again at the floor, with the floor wording. A prompt that you send before the main loop gets it asks the second question.
+- **Test reading.** A higher `/spare10 simulate` value without `in` raises the test reading in place, and your answers stay. So `/spare10 simulate 96` after a Resume at 91% shows the second question. The reply warns you when the real reading is in the reserve too.
+- **Unattended runs.** They never ask, so the floor changes nothing there. A `claude -p` run can take a Resume at the reserve from its session. It stops using that Resume at the floor point.
+
 ## [0.2.0] - 2026-09-25
 
 ### Added
@@ -96,6 +116,7 @@ These parts of spare10 v0.5.0 are not in spare10-mod, because the mod runs insid
 - the `--refresh` option, bundle pinning and status-line chaining
 - the list of stopped background runs. Use `claude agents` instead.
 
-[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chrisns/spare10-mod/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chrisns/spare10-mod/releases/tag/v0.1.0

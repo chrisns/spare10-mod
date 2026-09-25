@@ -10,6 +10,7 @@ import {
   STOP_GENERIC,
   VERSION,
   W_FLAG,
+  asksText,
   atText,
   badWarning,
   bgEnvWarning,
@@ -19,6 +20,7 @@ import {
   debugLine,
   eventText,
   factsOf,
+  floorWarning,
   fmtDuration,
   fmtPct,
   formatClock,
@@ -174,7 +176,7 @@ test('the options put Stop here first and the header fits 12 characters', () => 
   expect(QUESTION_OPTIONS[1]).toBe(RESUME_LABEL)
   expect(HEADER).toBe('spare10')
   expect(HEADER.length).toBeLessThanOrEqual(12)
-  expect(VERSION).toBe('0.2.0')
+  expect(VERSION).toBe('0.3.0')
   expect(COMMAND_DESCRIPTION).toBe('Show the spare10 quota breaker, or resume or stop at the reserve.')
   expect(ARGUMENT_HINT).toBe('[resume|stop]')
 })
@@ -274,7 +276,7 @@ const FOOT = ['', '/spare10 resume   continue on the reserve until the window re
 
 test('the status report prints every field', () => {
   expect(statusReport(status()).split('\n')).toEqual([
-    'version 0.2.0',
+    'version 0.3.0',
     '',
     '  ● armed          spare10 steps in at 90% used.',
     '  · reserve        10% of the 5-hour window (from /config)',
@@ -395,7 +397,7 @@ function enginePrefixed(): string[] {
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off'] as ReplyCase[]) out.push(resumeReply(c, f))
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off'] as const) out.push(stopReply(c, f, 90))
   }
-  return [...out, ...newEnginePrefixed()]
+  return [...out, ...newEnginePrefixed(), ...floorEnginePrefixed()]
 }
 
 test('no transcript line, warning or command reply starts with the prefix that the engine adds', () => {
@@ -403,7 +405,7 @@ test('no transcript line, warning or command reply starts with the prefix that t
   expect(texts.length).toBeGreaterThan(40)
   for (const t of texts) {
     expect(t.startsWith('spare10: ')).toBe(false)
-    expect(t.startsWith('spare10 ')).toBe(false) // the report header too: it renders as `spare10: version 0.2.0`
+    expect(t.startsWith('spare10 ')).toBe(false) // the report header too: it renders as `spare10: version 0.3.0`
   }
 })
 
@@ -423,6 +425,11 @@ test('model texts, drop reasons and debug lines keep their own spare10 prefix', 
   for (const t of kept) expect(t.startsWith('spare10: ')).toBe(true)
   expect(headlessText(F, 'S1').startsWith('spare10 stopped this unattended run')).toBe(true)
   expect(pauseInstruction(F, null).startsWith('spare10 budget guard.')).toBe(true)
+  // The floor forms of floor 2.3 keep theirs too.
+  for (const t of floorModelTexts()) {
+    if (t.startsWith('spare10 budget guard.')) continue
+    expect(t.startsWith('spare10: ')).toBe(true)
+  }
 })
 
 // Every user-facing string, with sample figures: no em-dash, no en-dash, no semicolon (STE).
@@ -488,7 +495,7 @@ function everyText(): string[] {
           for (const isTest of [false, true])
             for (const blink of [false, true]) out.push(badgeView(phase, { reserve: 12.5, test: isTest, mode, blink }).text)
         }
-  return [...out, ...newTexts()]
+  return [...out, ...newTexts(), ...floorTexts()]
 }
 
 test('no user-facing string has an em-dash, an en-dash or a semicolon', () => {
@@ -869,7 +876,7 @@ const status02 = (over: Partial<StatusInput> = {}): StatusInput =>
 test('the status report shows both windows, the reset row, a weekly-off row and the ticker warning', () => {
   expect(statusReport(status02())).toBe(
     [
-      'version 0.2.0',
+      'version 0.3.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -1322,7 +1329,7 @@ const SPANS = { lastMinutes: 20, lastMinutesFrom: 'option', weeklyLastHours: 8, 
 test('the status report shows the reserve opens rows with their sources, and leaves weekly opens out when the weekly guard is off', () => {
   expect(statusReport(status02({ spans: SPANS }))).toBe(
     [
-      'version 0.2.0',
+      'version 0.3.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -1543,3 +1550,480 @@ function skipTexts(): string[] {
         }
   return out
 }
+
+// ---- The resume floor (floor design 2, 7.2) ----
+
+// The examples of floor 2: 5-hour reserve 10, floor 5, reset 14:00, span 20 min, skip start 13:40.
+// Weekly reserve 10, floor 5, reset Mon 09:00, span 8 h, skip start Mon 01:00. A kind at the reserve
+// reads 91%, a kind at the floor 96% (4% left). Now is Thursday 12:00.
+const RES5: Facts = { used: 91, left: 9, resetsAtMs: R14, reserve: 10, timeZone: TZ, holdEnd: R14 - S5, span: S5, to: 95 }
+const FLO5: Facts = { used: 96, left: 4, resetsAtMs: R14, reserve: 10, timeZone: TZ, holdEnd: R14 - S5, span: S5, floor: 5 }
+const RES7: Facts = { used: 91, left: 9, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0, holdEnd: W - S7, span: S7, to: 95 }
+const FLO7: Facts = { used: 96, left: 4, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0, holdEnd: W - S7, span: S7, floor: 5 }
+const RES7B: Facts = { ...RES7, used: 92, left: 8 } // the weekly window at 92
+const FULL7B: Facts = { used: 92, left: 8, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0 } // the weekly window at 92, no floor in force
+const FLO7B: Facts = { ...FLO7, used: 97, left: 3 } // the weekly window at 97
+const NOSPAN = <T extends Facts>(f: T): Facts => {
+  const { holdEnd: _h, span: _s, ...rest } = f
+  return rest
+}
+/** The facts of a consented kind: the skip start ahead rides along, but it has no span (not a question). */
+const NOLEAD = (f: Facts): Facts => {
+  const { span: _s, ...rest } = f
+  return rest
+}
+const ASKS_5 = 'Until 13:40, spare10 asks you again at 95% used.'
+const AFTER_LOOP_5 = 'If you choose Stop here or do not answer, the work waits until 13:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.'
+const AFTER_LOOP_7 = 'If you choose Stop here or do not answer, the work waits until Mon 01:00, 8 h before the weekly reset. Then spare10 continues it, unless a reserve is still reached.'
+const FLOORS = { resumeFloor: 5, resumeFloorFrom: 'option', weeklyResumeFloor: 5, weeklyResumeFloorFrom: 'option' } as const
+
+test('the first question names the end point and says until when spare10 asks again', () => {
+  expect(questionText(RES5, 'loop', 'hold', true)).toBe(
+    `Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 95% used? ${ASKS_5} ${AFTER_LOOP_5}`,
+  )
+  expect(questionText(RES5, 'prompt', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 91% used · 9% left · resets 14:00. spare10 holds your prompt and any other work. Continue on the reserve until 95% used? Until 13:40, spare10 asks you again at 95% used. If you do not answer, all of it continues at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until 13:40.',
+  )
+  expect(questionText(RES5, 'prompt', 'tell', true)).toBe(
+    'Your 10% reserve is reached: 91% used · 9% left · resets 14:00. spare10 holds your prompt. Continue on the reserve until 95% used? Until 13:40, spare10 tells the agents to wind down at 95% used. If you do not answer, your prompt goes in at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives it back to you.',
+  )
+  expect(questionText(RES5, 'loop', 'hold', false)).toBe(
+    'Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 95% used? Until 13:40, spare10 asks you again at 95% used.',
+  )
+  // Spans off: no skip start ahead, the D0.2 {after}.
+  expect(questionText(NOSPAN(RES5), 'loop', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 91% used · 9% left · resets 14:00. All work is on hold. Continue on the reserve until 95% used? At 95% used, spare10 asks you again. If you choose Stop here or do not answer, the work waits until 14:00. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  // No reset time: the first-sight hold end rides along, and no skip start is ahead.
+  const noReset: Facts = { used: 91, left: 9, resetsAtMs: null, reserve: 10, timeZone: TZ, holdEnd: R14 + HOUR, to: 95 }
+  expect(questionText(noReset, 'loop', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 91% used · 9% left · resets at an unknown time. All work is on hold. Continue on the reserve for one hour, or until 95% used? At 95% used, spare10 asks you again. If you choose Stop here or do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  // The kit default: 90% used at T0, reset 15:00.
+  expect(questionText({ ...KIT, to: 95 }, 'loop', 'hold', true)).toBe(
+    'Your 10% reserve is reached: 90% used · 10% left · resets 15:00. All work is on hold. Continue on the reserve until 95% used? Until 14:40, spare10 asks you again at 95% used. If you choose Stop here or do not answer, the work waits until 14:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(questionText(RES7, 'loop', 'hold', true)).toBe(
+    `Your 10% weekly reserve is reached: 91% used · 9% left · resets Mon 09:00. All work is on hold. Continue on the weekly reserve until 95% used? Until Mon 01:00, spare10 asks you again at 95% used of the weekly window. ${AFTER_LOOP_7}`,
+  )
+  expect(questionText(NOSPAN(RES7), 'loop', 'hold', false)).toBe(
+    'Your 10% weekly reserve is reached: 91% used · 9% left · resets Mon 09:00. All work is on hold. Continue on the weekly reserve until 95% used? At 95% used of the weekly window, spare10 asks you again.',
+  )
+})
+
+test('the second question names what is left and the reset', () => {
+  expect(questionText(FLO5, 'loop', 'hold', true)).toBe(
+    `Your 5% floor is reached: 96% used · 4% left · resets 14:00. All work is on hold. Continue on the last 4% until 14:00? ${AFTER_LOOP_5}`,
+  )
+  expect(questionText(FLO5, 'prompt', 'hold', true)).toBe(
+    'Your 5% floor is reached: 96% used · 4% left · resets 14:00. spare10 holds your prompt and any other work. Continue on the last 4% until 14:00? If you do not answer, all of it continues at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until 13:40.',
+  )
+  expect(questionText(FLO5, 'prompt', 'tell', true)).toBe(
+    'Your 5% floor is reached: 96% used · 4% left · resets 14:00. spare10 holds your prompt. Continue on the last 4% until 14:00? If you do not answer, your prompt goes in at 13:40, 20 min before the reset, unless a reserve is still reached. Stop here gives it back to you.',
+  )
+  expect(questionText(FLO5, 'loop', 'hold', false)).toBe(
+    'Your 5% floor is reached: 96% used · 4% left · resets 14:00. All work is on hold. Continue on the last 4% until 14:00?',
+  )
+  const noReset: Facts = { used: 96, left: 4, resetsAtMs: null, reserve: 10, timeZone: TZ, holdEnd: R14 + HOUR, floor: 5 }
+  expect(questionText(noReset, 'loop', 'hold', true)).toBe(
+    'Your 5% floor is reached: 96% used · 4% left · resets at an unknown time. All work is on hold. Continue on the last 4% for one hour? If you choose Stop here or do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(questionText(FLO7, 'loop', 'hold', true)).toBe(
+    `Your 5% weekly floor is reached: 96% used · 4% left · resets Mon 09:00. All work is on hold. Continue on the last 4% of the weekly window until Mon 09:00? ${AFTER_LOOP_7}`,
+  )
+  expect(questionText({ ...FLO7, resetsAtMs: null, holdEnd: W }, 'loop', 'hold', false)).toBe(
+    'Your 5% weekly floor is reached: 96% used · 4% left · resets at an unknown time. All work is on hold. Continue on the last 4% of the weekly window for one hour?',
+  )
+})
+
+test('a question with two windows at the reserve, at the floor, mixed, and with different end points', () => {
+  expect(questionText([RES5, RES7B], 'loop', 'hold', true)).toBe(
+    `Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on both reserves until 95% used? Until its reserve opens, spare10 asks you again at 95% used of either window. ${AFTER_LOOP_7}`,
+  )
+  expect(questionText([FLO5, FLO7B], 'loop', 'hold', true)).toBe(
+    `Your 5% floor and your 5% weekly floor are reached: 5-hour window 96% used · 4% left · resets 14:00, weekly window 97% used · 3% left · resets Mon 09:00. All work is on hold. Continue on the last 4% until 14:00 and the last 3% of the weekly window until Mon 09:00? ${AFTER_LOOP_7}`,
+  )
+  expect(questionText([RES5, FLO7], 'loop', 'hold', true)).toBe(
+    `Your 10% reserve and your 5% weekly floor are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 96% used · 4% left · resets Mon 09:00. All work is on hold. Continue on the reserve until 95% used and the last 4% of the weekly window until Mon 09:00? ${ASKS_5} ${AFTER_LOOP_7}`,
+  )
+  expect(questionText([RES5, { ...RES7B, to: 97 }], 'loop', 'hold', true)).toBe(
+    `Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on the reserve until 95% used and the weekly reserve until 97% used? Until its reserve opens, spare10 asks you again at 95% used, or at 97% used of the weekly window. ${AFTER_LOOP_7}`,
+  )
+  // The weekly floor off: the weekly part is the 0.2 part.
+  expect(questionText([RES5, FULL7B], 'loop', 'hold', false)).toBe(
+    'Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 91% used · 9% left · resets 14:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on the reserve until 95% used and the weekly reserve until Mon 09:00? Until 13:40, spare10 asks you again at 95% used.',
+  )
+  // No skip start ahead on either kind.
+  expect(asksText([NOSPAN(RES5), NOSPAN(RES7B)])).toBe('At 95% used of either window, spare10 asks you again.')
+  expect(asksText([NOSPAN(RES5), NOSPAN({ ...RES7B, to: 97 })])).toBe('At 95% used, or at 97% used of the weekly window, spare10 asks you again.')
+  expect(asksText([NOSPAN(RES5), RES7B], 'tell')).toBe('Until its reserve opens, spare10 tells the agents to wind down at 95% used of either window.')
+  expect(asksText([RES5, { ...RES7B, to: 97 }], 'tell')).toBe(
+    'Until its reserve opens, spare10 tells the agents to wind down at 95% used, or at 97% used of the weekly window.',
+  )
+  expect(asksText(RES7)).toBe('Until Mon 01:00, spare10 asks you again at 95% used of the weekly window.')
+  expect(asksText(NOSPAN(RES7))).toBe('At 95% used of the weekly window, spare10 asks you again.')
+  expect(asksText([FLO5, FLO7])).toBe('')
+})
+
+test('facts without the floor fields give the 0.2 texts in both modes', () => {
+  const f5: Facts = { used: 93, left: 7, resetsAtMs: R, reserve: 10, timeZone: TZ }
+  const fw: Facts = { used: 92, left: 8, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0 }
+  for (const mode of ['hold', 'tell'] as const) {
+    expect(asksText(f5, mode)).toBe('')
+    expect(asksText([OWN5, OWN7], mode)).toBe('')
+    expect(questionText(f5, 'loop', mode, false)).toBe('Your 10% reserve is reached: 93% used · 7% left · resets 15:00. All work is on hold. Continue on the reserve until 15:00?')
+    expect(questionText([f5, fw], 'loop', mode, false)).toBe(
+      'Your 10% reserve and your 10% weekly reserve are reached: 5-hour window 93% used · 7% left · resets 15:00, weekly window 92% used · 8% left · resets Mon 09:00. All work is on hold. Continue on both reserves until they reset (15:00 and Mon 09:00)?',
+    )
+    expect(questionText(OWN5, 'loop', mode, true)).toBe(
+      'Your 10% reserve is reached: 92% used · 8% left · resets 16:40. All work is on hold. Continue on the reserve until 16:40? If you choose Stop here or do not answer, the work waits until 16:20, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.',
+    )
+    expect(notice.continuing(f5, mode)).toBe('continuing on your 10% reserve. spare10 stays quiet until 15:00.')
+    expect(notice.continuing([f5, fw], mode)).toBe('continuing on your 10% reserve and your 10% weekly reserve. spare10 stays quiet until they reset (15:00 and Mon 09:00).')
+    expect(resumeReply('tripped', f5, undefined, undefined, mode)).toBe('you can use the reserve until 15:00.')
+    expect(resumeReply('tripped', [f5, fw], undefined, undefined, mode)).toBe('you can use both reserves until they reset (15:00 and Mon 09:00).')
+    expect(resumeReply('stopped', f5, undefined, undefined, mode)).toBe('resumed. You can use the reserve until 15:00. Type a prompt to continue.')
+    expect(resumeReply('asking', fw, undefined, undefined, mode)).toBe('resumed. Held work continues on the weekly reserve until Mon 09:00.')
+    expect(resumeReply('consented', f5, undefined, undefined, mode)).toBe('already resumed until 15:00.')
+  }
+  expect(modelFacts(f5)).toBe('into your 10% reserve · 7% of quota left · resets 15:00')
+  expect(notice.told(f5)).toBe('your 10% reserve is reached. spare10 told the agents to wind down.')
+  expect(notice.stopped(f5)).toBe('stopped at your 10% reserve. Type a prompt to be asked again, or run /spare10 resume.')
+  expect(notStarted(f5)).toBe(
+    'spare10: not started. This session is inside your 10% reserve until 15:00. Send the prompt again to be asked again, or run /spare10 resume.',
+  )
+  expect(resumeContext(f5)).toBe(
+    'spare10: earlier work stopped at the 10% quota reserve. The user now chose to continue on the reserve until 15:00. Follow their message.',
+  )
+  expect(pauseInstruction(f5, null)).toBe(
+    'spare10 budget guard. You have reached the safe usage limit for this session (into your 10% reserve · 7% of quota left · resets 15:00). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.',
+  )
+})
+
+test('the continuing notice at the reserve says until when spare10 asks again, and at the floor stays quiet until the reset', () => {
+  expect(notice.continuing(RES5)).toBe('continuing on your 10% reserve until 95% used. Until 13:40, spare10 asks you again at 95% used.')
+  expect(notice.continuing(NOSPAN(RES5))).toBe('continuing on your 10% reserve until 95% used. At 95% used, spare10 asks you again.')
+  expect(notice.continuing(RES5, 'tell')).toBe(
+    'continuing on your 10% reserve until 95% used. Until 13:40, spare10 tells the agents to wind down at 95% used.',
+  )
+  expect(notice.continuing(FLO5)).toBe('continuing on your 5% floor. spare10 stays quiet until 14:00.')
+  expect(notice.continuing(RES7)).toBe(
+    'continuing on your 10% weekly reserve until 95% used. Until Mon 01:00, spare10 asks you again at 95% used of the weekly window.',
+  )
+  expect(notice.continuing([RES5, RES7])).toBe(
+    'continuing on your 10% reserve until 95% used and your 10% weekly reserve until 95% used. Until its reserve opens, spare10 asks you again at 95% used of either window.',
+  )
+  expect(notice.continuing([RES5, FLO7])).toBe(
+    'continuing on your 10% reserve until 95% used and your 5% weekly floor until Mon 09:00. Until 13:40, spare10 asks you again at 95% used.',
+  )
+  // A kind with no floor in force beside one at the reserve.
+  expect(notice.continuing([RES5, FULL7B])).toBe(
+    'continuing on your 10% reserve until 95% used and your 10% weekly reserve until Mon 09:00. Until 13:40, spare10 asks you again at 95% used.',
+  )
+})
+
+test('STOP, PAUSED, the stop notice, holdLimit, stopExtended, resetStillHeld, the told notice and notStarted name the floor at the floor', () => {
+  expect(modelFacts(FLO5)).toBe('into your 5% floor · 4% of quota left · resets 14:00')
+  expect(modelFacts(FLO7)).toBe('into your 5% weekly floor · 4% of weekly quota left · resets Mon 09:00')
+  expect(stopText(FLO5)).toBe(
+    'spare10: the user stopped work at the quota reserve (into your 5% floor · 4% of quota left · resets 14:00). Stop now and wait for the user. Do not call any further tools.',
+  )
+  expect(pausedText(FLO5)).toBe(
+    'spare10: work stopped at the quota reserve (into your 5% floor · 4% of quota left · resets 14:00). No model request was sent, so this task is not finished. Wait for the user.',
+  )
+  const until = { at: '13:40', lead: '20 min before the reset' }
+  expect(notice.stopped(FLO5, { ...until, work: true })).toBe(
+    'stopped at your 5% floor until 13:40, 20 min before the reset. Then spare10 continues the work, unless a reserve is still reached. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+  expect(notice.holdLimit(FLO5, { ...until, work: true })).toBe(
+    'the hold reached its time limit. The work is stopped at your 5% floor until 13:40, 20 min before the reset. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(notice.resetStillHeld(FIVE, [FLO7])).toBe('the 5-hour window reset, but your 5% weekly floor is reached. Held work still waits.')
+  expect(notice.stopExtended(FIVE, [FLO7], 'Mon 01:00, 8 h before the weekly reset')).toBe(
+    'the 5-hour window reset, but your 5% weekly floor is reached. The stop lasts until Mon 01:00, 8 h before the weekly reset.',
+  )
+  expect(notice.told(FLO5)).toBe('your 5% floor is reached. spare10 told the agents to wind down.')
+  expect(notice.told([RES5, FLO7])).toBe('your 10% reserve and your 5% weekly floor are reached. spare10 told the agents to wind down.')
+  expect(notStarted(FLO5)).toBe(
+    'spare10: not started. This session is inside your 5% floor until 14:00. Send the prompt again to be asked again, or run /spare10 resume.',
+  )
+})
+
+test('the pause instruction at the floor has its own first sentence, with and without user text', () => {
+  const head =
+    'spare10 budget guard. You have reached the floor of the quota reserve for this session (into your 5% floor · 4% of quota left · resets 14:00). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.'
+  expect(pauseInstruction(FLO5, null)).toBe(head)
+  expect(pauseInstruction(FLO5, 'Finish this block, commit, then stop.')).toBe(`${head}\n\nUser instructions: Finish this block, commit, then stop.`)
+  // Two kinds at different stages: the floor sentence wins.
+  expect(pauseInstruction([RES5, FLO7], null)).toStartWith('spare10 budget guard. You have reached the floor of the quota reserve for this session (')
+  // A kind at the reserve keeps the 0.2 sentence.
+  expect(pauseInstruction(RES5, null)).toStartWith('spare10 budget guard. You have reached the safe usage limit for this session (')
+})
+
+test('the resume note names the end point at the reserve and what is left at the floor', () => {
+  expect(resumeContext(RES5)).toBe(
+    'spare10: earlier work stopped at the 10% quota reserve. The user now chose to continue on the reserve until 95% used. Follow their message.',
+  )
+  expect(resumeContext(FLO5)).toBe(
+    'spare10: earlier work stopped at the 5% quota floor. The user now chose to continue on the last 4% until 14:00. Follow their message.',
+  )
+  expect(resumeContext(FLO7)).toBe(
+    'spare10: earlier work stopped at the 5% weekly quota floor. The user now chose to continue on the last 4% of the weekly window until Mon 09:00. Follow their message.',
+  )
+})
+
+test('the resume replies before and past the floor, and while a consent to the floor applies, in both modes', () => {
+  expect(resumeReply('tripped', RES5)).toBe('you can use the reserve until 95% used. Until 13:40, spare10 asks you again at 95% used.')
+  expect(resumeReply('tripped', FLO5)).toBe('you can use the last 4% until 14:00.')
+  expect(resumeReply('tripped', [RES5, RES7])).toBe(
+    'you can use both reserves until 95% used. Until its reserve opens, spare10 asks you again at 95% used of either window.',
+  )
+  expect(resumeReply('stopped', RES5)).toBe(
+    'resumed. You can use the reserve until 95% used. Until 13:40, spare10 asks you again at 95% used. Type a prompt to continue.',
+  )
+  expect(resumeReply('stopped', FLO5)).toBe('resumed. You can use the last 4% until 14:00. Type a prompt to continue.')
+  expect(resumeReply('asking', RES5)).toBe('resumed. Held work continues on the reserve until 95% used. Until 13:40, spare10 asks you again at 95% used.')
+  expect(resumeReply('asking', FLO5)).toBe('resumed. Held work continues on the last 4% until 14:00.')
+  // The tell {verb}.
+  expect(resumeReply('tripped', RES5, undefined, undefined, 'tell')).toBe(
+    'you can use the reserve until 95% used. Until 13:40, spare10 tells the agents to wind down at 95% used.',
+  )
+  expect(resumeReply('stopped', RES5, undefined, undefined, 'tell')).toBe(
+    'resumed. You can use the reserve until 95% used. Until 13:40, spare10 tells the agents to wind down at 95% used. Type a prompt to continue.',
+  )
+  expect(resumeReply('asking', RES5, undefined, undefined, 'tell')).toBe(
+    'resumed. Held work continues on the reserve until 95% used. Until 13:40, spare10 tells the agents to wind down at 95% used.',
+  )
+  // The consented forms: the facts of the covering consents (no span: not a question).
+  const c5 = NOLEAD(RES5)
+  const full7: Facts = { used: 92, left: 8, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0, holdEnd: W - S7 }
+  expect(resumeReply('consented', c5)).toBe('already resumed until 95% used. Until 13:40, spare10 asks you again at 95% used.')
+  expect(resumeReply('consented', [c5, full7])).toBe(
+    'already resumed until 95% used, and until Mon 09:00 on the weekly window. Until 13:40, spare10 asks you again at 95% used.',
+  )
+  expect(resumeReply('consented', [c5, NOLEAD(RES7B)])).toBe(
+    'already resumed until 95% used, and until 95% used of the weekly window. Until its reserve opens, spare10 asks you again at 95% used of either window.',
+  )
+  expect(resumeReply('consented', c5, undefined, undefined, 'tell')).toBe(
+    'already resumed until 95% used. Until 13:40, spare10 tells the agents to wind down at 95% used.',
+  )
+  // A full consent only (a 0.2 value): the 0.2 reply.
+  expect(resumeReply('consented', { used: 93, left: 7, resetsAtMs: R, reserve: 10, timeZone: TZ })).toBe('already resumed until 15:00.')
+})
+
+test('the status report shows the floor rows: in force in both modes, off, not below the reserve, unattended, and no weekly row when the weekly guard is off', () => {
+  expect(statusReport(status02({ spans: SPANS, floors: FLOORS }))).toBe(
+    [
+      'version 0.3.0',
+      '',
+      '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
+      '  · reserve        10% of the 5-hour window (from /config)',
+      '  · weekly reserve 10% of the weekly window (from /config)',
+      '  · reserve opens  in the last 20 min of the 5-hour window (from /config)',
+      '  · weekly opens   in the last 8 h of the weekly window (from /config)',
+      '  · resume floor   5%: after a Resume, spare10 asks again at 95% used (from /config)',
+      '  · weekly floor   5%: after a Resume, spare10 asks again at 95% used of the weekly window (from /config)',
+      '  · at the reserve stop and ask you',
+      '  · at the reset   continue by itself (from /config)',
+      '  · reading        live · 42% used · 58% left · resets 14:00 (in 2 h 14 min)',
+      '  · weekly reading live · 61% used · 39% left · resets Mon 09:00 (in 3 d 21 h)',
+      '  · consent        none',
+      '  · weekly consent none',
+      '  · guarded        yes (scope all)',
+      '  · claude -p      runs started here: stop',
+      '',
+      '/spare10 resume   continue on the reserve until the floor, or past the floor until the reset',
+      '/spare10 stop     stop at the reserve now',
+    ].join('\n'),
+  )
+  const rows = (over: Partial<StatusInput>): string[] =>
+    statusReport(status02({ spans: SPANS, floors: FLOORS, ...over }))
+      .split('\n')
+      .filter((l) => l.startsWith('  · resume floor') || l.startsWith('  · weekly floor') || l.startsWith('/spare10 resume'))
+  expect(rows({ mode: 'tell', pausePrompt: 'Wrap up.' })).toEqual([
+    '  · resume floor   5%: after a Resume, spare10 tells the agents to wind down at 95% used (from /config)',
+    '  · weekly floor   5%: after a Resume, spare10 tells the agents to wind down at 95% used of the weekly window (from /config)',
+    '/spare10 resume   continue on the reserve until the floor, or past the floor until the reset',
+  ])
+  expect(rows({ floors: { resumeFloor: 0, resumeFloorFrom: 'env', weeklyResumeFloor: 0, weeklyResumeFloorFrom: 'env' } })).toEqual([
+    '  · resume floor   off. A Resume lasts until the reset (from SPARE10_RESUME_FLOOR)',
+    '  · weekly floor   off. A Resume lasts until the weekly reset (from SPARE10_WEEKLY_RESUME_FLOOR)',
+    '/spare10 resume   continue on the reserve until the window resets',
+  ])
+  expect(rows({ floors: { resumeFloor: 12, resumeFloorFrom: 'env', weeklyResumeFloor: 10, weeklyResumeFloorFrom: 'option' } })).toEqual([
+    '  · resume floor   12% does nothing, because it is not below the reserve (from SPARE10_RESUME_FLOOR)',
+    '  · weekly floor   10% does nothing, because it is not below the weekly reserve (from /config)',
+    '/spare10 resume   continue on the reserve until the window resets',
+  ])
+  // One floor in force is enough for the help line.
+  expect(rows({ floors: { resumeFloor: 0, resumeFloorFrom: 'option', weeklyResumeFloor: 2.5, weeklyResumeFloorFrom: 'option' } })).toEqual([
+    '  · resume floor   off. A Resume lasts until the reset (from /config)',
+    '  · weekly floor   2.5%: after a Resume, spare10 asks again at 97.5% used of the weekly window (from /config)',
+    '/spare10 resume   continue on the reserve until the floor, or past the floor until the reset',
+  ])
+  expect(rows({ attended: false, headless: 'stop' })).toEqual([
+    '  · resume floor   5%: this run is unattended and never asks, so the floor does nothing (from /config)',
+    '  · weekly floor   5%: this run is unattended and never asks, so the floor does nothing (from /config)',
+    '/spare10 resume   continue on the reserve until the window resets',
+  ])
+  expect(rows({ weekly: 'off' })).toEqual([
+    '  · resume floor   5%: after a Resume, spare10 asks again at 95% used (from /config)',
+    '/spare10 resume   continue on the reserve until the floor, or past the floor until the reset',
+  ])
+  // A weekly floor in force while the weekly window is not watched does not name the floor.
+  expect(rows({ weekly: 'off', floors: { ...FLOORS, resumeFloor: 0 } })).toEqual([
+    '  · resume floor   off. A Resume lasts until the reset (from /config)',
+    '/spare10 resume   continue on the reserve until the window resets',
+  ])
+})
+
+test('the consent rows show an end point, and a consent that ended at it', () => {
+  const field = (over: Partial<StatusInput>, label: string): string | undefined =>
+    statusReport(status02({ floors: FLOORS, ...over }))
+      .split('\n')
+      .find((l) => l.startsWith(`  · ${label.padEnd(15)}`))
+  expect(field({ consentUntil: R14, consentTo: 95 }, 'consent')).toBe('  · consent        until 95% used or 14:00 (you chose to continue)')
+  expect(field({ consentTo: 95, consentEnded: true }, 'consent')).toBe('  · consent        ended at 95% used (you chose to continue until then)')
+  expect(field({ consentUntil: R14 }, 'consent')).toBe('  · consent        until 14:00 (you chose to continue)')
+  const week = { reserve: 10, from: 'option', basis: { kind: 'live', pct: 93, resetsAtMs: W } } as const
+  expect(field({ weekly: { ...week, consentUntil: W, consentTo: 95 } }, 'weekly consent')).toBe(
+    '  · weekly consent until 95% used or Mon 09:00 (you chose to continue)',
+  )
+  expect(field({ weekly: { ...week, consentTo: 95, consentEnded: true } }, 'weekly consent')).toBe(
+    '  · weekly consent ended at 95% used (you chose to continue until then)',
+  )
+  expect(field({ weekly: { ...week, consentUntil: W } }, 'weekly consent')).toBe('  · weekly consent until Mon 09:00 (you chose to continue)')
+})
+
+test('the consented phase line says until when spare10 asks again', () => {
+  const line = (over: Partial<StatusInput>): string | undefined =>
+    statusReport(status02({ phase: 'consented', floors: FLOORS, ...over })).split('\n')[2]
+  expect(line({ consentUntil: R14, consentTo: 95, consented: [NOLEAD(RES5)] })).toBe(
+    '  ⨯ consented      you chose to continue. Until 13:40, spare10 asks you again at 95% used.',
+  )
+  expect(line({ mode: 'tell', pausePrompt: 'x', consentUntil: R14, consentTo: 95, consented: [NOLEAD(RES5)] })).toBe(
+    '  ⨯ consented      you chose to continue. Until 13:40, spare10 tells the agents to wind down at 95% used.',
+  )
+  // Full consents only: the 0.2 line.
+  expect(line({ consentUntil: R14, consented: [{ used: 91, left: 9, resetsAtMs: R14, reserve: 10, timeZone: TZ, holdEnd: R14 - S5 }] })).toBe(
+    '  ⨯ consented      you chose to continue. spare10 is quiet until 14:00.',
+  )
+  expect(line({ consentUntil: R14 })).toBe('  ⨯ consented      you chose to continue. spare10 is quiet until 14:00.')
+})
+
+test('the help line names the floor only while a floor is in force', () => {
+  const help = (over: Partial<StatusInput>): string | undefined =>
+    statusReport(status02(over))
+      .split('\n')
+      .find((l) => l.startsWith('/spare10 resume'))
+  expect(help({})).toBe('/spare10 resume   continue on the reserve until the window resets') // no floors: the 0.2 input
+  expect(help({ floors: FLOORS })).toBe('/spare10 resume   continue on the reserve until the floor, or past the floor until the reset')
+  expect(help({ floors: FLOORS, attended: false })).toBe('/spare10 resume   continue on the reserve until the window resets')
+  expect(help({ floors: { ...FLOORS, resumeFloor: 10, weeklyResumeFloor: 0 } })).toBe('/spare10 resume   continue on the reserve until the window resets')
+})
+
+test('the simulate replies: past the floor, raised in place, and the real reading in the reserve', () => {
+  const t96: Facts = { ...TEST5, used: 96, left: 4 }
+  const opens = { at: '14:02', lead: '20 min before the test window ends' }
+  expect(simulateReply('set', t96, opens, 5)).toBe(
+    'test reading set to 96% used, resets 14:22. It can only raise the real reading. This is past your 5% floor. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('raised', t96, opens, 5)).toBe(
+    'test reading raised to 96% used, resets 14:22. Your earlier answers stay. It can only raise the real reading. This is past your 5% floor. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('raised', { ...TEST5, used: 93, left: 7 }, opens)).toBe(
+    'test reading raised to 93% used, resets 14:22. Your earlier answers stay. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('raised', { ...TEST7, used: 96, left: 4 }, { at: 'Thu 14:02', lead: '8 h before the weekly test window ends' }, 5)).toBe(
+    'test reading raised to 96% used of the weekly window, resets Thu 22:02. Your earlier answers stay. It can only raise the real reading. This is past your 5% weekly floor. The weekly reserve opens at Thu 14:02, 8 h before the weekly test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', { used: 95, left: 5, resetsAtMs: R, reserve: 10, timeZone: TZ, test: true }, 'real', 5, true)).toBe(
+    'test reading set to 95% used, resets 15:00. It can only raise the real reading. This is past your 5% floor. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', { ...TEST7, used: 95, left: 5 }, 'real', undefined, true)).toBe(
+    'test reading set to 95% used of the weekly window, resets Thu 22:02. It can only raise the real reading. The real weekly reading is also in the weekly reserve, so the weekly test window does not open it. A Resume on the test reading also lets real work use the weekly reserve. Run /spare10 simulate off to clear it.',
+  )
+  // Open at once: the caller passes no floor, and the reply is the DS reply.
+  expect(simulateReply('set', { ...TEST5, used: 96, left: 4 }, 'now')).toBe(
+    'test reading set to 96% used, resets 14:22. It can only raise the real reading. The test window ends within 20 min, so the reserve is open at once. Run /spare10 simulate off to clear it.',
+  )
+})
+
+test('B27 names 0 to 99 for both floor variables, and the floor warnings name the reserve', () => {
+  expect(badWarning('SPARE10_RESUME_FLOOR', 'x', '5')).toBe('SPARE10_RESUME_FLOOR="x" is not 0 to 99. spare10 uses 5.')
+  expect(badWarning('SPARE10_WEEKLY_RESUME_FLOOR', '100', '5')).toBe('SPARE10_WEEKLY_RESUME_FLOOR="100" is not 0 to 99. spare10 uses 5.')
+  expect(floorWarning('five_hour', 12, 10)).toBe(
+    'the resume floor (12%) is not below the reserve (10%), so it does nothing. Set it below the reserve, or to 0.',
+  )
+  expect(floorWarning('seven_day', 12.5, 10)).toBe(
+    'the weekly resume floor (12.5%) is not below the weekly reserve (10%), so it does nothing. Set it below the weekly reserve, or to 0.',
+  )
+})
+
+/** Every floor text that the engine prefixes: notices, warnings, replies and the report. */
+function floorEnginePrefixed(): string[] {
+  const lists: Array<Facts | Facts[]> = [RES5, FLO5, RES7, FLO7, [RES5, RES7B], [FLO5, FLO7B], [RES5, FLO7], NOSPAN(RES5)]
+  const out: string[] = [
+    badWarning('SPARE10_RESUME_FLOOR', 'x', '5'),
+    badWarning('SPARE10_WEEKLY_RESUME_FLOOR', 'x', '5'),
+    floorWarning('five_hour', 12, 10),
+    floorWarning('seven_day', 12, 10),
+  ]
+  for (const f of lists)
+    for (const mode of ['hold', 'tell'] as const) {
+      out.push(notice.continuing(f, mode), notice.told(f), notice.stopped(f), notice.holdLimit(f), notice.resetStillHeld(FIVE, Array.isArray(f) ? f : [f]))
+      for (const c of ['asking', 'stopped', 'tripped', 'consented'] as const) out.push(resumeReply(c, f, undefined, undefined, mode))
+    }
+  for (const k of ['set', 'raised'] as const)
+    for (const f of [TEST5, TEST7])
+      for (const opens of [undefined, 'real', 'now'] as const) for (const past of [undefined, 5]) out.push(simulateReply(k, f, opens, past, past === 5))
+  const floors = [FLOORS, { resumeFloor: 0, resumeFloorFrom: 'env', weeklyResumeFloor: 12, weeklyResumeFloorFrom: 'env' }] as const
+  for (const fl of floors)
+    for (const attended of [true, false])
+      for (const mode of ['hold', 'tell'] as const) {
+        out.push(
+          statusReport(
+            status02({
+              phase: 'consented',
+              mode,
+              attended,
+              floors: fl,
+              consentUntil: R14,
+              consentTo: 95,
+              consented: [NOLEAD(RES5)],
+              weekly: { reserve: 10, from: 'option', basis: { kind: 'live', pct: 96, resetsAtMs: W }, consentTo: 95, consentEnded: true },
+            }),
+          ),
+        )
+      }
+  return out
+}
+
+/** The floor forms of the texts the model reads (floor 2.3). */
+function floorModelTexts(): string[] {
+  const out: string[] = []
+  for (const f of [FLO5, FLO7, [RES5, FLO7], RES5] as Array<Facts | Facts[]>) {
+    out.push(stopText(f), pausedText(f), resumeContext(f), notStarted(f), pauseInstruction(f, null), pauseInstruction(f, 'Commit, then stop.'))
+  }
+  return out
+}
+
+/** Every floor text, for the STE guard. */
+function floorTexts(): string[] {
+  const out: string[] = [...floorEnginePrefixed(), ...floorModelTexts()]
+  for (const f of [RES5, FLO5, RES7, FLO7, [RES5, RES7B], [FLO5, FLO7B], [RES5, FLO7], NOSPAN(RES5)] as Array<Facts | Facts[]>)
+    for (const auto of [false, true])
+      for (const opener of ['loop', 'prompt'] as const)
+        for (const mode of ['hold', 'tell'] as const) out.push(questionText(f, opener, mode, auto), asksText(f, mode) || 'no asks')
+  for (const to of ['95', '97.5']) for (const t of [false, true]) out.push(badgeView('consented', { reserve: 10, test: t, mode: 'hold', blink: true, to }).text)
+  return out
+}
+
+test('every floor notice, warning and reply starts without the engine prefix', () => {
+  const texts = floorEnginePrefixed()
+  expect(texts.length).toBeGreaterThan(100)
+  for (const t of texts) {
+    expect(t.startsWith('spare10: ')).toBe(false)
+    expect(t.startsWith('spare10 ')).toBe(false)
+  }
+})

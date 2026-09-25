@@ -94,7 +94,7 @@ async function simStopTell($: Engine, w: World): Promise<void> {
 // ---- P2: a test skip stop over a real trip, autoResume off, tell mode ----
 
 test('P2 same copy, tell mode, autoResume off: /spare10 stop over a test window writes the real tag, and past the test skip start the stop still holds', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, env: { ...AUTO_OFF, ...TELL } })
+  const w = world(on, { floors: 'off', pct: 92, env: { ...AUTO_OFF, ...TELL } })
   await simStopTell($, w)
   expect(w.env.get('SPARE10_STOPPED')).toBe(SIM_STOP_OFF)
   await w.clock.set(IN_GAP + TICK) // past the test skip start and its tick: spare10 never extends this stop
@@ -132,7 +132,7 @@ test('P2 reload, hold mode, autoResume off: the same stop refuses calls with no 
 // ---- P3: the same stop with autoResume on, in the gap before the tick ----
 
 test('P3 same copy, tell mode, autoResume on: the test skip stop over a real trip writes the real tag, and in the gap a subagent call and a main call are refused and a prompt asks', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, agents: ['a1'], env: TELL })
+  const w = world(on, { floors: 'off', pct: 92, agents: ['a1'], env: TELL })
   await simStopTell($, w)
   expect(w.env.get('SPARE10_STOPPED')).toBe(SIM_STOP_AUTO)
   await w.clock.set(IN_GAP)
@@ -176,7 +176,7 @@ test('P3 reload, hold mode, autoResume on: in the gap the calls are refused with
 // ---- P4: the same copy, a test reading over a real trip, and a newer copy sets the open time to 0 ----
 
 test('P4 same copy, tell mode, autoResume on: a test view over a real trip with the span set to 0 by a newer copy still holds in the gap', { ...SLOW, plugins: [newerCopy] }, async ($, on) => {
-  const w = world(on, { pct: 92, env: TELL })
+  const w = world(on, { floors: 'off', pct: 92, env: TELL })
   await simStopTell($, w)
   expect(w.env.get('SPARE10_STOPPED')).toBe(SIM_STOP_AUTO)
   w.env.set('NEWER_COPY_SPANS', '0 0') // the test reading never opens now: it shows on top of the real one
@@ -189,7 +189,7 @@ test('P4 same copy, tell mode, autoResume on: a test view over a real trip with 
 })
 
 test('P4 same copy, hold mode, autoResume on: the same, with no new question for a call', { ...SLOW, plugins: [newerCopy] }, async ($, on) => {
-  const w = world(on, { pct: 92 })
+  const w = world(on, { floors: 'off', pct: 92 })
   await begin($, w)
   await w.clock.set(SIM_AT)
   await run($, 'simulate 95 in 22m')
@@ -208,7 +208,7 @@ test('P4 same copy, hold mode, autoResume on: the same, with no new question for
 // ---- A Stop here whose sense fails: the real kinds of the question, fail closed ----
 
 test('a Stop here whose sense fails writes the real tag of the question, and the stop still holds past the test skip start', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 92, env: AUTO_OFF })
   await begin($, w)
   await w.clock.set(SIM_AT)
   await run($, 'simulate 95 in 22m')
@@ -466,7 +466,7 @@ const STOP_AGAIN = `stopped at the reserve until ${hhmm(O_MS)}, 20 min before th
 
 for (const mode of ['tell', 'hold'] as const) {
   test(`B ${mode} mode, autoResume on: /spare10 stop after a test stop's end, over a later real trip, stops again, and no call runs`, SLOW, async ($, on) => {
-    const w = world(on, { pct: 50, env: mode === 'tell' ? TELL : {} })
+    const w = world(on, { floors: 'off', pct: 50, env: mode === 'tell' ? TELL : {} })
     await begin($, w)
     await w.clock.set(SIM_AT)
     await run($, 'simulate 95 in 22m')
@@ -499,7 +499,7 @@ for (const mode of ['tell', 'hold'] as const) {
 // ---- C: a merge never carries a real tag into a later window ----
 
 test('C hold mode, autoResume off: a Stop here merged into a test stop after a real reset drops the old real tag, so a later real trip asks again', SLOW, async ($, on) => {
-  const w = world(on, { pct: 92, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', pct: 92, env: AUTO_OFF })
   await begin($, w)
   await run($, 'simulate 95 in 4h') // its skip start 15:40 lies after the real reset 15:00
   await run($, 'stop')
@@ -529,7 +529,7 @@ test('C hold mode, autoResume off: a Stop here merged into a test stop after a r
 
 for (const mode of ['tell', 'hold'] as const) {
   test(`D reload with lastMinutes 0, ${mode} mode, autoResume off: a first test reading on top, with a later reset, does not end the stop past its end`, SLOW, async ($, on) => {
-    const w = world(on, { pct: 93, resetsAt: OFF_TICK, env: { ...AUTO_OFF, ...(mode === 'tell' ? TELL : {}), ...SPAN0, SPARE10_STOPPED: OFF_STOP_OFF } })
+    const w = world(on, { floors: 'off', pct: 93, resetsAt: OFF_TICK, env: { ...AUTO_OFF, ...(mode === 'tell' ? TELL : {}), ...SPAN0, SPARE10_STOPPED: OFF_STOP_OFF } })
     await w.clock.set(OO_MS - 10 * MIN)
     await begin($, w)
     const now = OO_MS + 2 * TICK
@@ -550,7 +550,7 @@ test('D hold mode: a Resume on the real reading still covers it beneath a later 
   await begin($, w)
   const first = bash($)
   await w.clock.settle()
-  w.release('Resume') // consent until the real reset
+  w.release('Resume') // with the shipped floors: a consent to the floor (95), on the real reading
   expect((await first).result).toBe('ran')
   await w.clock.set(SIM_AT)
   await run($, 'simulate 95 in 22m') // the test window ends before the real reset, so the Resume does not cover it
@@ -558,7 +558,9 @@ test('D hold mode: a Resume on the real reading still covers it beneath a later 
   await w.clock.settle()
   expect(w.asked).toHaveLength(2)
   w.release('Stop here')
-  expect((await held).deny).toBe(STOP(mf(95, SIM_END)))
+  // Floor B49: the test reading is at the floor point, so the real consent does not apply to it, and the
+  // question and the stop name the floor. The real reading (92) stays below the point: the consent stays.
+  expect((await held).deny).toBe(STOP(`into your 5% floor · 5% of quota left · resets ${hhmm(SIM_END)}`))
   await w.clock.settle()
   expect(w.env.get('SPARE10_STOPPED')).toBe(stopRec('S1', SIM_OPENS, SIM_AT, 'five_hour,work,auto,test,skip')) // no real tag: the real reading is consented
   await w.clock.set(IN_GAP) // past the test skip start: the real reading shows, and the Resume covers it

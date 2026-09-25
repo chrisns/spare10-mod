@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "spare10",
-  "version": "0.2.0",
-  "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. Shortly before the reset, it lets work use the reserve.",
+  "version": "0.3.0",
+  "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. After a Resume, it asks again at the floor, by default at 5% left. Shortly before the reset, it lets work use the reserve.",
   "author": {
     "name": "Chris Nesbitt-Smith"
   },
@@ -48,6 +48,22 @@
       "default": 8,
       "min": 0,
       "max": 167
+    },
+    "resumeFloor": {
+      "type": "number",
+      "title": "Resume floor (%)",
+      "description": "After a Resume at the 5-hour reserve, spare10 asks again when this much of the window is left. With a pause prompt, it tells the agents to wind down there. A second Resume lasts until the reset. 0 switches this off, so a Resume lasts until the reset. 0 to 99, one decimal at most. A value at or above the reserve does nothing. SPARE10_RESUME_FLOOR overrides it for one run.",
+      "default": 5,
+      "min": 0,
+      "max": 99
+    },
+    "weeklyResumeFloor": {
+      "type": "number",
+      "title": "Weekly resume floor (%)",
+      "description": "After a Resume at the weekly reserve, spare10 asks again when this much of the weekly window is left. With a pause prompt, it tells the agents to wind down there. 0 switches this off. 0 to 99, one decimal at most. A value at or above the weekly reserve does nothing. SPARE10_WEEKLY_RESUME_FLOOR overrides it for one run.",
+      "default": 5,
+      "min": 0,
+      "max": 99
     },
     "pausePrompt": {
       "type": "string",

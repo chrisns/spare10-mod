@@ -28,10 +28,11 @@ import {
   step,
   stopRec,
   typed,
-  world,
+  world02 as world,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // Skip near the reset through the engine (skip design B41 to B47, 7.3). The world has the shipped
 // spans: the last 20 minutes of the 5-hour window and the last 8 hours of the weekly window open the
 // reserve. Every expected text is spelled out from skip design section 2 here, not taken from
@@ -288,7 +289,12 @@ test('a failed env read uses spans of 0', async ($, on) => {
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
-  expect(questions(w)).toEqual([loopQ(93, hhmm(R_MS), hhmm(R_MS))]) // the D0.2 wording: the guard holds until the reset
+  // The D0.2 wording: the guard holds until the reset. A failed read keeps the option floors (floor 1.3
+  // item 9), so the question is the first question with spans of 0.
+  expect(questions(w)).toEqual([
+    `Your 10% reserve is reached: ${pf(93, hhmm(R_MS))}. All work is on hold. Continue on the reserve until 95% used? At 95% used, spare10 asks you again. ` +
+      `If you choose Stop here or do not answer, the work waits until ${hhmm(R_MS)}. Then spare10 continues it, unless a reserve is still reached.`,
+  ])
   const lines = await report($)
   expect(lines).toContain('  · reserve opens  only at the reset (spare10 could not read the env)')
   expect(lines).toContain('  · weekly opens   only at the reset (spare10 could not read the env)')
@@ -544,7 +550,7 @@ test('autoResume off, a test reading over a real trip: Stop here after the test 
   const w = world(on, { pct: 92, env: AUTO_OFF })
   await begin($, w)
   expect(await run($, 'simulate 95 in 22m')).toBe(
-    `test reading set to 95% used, resets ${hhmm(T0 + 22 * MIN)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.`,
+    `test reading set to 95% used, resets ${hhmm(T0 + 22 * MIN)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.`,
   )
   const held = bash($)
   await w.clock.settle()
@@ -757,7 +763,7 @@ test('a test reading in 22m over a real trip opens nothing: a new question holds
   await begin($, w)
   const end = T0 + 22 * MIN
   expect(await run($, 'simulate 95 in 22m')).toBe(
-    `test reading set to 95% used, resets ${hhmm(end)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.`,
+    `test reading set to 95% used, resets ${hhmm(end)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.`,
   )
   const held = bash($)
   await w.clock.settle()

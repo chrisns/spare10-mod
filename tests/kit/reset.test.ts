@@ -17,10 +17,11 @@ import {
   drain,
   pastDue,
   step,
-  world,
+  world02 as world,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The reset clock through the engine, first half (0.2 design 8.3 reset.test.ts): an unanswered
 // question continues at its due time, the margins, the fresh decision after again, a reading that
 // leaves the reserve, and autoResume off. autoResume is on unless a test sets SPARE10_AUTO_RESUME.

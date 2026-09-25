@@ -1,7 +1,8 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world02 as world } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // Unattended runs through the engine (design 11.4 headless.test.ts, 2.4 B15 and B16, 9, ruling R2).
 // Every expected text is spelled out from design section 2 here, not taken from hooks/core/text.ts,
 // so a drift in the texts or the policies fails a test.
