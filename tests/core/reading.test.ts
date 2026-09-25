@@ -33,6 +33,8 @@ import {
   viewOf,
   windowEndOf,
   windowMs,
+  atPoint,
+  pointOf,
 } from '../../hooks/core/reading.ts'
 import type { Basis, Memory } from '../../hooks/core/reading.ts'
 
@@ -467,4 +469,24 @@ test('marginOf is 0 at a skip start, 60 s for a test window, 5 min otherwise', (
   expect(marginOf(true, true)).toBe(0)
   expect(marginOf(false, true)).toBe(TEST_MARGIN_MS)
   expect(marginOf(false, false)).toBe(RESET_MARGIN_MS)
+})
+
+// ---- The resume floor (floor design 6.1, 7.2) ----
+
+test('pointOf rounds 100 - floor to one decimal', () => {
+  expect(pointOf(5)).toBe(95)
+  expect(pointOf(2.5)).toBe(97.5)
+  expect(pointOf(10.6)).toBe(89.4)
+  expect(pointOf(0.1)).toBe(99.9)
+  expect(pointOf(64.1)).toBe(35.9) // 100 - 64.1 is 35.900000000000006 in floating point
+})
+
+test('atPoint: 95.0 is at the point, 94.9 is not, and none without a point or a reading', () => {
+  const at = (pct: number): Basis => ({ kind: 'live', pct, resetsAtMs: 0 })
+  expect(atPoint(at(95), 95)).toBe(true)
+  expect(atPoint(at(96), 95)).toBe(true)
+  expect(atPoint(at(94.9), 95)).toBe(false)
+  expect(atPoint({ kind: 'test', pct: 97.5, resetsAtMs: null }, 97.5)).toBe(true)
+  expect(atPoint(at(99), null)).toBe(false)
+  expect(atPoint({ kind: 'none', why: 'no-reading' }, 95)).toBe(false)
 })

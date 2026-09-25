@@ -4,10 +4,20 @@ import {
   CHECK_MS,
   TICK_MS,
   afterFailure,
+  answers,
+  answersQuestion,
   askVerdict,
+  buried,
+  bury,
+  consentApplies,
   consentCovers,
+  coveringConsent,
   decide,
+  endOf,
+  endedFloor,
+  floorEnded,
   formatConsent,
+  fullCovers,
   extendedReal,
   formatStopped,
   heldPast,
@@ -15,17 +25,24 @@ import {
   isOverdue,
   joinReal,
   joinable,
+  joinableAt,
+  keyStage,
   mergeStopped,
+  noteSlot,
   parseConsent,
   parseStopped,
   phaseOf,
   sameWindow,
   shouldAbortTurn,
   skipTag,
+  slotList,
+  stageKey,
   stopAction,
   stopDue,
+  unbury,
+  withoutFloor,
 } from '../../hooks/core/decide.ts'
-import type { Holder, Mode, PhaseInput, Site, Snapshot, StoppedRecord } from '../../hooks/core/decide.ts'
+import type { Answered, Consent, Holder, Mode, PhaseInput, Site, Snapshot, StoppedRecord, Tomb } from '../../hooks/core/decide.ts'
 import type { Headless } from '../../hooks/core/config.ts'
 import type { Basis } from '../../hooks/core/reading.ts'
 
@@ -649,4 +666,221 @@ test('phaseOf agrees with decide for open', () => {
               }
           }
   expect(checked).toBe(384)
+})
+
+// ---- The resume floor: two tiers of consent (floor design 3, 6.3, 7.2) ----
+
+const ISO = '2026-09-24T14:00:00.000Z'
+const UNTIL = Date.parse(ISO)
+const BEFORE = UNTIL - 3_600_000 // a now inside the window
+
+test('parseConsent reads an end point, formatConsent writes it, and a 0.2 value has none', () => {
+  expect(parseConsent(`S1 ${ISO} to:95`)).toEqual({ until: UNTIL, sessionId: 'S1', to: 95 })
+  expect(parseConsent(`S1 ${ISO} to:97.5`)).toEqual({ until: UNTIL, sessionId: 'S1', to: 97.5 })
+  expect(parseConsent(`S1 ${ISO} to:0.1`)).toEqual({ until: UNTIL, sessionId: 'S1', to: 0.1 })
+  expect(formatConsent('S1', UNTIL, 95)).toBe(`S1 ${ISO} to:95`)
+  expect(formatConsent('S1', UNTIL, 97.5)).toBe(`S1 ${ISO} to:97.5`)
+  expect(formatConsent('S1', UNTIL, 97.54)).toBe(`S1 ${ISO} to:97.5`)
+  expect(formatConsent('S1', UNTIL)).toBe(`S1 ${ISO}`)
+  for (const to of [95, 97.5, 99.9]) expect(parseConsent(formatConsent('S2', UNTIL, to))).toEqual({ until: UNTIL, sessionId: 'S2', to })
+  // A 0.2 value and a bare time are full: no `to` key at all.
+  const full = parseConsent(`S1 ${ISO}`)
+  expect(full).toEqual({ until: UNTIL, sessionId: 'S1' })
+  expect(full !== undefined && 'to' in full).toBe(false)
+  const bare = parseConsent(ISO)
+  expect(bare).toEqual({ until: UNTIL })
+  expect(bare !== undefined && 'to' in bare).toBe(false)
+})
+
+test('parseConsent refuses a junk end point, a fourth token and an end point after a bare time', () => {
+  for (const raw of [
+    `S1 ${ISO} to:abc`,
+    `S1 ${ISO} to:0`,
+    `S1 ${ISO} to:100`,
+    `S1 ${ISO} to:95.55`,
+    `S1 ${ISO} to:`,
+    `S1 ${ISO} 95`,
+    `S1 ${ISO} to:95 x`,
+    `${ISO} to:95`,
+    `S1 soon to:95`,
+  ]) {
+    expect(parseConsent(raw)).toBeUndefined()
+  }
+})
+
+test('consentApplies: a full consent in its window, a consent to the floor only below min(to, point)', () => {
+  const full: Consent = { until: UNTIL }
+  const floor: Consent = { until: UNTIL, to: 95 }
+  expect(consentApplies(full, BEFORE, UNTIL, 99, 95)).toBe(true)
+  expect(consentApplies(full, UNTIL, UNTIL, 50, 95)).toBe(false) // the window ended
+  expect(consentApplies(floor, BEFORE, UNTIL, 94.9, 95)).toBe(true)
+  expect(consentApplies(floor, BEFORE, UNTIL, 95, 95)).toBe(false) // pct = to
+  expect(consentApplies(floor, BEFORE, UNTIL, 93, 92)).toBe(false) // a lower point in force wins
+  expect(consentApplies(floor, BEFORE, UNTIL, 91.9, 92)).toBe(true)
+  expect(consentApplies(floor, BEFORE, UNTIL, 95, 97)).toBe(false) // a higher point in force does not raise it
+  expect(consentApplies(floor, BEFORE, UNTIL, 94.9, 97)).toBe(true)
+  expect(consentApplies(floor, BEFORE, UNTIL, 94.9, null)).toBe(true) // point null uses to
+  expect(consentApplies(floor, BEFORE, UNTIL, 95, null)).toBe(false)
+  expect(consentApplies(floor, BEFORE, UNTIL - 2 * 60_000, 50, 95)).toBe(false) // a later window: not this one
+  expect(endOf(95, null)).toBe(95)
+  expect(endOf(95, 97)).toBe(95)
+  expect(endOf(95, 92)).toBe(92)
+})
+
+test('floorEnded: a consent to the floor at its end point in its window, never a full one, never out of its window', () => {
+  const floor: Consent = { until: UNTIL, to: 95 }
+  expect(floorEnded(floor, BEFORE, UNTIL, 95, 95)).toBe(true)
+  expect(floorEnded(floor, BEFORE, UNTIL, 99, 95)).toBe(true)
+  expect(floorEnded(floor, BEFORE, UNTIL, 94.9, 95)).toBe(false)
+  expect(floorEnded(floor, BEFORE, UNTIL, 92, 92)).toBe(true) // the end point now
+  expect(floorEnded({ until: UNTIL }, BEFORE, UNTIL, 99, 95)).toBe(false)
+  expect(floorEnded(floor, UNTIL, UNTIL, 99, 95)).toBe(false) // the window ended: it ends by time
+  expect(floorEnded(floor, BEFORE, UNTIL - 2 * 60_000, 99, 95)).toBe(false) // another window
+})
+
+test('coveringConsent prefers a full consent, else the highest end point, and endedFloor finds a consent at its end point', () => {
+  const full: Consent = { until: UNTIL }
+  const f93: Consent = { until: UNTIL, to: 93 }
+  const f95: Consent = { until: UNTIL, to: 95 }
+  expect(coveringConsent([f95, full], BEFORE, UNTIL, 92, 95)).toEqual(full)
+  expect(coveringConsent([f93, f95], BEFORE, UNTIL, 92, 95)).toEqual(f95)
+  expect(coveringConsent([f93, f95], BEFORE, UNTIL, 94, 95)).toEqual(f95)
+  expect(coveringConsent([f93, f95], BEFORE, UNTIL, 95, 95)).toBeUndefined()
+  expect(coveringConsent([f93], BEFORE, UNTIL, 93, 95)).toBeUndefined()
+  expect(coveringConsent([full, f95], BEFORE, UNTIL, 99, 95)).toEqual(full)
+  expect(coveringConsent([], BEFORE, UNTIL, 92, 95)).toBeUndefined()
+  expect(coveringConsent([{ until: UNTIL - 60_000 }, { until: UNTIL }], BEFORE, UNTIL, 92, 95)).toEqual({ until: UNTIL })
+  expect(endedFloor([f93, f95, full], BEFORE, UNTIL, 96, 95)).toEqual(f95)
+  expect(endedFloor([f93, f95], BEFORE, UNTIL, 94, 95)).toEqual(f93)
+  expect(endedFloor([f95], BEFORE, UNTIL, 94, 95)).toBeUndefined()
+  expect(endedFloor([full], BEFORE, UNTIL, 99, 95)).toBeUndefined()
+})
+
+test('noteSlot keeps the later full until and the latest consent to the floor, and withoutFloor keeps the full one', () => {
+  const a = noteSlot(undefined, { until: UNTIL, to: 95 })
+  expect(a).toEqual({ floor: { until: UNTIL, to: 95 } })
+  expect(noteSlot(a, { until: UNTIL, to: 97 })).toEqual({ floor: { until: UNTIL, to: 97 } }) // the same until, a higher to
+  expect(noteSlot(a, { until: UNTIL, to: 93 })).toEqual(a) // a lower to never replaces
+  expect(noteSlot(a, { until: UNTIL - 1, to: 99 })).toEqual(a) // an earlier until never does
+  expect(noteSlot(a, { until: UNTIL + 1, to: 93 })).toEqual({ floor: { until: UNTIL + 1, to: 93 } }) // a later until does
+  const b = noteSlot(noteSlot(a, { until: UNTIL }), { until: UNTIL - 5 })
+  expect(b).toEqual({ full: UNTIL, floor: { until: UNTIL, to: 95 } })
+  expect(slotList(b)).toEqual([{ until: UNTIL }, { until: UNTIL, to: 95 }])
+  expect(slotList(undefined)).toEqual([])
+  expect(withoutFloor(b)).toEqual({ full: UNTIL })
+  expect(withoutFloor(a)).toBeUndefined()
+  expect(withoutFloor(undefined)).toBeUndefined()
+})
+
+test('buried: a tomb buries a consent to the floor with its until and an end point at or below its own, never a full one', () => {
+  const tombs: Tomb[] = [{ until: UNTIL, to: 95 }]
+  expect(buried(tombs, { until: UNTIL, to: 95 })).toBe(true)
+  expect(buried(tombs, { until: UNTIL, to: 93 })).toBe(true) // a lower end point ended too
+  expect(buried(tombs, { until: UNTIL, to: 97.5 })).toBe(false) // a higher end point did not
+  expect(buried(tombs, { until: UNTIL })).toBe(false) // a full consent never
+  expect(buried(tombs, { until: UNTIL + 1000, to: 95 })).toBe(false) // another time in the value
+  expect(buried(tombs, { until: UNTIL - 1000, to: 95 })).toBe(false)
+  expect(buried([], { until: UNTIL, to: 95 })).toBe(false)
+  expect(buried(undefined, { until: UNTIL, to: 95 })).toBe(false)
+  // parseConsent gives the value of any stamp: a restamp under a new id is buried too.
+  const restamped = parseConsent(formatConsent('S2', UNTIL, 95))
+  expect(restamped !== undefined && buried(tombs, restamped)).toBe(true)
+})
+
+test('bury adds a tomb, keeps the highest end point per until, and drops a tomb whose window reset', () => {
+  const a = bury(undefined, { until: UNTIL, to: 95 }, BEFORE)
+  expect(a).toEqual([{ until: UNTIL, to: 95 }])
+  expect(bury(a, { until: UNTIL, to: 93 }, BEFORE)).toEqual(a) // covered: nothing new
+  expect(bury(a, { until: UNTIL, to: 96.3 }, BEFORE)).toEqual([{ until: UNTIL, to: 96.3 }]) // a higher end point replaces
+  const later = UNTIL + 5 * 3_600_000
+  expect(bury(a, { until: later, to: 95 }, BEFORE)).toEqual([
+    { until: UNTIL, to: 95 },
+    { until: later, to: 95 },
+  ])
+  // A tomb ends when its window resets: at its until, it goes, and a tomb for a past window is never added.
+  expect(bury(a, { until: later, to: 95 }, UNTIL)).toEqual([{ until: later, to: 95 }])
+  expect(bury(a, { until: UNTIL, to: 97 }, UNTIL)).toEqual([])
+})
+
+test('unbury: a new Resume lifts each tomb that buries its consent, and keeps the others', () => {
+  const later = UNTIL + 5 * 3_600_000
+  const tombs: Tomb[] = [
+    { until: UNTIL, to: 96.3 },
+    { until: later, to: 95 },
+  ]
+  expect(unbury(tombs, { until: UNTIL, to: 95 })).toEqual([{ until: later, to: 95 }])
+  expect(unbury(tombs, { until: UNTIL, to: 97.5 })).toEqual(tombs) // not buried: nothing to lift
+  expect(unbury(tombs, { until: UNTIL })).toEqual(tombs) // a full consent is never buried
+  expect(unbury(undefined, { until: UNTIL, to: 95 })).toEqual([])
+  expect(buried(unbury(tombs, { until: UNTIL, to: 95 }), { until: UNTIL, to: 95 })).toBe(false)
+})
+
+test('answers: a Resume answers a kind only on its basis and below its end point, and a full Resume on its basis always', () => {
+  const atReserve: Answered[] = [{ kind: 'five_hour', test: false, to: 95 }]
+  expect(answers(atReserve, { kind: 'five_hour', pct: 94.9, test: false })).toBe(true)
+  expect(answers(atReserve, { kind: 'five_hour', pct: 95, test: false })).toBe(false)
+  expect(answers(atReserve, { kind: 'seven_day', pct: 91, test: false })).toBe(false)
+  const full: Answered[] = [{ kind: 'five_hour', test: false }]
+  expect(answers(full, { kind: 'five_hour', pct: 99, test: false })).toBe(true)
+  // A test Answered never answers a real view, and the other way round.
+  expect(answers([{ kind: 'five_hour', test: true }], { kind: 'five_hour', pct: 91, test: false })).toBe(false)
+  expect(answers(full, { kind: 'five_hour', pct: 91, test: true })).toBe(false)
+  expect(answers([], { kind: 'five_hour', pct: 91, test: false })).toBe(false)
+})
+
+test('joinableAt: a settled Resume at the reserve takes no joiner past its end point or on another basis, and joinable keeps its 0.2 result', () => {
+  const named: Answered[] = [{ kind: 'five_hour', test: false, to: 95 }]
+  expect(joinableAt('resume', named, [{ kind: 'five_hour', pct: 93, test: false }])).toBe(true)
+  expect(joinableAt('resume', named, [{ kind: 'five_hour', pct: 96, test: false }])).toBe(false)
+  expect(joinableAt('resume', named, [{ kind: 'five_hour', pct: 93, test: true }])).toBe(false)
+  expect(joinableAt(undefined, named, [{ kind: 'five_hour', pct: 99, test: true }])).toBe(true) // an open question takes every joiner
+  expect(joinableAt('stop', named, [{ kind: 'seven_day', pct: 99, test: false }])).toBe(true)
+  expect(joinableAt('again', named, [])).toBe(false)
+  // The 0.2 cases of joinable, through joinableAt with no end points and one basis.
+  const v = (kind: 'five_hour' | 'seven_day') => ({ kind, pct: 93, test: false })
+  const a = (kind: 'five_hour' | 'seven_day') => ({ kind, test: false })
+  const cases: Array<[Parameters<typeof joinable>[0], Array<'five_hour' | 'seven_day'>, Array<'five_hour' | 'seven_day'>]> = [
+    [undefined, ['five_hour'], ['seven_day']],
+    ['stop', ['five_hour'], ['five_hour', 'seven_day']],
+    ['resume', ['five_hour'], ['five_hour']],
+    ['resume', ['five_hour'], ['five_hour', 'seven_day']],
+    ['resume', ['five_hour', 'seven_day'], ['seven_day']],
+    ['resume', ['five_hour'], []],
+    ['again', ['five_hour'], ['five_hour']],
+  ]
+  for (const [o, named2, gating] of cases) {
+    expect(joinableAt(o, named2.map(a), gating.map(v))).toBe(joinable(o, named2, gating))
+  }
+})
+
+test('answersQuestion: a full consent answers any kind, a consent to the floor only a kind asked at the reserve with an end point at least as high', () => {
+  const atReserve = { end: UNTIL, to: 95 }
+  const atFloor = { end: UNTIL }
+  expect(answersQuestion({ until: UNTIL }, atReserve, BEFORE)).toBe(true)
+  expect(answersQuestion({ until: UNTIL }, atFloor, BEFORE)).toBe(true)
+  expect(answersQuestion({ until: UNTIL, to: 95 }, atReserve, BEFORE)).toBe(true)
+  expect(answersQuestion({ until: UNTIL, to: 97 }, atReserve, BEFORE)).toBe(true)
+  expect(answersQuestion({ until: UNTIL, to: 93 }, atReserve, BEFORE)).toBe(false)
+  expect(answersQuestion({ until: UNTIL, to: 95 }, atFloor, BEFORE)).toBe(false)
+  expect(answersQuestion({ until: UNTIL }, atReserve, UNTIL)).toBe(false) // expired
+  expect(answersQuestion({ until: UNTIL + 2 * 60_000 }, atReserve, BEFORE)).toBe(false) // another window
+})
+
+test('fullCovers keeps a full value of this process for the same window, and nothing else', () => {
+  expect(fullCovers({ until: UNTIL, sessionId: 'S1' }, ['S1'], UNTIL, BEFORE)).toBe(true)
+  expect(fullCovers({ until: UNTIL, sessionId: 'S0' }, ['S0', 'S1'], UNTIL, BEFORE)).toBe(true) // a past id of this process
+  expect(fullCovers({ until: UNTIL, sessionId: 'S9' }, ['S1'], UNTIL, BEFORE)).toBe(false) // another id
+  expect(fullCovers({ until: UNTIL, sessionId: 'S1', to: 95 }, ['S1'], UNTIL, BEFORE)).toBe(false) // a consent to the floor
+  expect(fullCovers({ until: UNTIL - 3_600_000 * 5, sessionId: 'S1' }, ['S1'], UNTIL, BEFORE)).toBe(false) // expired
+  expect(fullCovers({ until: UNTIL + 3_600_000, sessionId: 'S1' }, ['S1'], UNTIL, BEFORE)).toBe(false) // another window
+  expect(fullCovers({ until: UNTIL }, ['S1'], UNTIL, BEFORE)).toBe(false) // a bare time has no stamp
+  expect(fullCovers(undefined, ['S1'], UNTIL, BEFORE)).toBe(false)
+})
+
+test('stageKey and keyStage round-trip the floor stage', () => {
+  expect(stageKey('S1:main', false)).toBe('S1:main')
+  expect(stageKey('S1:main', true)).toBe('S1:main:floor')
+  expect(keyStage('S1:main')).toEqual({ base: 'S1:main', atFloor: false })
+  expect(keyStage('S1:a1:floor')).toEqual({ base: 'S1:a1', atFloor: true })
+  for (const key of ['S1:main', 'S2:a7']) for (const f of [true, false]) expect(keyStage(stageKey(key, f))).toEqual({ base: key, atFloor: f })
 })

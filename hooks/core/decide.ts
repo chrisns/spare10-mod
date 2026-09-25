@@ -82,22 +82,179 @@ export function afterFailure(called: boolean, holding: boolean): 'replay' | 'ref
 export const consentCovers = (until: number, now: number, windowEnd: number): boolean =>
   now < until && until <= windowEnd + 60_000
 
-/** SPARE10_CONSENT: `${sessionId} ${iso}` as spare10 writes it, or a bare time that a person set before launch. */
-export type ConsentRecord = { until: number; sessionId?: string }
+// ---- The resume floor: two tiers of consent (floor B48 to B52) ----
+
+/** B49: a consent of one kind. `to`: the % used where a consent to the floor ends. None: a full consent. */
+export type Consent = { until: number; to?: number }
+
+/** B49: the end point now: `to`, or the floor point in force when that is lower. */
+export const endOf = (to: number, point: number | null): number => (point === null ? to : Math.min(to, point))
+
+/** B49: consentCovers, and for a consent to the floor a reading below its end point. */
+export const consentApplies = (c: Consent, now: number, windowEnd: number, pct: number, point: number | null): boolean =>
+  consentCovers(c.until, now, windowEnd) && (c.to === undefined || pct < endOf(c.to, point))
+
+/** B52: a consent to the floor in its window whose end point `pct` has reached. Never a full consent. */
+export const floorEnded = (c: Consent, now: number, windowEnd: number, pct: number, point: number | null): boolean =>
+  c.to !== undefined && consentCovers(c.until, now, windowEnd) && pct >= endOf(c.to, point)
+
+/** B49: the consent that applies: a full one first (the latest until), else the consent to the floor with the highest to. */
+export function coveringConsent(
+  list: readonly Consent[],
+  now: number,
+  windowEnd: number,
+  pct: number,
+  point: number | null,
+): Consent | undefined {
+  const applying = list.filter((c) => consentApplies(c, now, windowEnd, pct, point))
+  const full = applying.filter((c) => c.to === undefined).sort((a, b) => b.until - a.until)[0]
+  if (full !== undefined) return full
+  return highestTo(applying)
+}
+
+/** The consent to the floor with the highest end point, then the latest until. */
+const highestTo = (list: readonly Consent[]): Consent | undefined =>
+  list
+    .filter((c) => c.to !== undefined)
+    .sort((a, b) => (b.to ?? 0) - (a.to ?? 0) || b.until - a.until)[0]
+
+/** The report: a consent to the floor that covers the window and has reached its end point on `pct`. The highest to. */
+export function endedFloor(
+  list: readonly Consent[],
+  now: number,
+  windowEnd: number,
+  pct: number,
+  point: number | null,
+): Consent | undefined {
+  return highestTo(list.filter((c) => floorEnded(c, now, windowEnd, pct, point)))
+}
+
+/** B49: this copy's consents of one kind: the latest full until, and the latest consent to the floor. */
+export type ConsentSlots = { full?: number; floor?: { until: number; to: number } }
+
+/** full: the later until (0.2 max). floor: replaced by a later until, or the same until with a higher to. */
+export function noteSlot(s: ConsentSlots | undefined, c: Consent): ConsentSlots {
+  const out: ConsentSlots = { ...(s ?? {}) }
+  if (c.to === undefined) {
+    out.full = Math.max(out.full ?? 0, c.until)
+    return out
+  }
+  const f = out.floor
+  if (f === undefined || c.until > f.until || (c.until === f.until && c.to > f.to)) out.floor = { until: c.until, to: c.to }
+  return out
+}
+
+/** The slots as a list of consents: the full one first. */
+export function slotList(s: ConsentSlots | undefined): Consent[] {
+  if (s === undefined) return []
+  return [...(s.full === undefined ? [] : [{ until: s.full }]), ...(s.floor === undefined ? [] : [{ until: s.floor.until, to: s.floor.to }])]
+}
+
+/** B52: the slots without the consent to the floor (undefined when nothing is left). */
+export function withoutFloor(s: ConsentSlots | undefined): ConsentSlots | undefined {
+  if (s?.full === undefined) return undefined
+  return { full: s.full }
+}
+
+/**
+ * B52: a tomb is a real consent to the floor that a gate of this copy ended: the time in its value and
+ * its end point. A tomb buries each consent to the floor with that time and an end point at or below
+ * its own, in any stamp. So a late write, a restamp or a value that a failed read missed never applies
+ * again. A tomb never buries a full consent, and it ends when its window resets.
+ */
+export type Tomb = { until: number; to: number }
+
+/** B52: a tomb buries `c`: a consent to the floor with the tomb's until and an end point at or below the tomb's. */
+export function buried(tombs: readonly Tomb[] | undefined, c: Consent): boolean {
+  const to = c.to
+  return to !== undefined && (tombs ?? []).some((t) => t.until === c.until && to <= t.to)
+}
+
+/** B52: the tombs with `t` added. A tomb whose window has reset goes, and so does a tomb that `t` covers. */
+export function bury(tombs: readonly Tomb[] | undefined, t: Tomb, now: number): Tomb[] {
+  const live = (tombs ?? []).filter((x) => now < x.until)
+  if (now >= t.until || buried(live, t)) return live
+  return [...live.filter((x) => !(x.until === t.until && x.to <= t.to)), t]
+}
+
+/**
+ * B52: a new Resume of this copy lifts each tomb that buries its consent. After a fall in the window,
+ * the first question consents to the floor again (floor 1.4 item 7).
+ */
+export const unbury = (tombs: readonly Tomb[] | undefined, c: Consent): Tomb[] => (tombs ?? []).filter((t) => !buried([t], c))
+
+/** B50: a kind as the gate sees it now. */
+export type Viewed = { kind: Kind; pct: number; test: boolean }
+
+/** B50: what a settled Resume answered for one kind: its basis and its end point. */
+export type Answered = { kind: Kind; test: boolean; to?: number }
+
+/** B50: a Resume answers a kind on the same basis while its reading is below the Resume's end point for it. */
+export const answers = (named: readonly Answered[], k: Viewed): boolean =>
+  named.some((a) => a.kind === k.kind && a.test === k.test && (a.to === undefined || k.pct < a.to))
+
+/**
+ * B50: joinable with the floor and the basis. A loop joins an open question, or one settled as Stop
+ * here, or one settled as Resume when that Resume answers every kind that gates now. Never after again.
+ */
+export function joinableAt(outcome: 'resume' | 'stop' | 'again' | undefined, named: readonly Answered[], gating: readonly Viewed[]): boolean {
+  if (outcome === undefined || outcome === 'stop') return true
+  return outcome === 'resume' && gating.every((k) => answers(named, k))
+}
+
+/**
+ * B50: another copy's consent answers a question's kind: it covers the kind's consent bound, and a
+ * consent to the floor answers only a kind asked at the reserve, with a point at least as high.
+ */
+export const answersQuestion = (c: Consent, end: { end: number; to?: number }, now: number): boolean =>
+  consentCovers(c.until, now, end.end) && (c.to === undefined || (end.to !== undefined && c.to >= end.to))
+
+/**
+ * SPARE10_CONSENT (3.3 of the floor design): `${sessionId} ${iso}` (full), `${sessionId} ${iso} to:${pct}`
+ * (a consent to the floor), or a bare time that a person set before launch (full). A 0.2 value has no
+ * `to`, so it is full.
+ */
+export type ConsentRecord = { until: number; sessionId?: string; to?: number }
 
 // Date.parse is lenient ('abc-123' is a number), so a time must also start like an ISO date.
 const isoMs = (text: string): number => (/^\d{4}-\d{2}-\d{2}T/.test(text) ? Date.parse(text) : Number.NaN)
 
+// An end point: 0.1 to 99.9, one decimal at most.
+const TO_TOKEN = /^to:(\d{1,2}(?:\.\d)?)$/
+
 export function parseConsent(raw: string | undefined): ConsentRecord | undefined {
   const text = (raw ?? '').trim()
-  const m = /^(\S+) (\S+)$/.exec(text)
+  const m = /^(\S+) (\S+)(?: (\S+))?$/.exec(text)
+  if (m !== null && m[3] !== undefined) {
+    const until = isoMs(m[2] ?? '')
+    const t = TO_TOKEN.exec(m[3])
+    const to = t === null ? Number.NaN : Number(t[1])
+    if (!Number.isFinite(until) || !(to > 0)) return undefined // fail closed: a junk end point is no consent
+    return { until, sessionId: m[1] ?? '', to }
+  }
   const stamped = m === null ? Number.NaN : isoMs(m[2] ?? '')
   if (m !== null && Number.isFinite(stamped)) return { until: stamped, sessionId: m[1] ?? '' }
-  const bare = isoMs(text)
+  const bare = /\s/.test(text) ? Number.NaN : isoMs(text) // a bare time is one token: `<iso> to:95` is no consent
   return Number.isFinite(bare) ? { until: bare } : undefined
 }
 
-export const formatConsent = (sessionId: string, until: number): string => `${sessionId} ${new Date(until).toISOString()}`
+export const formatConsent = (sessionId: string, until: number, to?: number): string =>
+  `${sessionId} ${new Date(until).toISOString()}${to === undefined ? '' : ` to:${String(Math.round(to * 10) / 10 + 0)}`}`
+
+/**
+ * 3.3: a full value stamped with one of these ids that covers the window of `until`. A write of a
+ * consent to the floor keeps it: the stronger tier stays.
+ */
+export const fullCovers = (prev: ConsentRecord | undefined, ids: readonly string[], until: number, now: number): boolean =>
+  prev !== undefined && prev.to === undefined && prev.sessionId !== undefined && ids.includes(prev.sessionId) && consentCovers(prev.until, now, until)
+
+/** B51: the told key of a stage. */
+export const stageKey = (key: string, atFloor: boolean): string => (atFloor ? `${key}:floor` : key)
+
+/** B51: a told key's loop part and stage. */
+export function keyStage(key: string): { base: string; atFloor: boolean } {
+  return key.endsWith(':floor') ? { base: key.slice(0, -':floor'.length), atFloor: true } : { base: key, atFloor: false }
+}
 
 /**
  * Whose consent counts (3.5, 9.3). The process env reaches every descendant, also a long-lived one: the

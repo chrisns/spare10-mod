@@ -1,10 +1,11 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, ElementQuery, FoundElement } from 'claude-code/testing'
 import type { RenderSurface } from 'claude-code'
-import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, real5, stopRec, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, real5, stopRec, typed, world02 as world } from '../helpers/world.ts'
 import { atText } from '../../hooks/core/text.ts'
 import type { World } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The footer badge through the engine (design 11.4 badge.test.ts, B21, section 7). Written from the
 // spec: every expected text and colour is a literal from the B21 table, drawn as ' ' + text.
 

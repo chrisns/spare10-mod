@@ -2,9 +2,10 @@ import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { PromptOrigin, ToolCallResult } from 'claude-code'
 import { VERSION } from '../../hooks/core/text.ts'
-import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world02 as world } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // /spare10 and its verbs (design B22 to B26, 12.1, 11.4 command.test.ts), written from the spec.
 // Every expected text below is spelled out from section 2 (with the orchestrator rulings), not taken
 // from hooks/core/text.ts, so a drift in either the texts or the command logic fails here.
@@ -118,6 +119,9 @@ const with02 = (lines: string[], attended = true): string[] =>
         '  · weekly reserve 10% of the weekly window (from /config)',
         '  · reserve opens  in the last 20 min of the 5-hour window (from /config)',
         '  · weekly opens   in the last 8 h of the weekly window (from /config)',
+        // Floor 7.5: the rows of the floors, off in this file (world02).
+        '  · resume floor   off. A Resume lasts until the reset (from SPARE10_RESUME_FLOOR)',
+        '  · weekly floor   off. A Resume lasts until the weekly reset (from SPARE10_WEEKLY_RESUME_FLOOR)',
       ]
     }
     if (l.startsWith('  · at the reserve ') && attended) return [l, '  · at the reset   continue by itself (from /config)']
@@ -812,11 +816,12 @@ test('a Resume on a test reading stays in this copy: the env keeps no consent, a
   expect(w.asked).toHaveLength(1)
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined() // a reload or a respawn starts with no consent
   expect(field(await report($), 'consent')).toBe(`  · consent        ${UNTIL} (you chose to continue)`)
-  // A new test reading replaces the old one, and the answer given under the old one goes with it.
-  expect(await run($, 'simulate 96')).toBe(simulateSet('96', AT, OPEN_AT))
+  // A new test reading replaces the old one, and the answer given under the old one goes with it. A
+  // strictly higher value raises in place (floor B53), so the new value here is lower.
+  expect(await run($, 'simulate 94')).toBe(simulateSet('94', AT, OPEN_AT))
   expect(field(await report($), 'consent')).toBe('  · consent        none')
   w.answer = 'Stop here'
-  expect((await bash($)).deny).toBe(`spare10: the user stopped work at the quota reserve (${mf('10', '4')}). Stop now and wait for the user. Do not call any further tools.`)
+  expect((await bash($)).deny).toBe(`spare10: the user stopped work at the quota reserve (${mf('10', '6')}). Stop now and wait for the user. Do not call any further tools.`)
   expect(w.asked).toHaveLength(2)
   await w.clock.settle()
   expect(w.env.get('SPARE10_STOPPED')).toMatch(stoppedRe('S1'))

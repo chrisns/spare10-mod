@@ -144,11 +144,17 @@ export function asAnchored(v: unknown): Anchored | undefined {
     : undefined
 }
 
+/** B48: the floor point, 100 - floor on the one-decimal grid: 95 for 5, 97.5 for 2.5, 89.4 for 10.6. */
+export const pointOf = (floor: number): number => Math.round((100 - floor) * 10) / 10
+
 // The trip point on the one-decimal grid, so 100 - 10.6 is 89.4 and not 89.40000000000001.
-const tripAt = (reserve: number): number => Math.round((100 - reserve) * 10) / 10
+const tripAt = (reserve: number): number => pointOf(reserve)
 
 /** The first point of the reserve trips: reserve 10 trips at 90.0 and passes at 89.9. */
 export const isTripped = (b: Basis, reserve: number): boolean => b.kind !== 'none' && b.pct >= tripAt(reserve)
+
+/** B48: a basis at or past a floor point. None with no point, and never for a none basis. */
+export const atPoint = (b: Basis, point: number | null): boolean => point !== null && b.kind !== 'none' && b.pct >= point
 
 /**
  * 4.8: the last real reading of a kind was in the reserve, and its window reset less than

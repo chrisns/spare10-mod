@@ -56,6 +56,9 @@ import type {
 //   spans        'off' puts SPARE10_LAST_MINUTES=0 and SPARE10_WEEKLY_LAST_HOURS=0 into w.env, before
 //                env (a test's own value wins). Default: nothing, so the manifest defaults apply (20 min
 //                and 8 h), as they ship
+//   floors       'off' puts SPARE10_RESUME_FLOOR=0 and SPARE10_WEEKLY_RESUME_FLOOR=0 into w.env, after the
+//                spans entries and before env (a test's own value wins). Default: nothing, so the manifest
+//                defaults apply (5 and 5), as they ship
 //
 // The world records: asked (each dialog), ran, requests, prompts, fills, aborts, logs, invalidations,
 // renders, commands (names), commandSpecs (whole) and parkCalls. submitted holds the texts of the prompts
@@ -113,6 +116,18 @@ import type {
 // between a skip start and its release, use OFF_TICK and OFF_OPENS: the gap is the tick latency. A failed
 // env read uses spans of 0 (B47). $.spare10.spans() answers this copy in the kit: newerCopy acts out a
 // newer one.
+//
+// The resume floor (floor design 7.1, 7.5): the world has the shipped floors (5 and 5), so a Resume at the
+// reserve (90% at T0) consents only until FLOOR_AT (95% used), and the question says so. world02 is the
+// 0.2 world: floors: 'off'. Twelve 0.2 kit files import `world02 as world`. The five stop files (stop,
+// stop-past, reset-stop, skip-stop, headless-wait) run the shipped floors: a test there takes floors: 'off'
+// only for a text or value that the floor changes by design (a question text, the continuing notice, a
+// consent value with to:, a resume reply, a report row). consentRec(sid, until, to?) is a SPARE10_CONSENT
+// value, with the end point of a consent to the floor when `to` is given. A consent to the floor stops
+// applying by a reading, not by a time: set w.pct, then make a call. Its end unsets the env value in a
+// fire-and-forget write, so settle before reading w.env. floors: 'off' puts two SPARE10 variables into
+// the env, so a --bg session lists them in its background warning. A failed settings read keeps the
+// option floors, so floors: 'off' has no effect there.
 
 export const T0 = Date.parse('2026-09-24T12:00:00Z')
 export const RESETS = '2026-09-24T15:00:00.000Z' // 3 h after T0
@@ -136,6 +151,7 @@ export const WEEK_NEAR_OPENS = '2026-09-24T13:00:00.000Z' // WEEK_NEAR minus WEE
 export const LATE = '2026-09-24T16:40:00.000Z' // the owner's example reset (skip 1.1)
 export const OFF_TICK = '2026-09-24T15:00:15.000Z' // a reset 15 s off the tick grid
 export const OFF_OPENS = '2026-09-24T14:40:15.000Z' // OFF_TICK minus SKIP: a skip start 15 s off the tick grid
+export const FLOOR_AT = 95 // the floor point of the shipped floor (5) with the reserve 10
 
 export type Core = 'ran' | 'deny' | 'error'
 export type SettingsWorld = {
@@ -177,6 +193,7 @@ export type WorldOptions = {
   usageFailsAfter?: number
   usageDelayMs?: number
   spans?: 'off'
+  floors?: 'off'
 }
 
 export type Asked = { question: string; header?: string; labels: string[] }
@@ -272,7 +289,11 @@ export function world(on: On, opts: WorldOptions = {}): World {
     usageDelayMs: opts.usageDelayMs ?? 0,
     settings: opts.settings ?? {},
     env: new Map(
-      Object.entries({ ...(opts.spans === 'off' ? { SPARE10_LAST_MINUTES: '0', SPARE10_WEEKLY_LAST_HOURS: '0' } : {}), ...(opts.env ?? {}) }),
+      Object.entries({
+        ...(opts.spans === 'off' ? { SPARE10_LAST_MINUTES: '0', SPARE10_WEEKLY_LAST_HOURS: '0' } : {}),
+        ...(opts.floors === 'off' ? { SPARE10_RESUME_FLOOR: '0', SPARE10_WEEKLY_RESUME_FLOOR: '0' } : {}),
+        ...(opts.env ?? {}),
+      }),
     ),
     store: new Map(Object.entries(opts.store ?? {})),
     asked: [],
@@ -454,6 +475,15 @@ export function world(on: On, opts: WorldOptions = {}): World {
   })
 
   return w
+}
+
+/** The 0.2 world: the resume floors off (floor design 7.1). A test's own options win. */
+export const world02 = (on: On, o: WorldOptions = {}): World => world(on, { floors: 'off', ...o })
+
+/** A SPARE10_CONSENT value: `${sid} ${iso}`, or `${sid} ${iso} to:${to}` for a consent to the floor. until takes ms or an ISO time. */
+export function consentRec(sid: string, until: number | string, to?: number): string {
+  const iso = new Date(typeof until === 'number' ? until : Date.parse(until)).toISOString()
+  return to === undefined ? `${sid} ${iso}` : `${sid} ${iso} to:${to}`
 }
 
 /** Raises session.start: attended when w.surfaces lists one, else as a -p run. */

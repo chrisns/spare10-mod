@@ -1,7 +1,7 @@
 import type { PluginOptions, Settings as HostSettings } from 'claude-code'
 import { parseSimulateEnv } from './reading.ts'
 import type { Kind } from './reading.ts'
-import { badWarning, fmtPct } from './text.ts'
+import { badWarning, floorWarning, fmtPct } from './text.ts'
 
 // Options, per-run env overrides, scope and the start-up checks (design section 8). No $ here.
 // Precedence, highest first: SPARE10_* in the process env, pluginConfigs (managed, then --settings,
@@ -14,6 +14,8 @@ export type Settings = {
   weeklyReserve: number // 0: the weekly window is not watched
   lastMinutes: number // the 5-hour span: the reserve opens this many minutes before the reset. 0 is off
   weeklyLastHours: number // the weekly span, in hours. 0 is off
+  resumeFloor: number // B48: the 5-hour floor in % left. A Resume at the reserve lasts until 100 - this. 0 is off
+  weeklyResumeFloor: number // B48: the weekly floor. 0 is off
   pausePrompt: string | null
   autoResume: boolean
   headless: Headless
@@ -34,6 +36,8 @@ export type Effective = Settings & {
     weeklyReserve: Source
     lastMinutes: SpanSource
     weeklyLastHours: SpanSource
+    resumeFloor: Source
+    weeklyResumeFloor: Source
     pausePrompt: Source
     autoResume: Source
     headless: Source
@@ -49,6 +53,8 @@ export type EnvReads = {
   weeklyReserve?: string
   lastMinutes?: string
   weeklyLastHours?: string
+  resumeFloor?: string
+  weeklyResumeFloor?: string
   pausePrompt?: string
   autoResume?: string
   headless?: string
@@ -61,6 +67,8 @@ export const DEFAULTS: Settings = {
   weeklyReserve: 10,
   lastMinutes: 20,
   weeklyLastHours: 8,
+  resumeFloor: 5,
+  weeklyResumeFloor: 5,
   pausePrompt: null,
   autoResume: true,
   headless: 'off',
@@ -107,6 +115,19 @@ export const parseLastMinutes = (raw: unknown): number | undefined => parseSpan(
 /** The weekly span in hours: 0 (off) to 167, rounded to one decimal. */
 export const parseWeeklyLastHours = (raw: unknown): number | undefined => parseSpan(raw, 167)
 
+/** B48: a resume floor in % left: 0 (off) to 99, rounded to one decimal. A number or a numeric string. */
+export const parseResumeFloor = (raw: unknown): number | undefined => parseSpan(raw, 99)
+
+/**
+ * B48, B54: the floor of a kind when it is above 0 and below that kind's reserve, else 0. No attendance
+ * here: an unattended run has no floor in force either (B55), and the module applies that.
+ */
+export const floorOf = (s: Pick<Settings, 'reserve' | 'weeklyReserve' | 'resumeFloor' | 'weeklyResumeFloor'>, kind: Kind): number => {
+  const floor = kind === 'seven_day' ? s.weeklyResumeFloor : s.resumeFloor
+  const reserve = kind === 'seven_day' ? s.weeklyReserve : s.reserve
+  return floor > 0 && floor < reserve ? floor : 0
+}
+
 /** A kind's span in ms (B41). 0 is off. */
 export const spanOf = (s: Spans, kind: Kind): number =>
   Math.round(kind === 'seven_day' ? s.weeklyLastHours * 3_600_000 : s.lastMinutes * 60_000)
@@ -135,13 +156,15 @@ export const parseBadge = (raw: unknown): boolean => raw !== false
 /** As parseBadge: only an explicit false turns autoResume off. */
 export const parseAutoResume = (raw: unknown): boolean => raw !== false
 
-/** The nine declared fields, defaults filled. Extra stored keys are ignored. */
+/** The eleven declared fields, defaults filled. Extra stored keys are ignored. */
 export function fromOptions(options: PluginOptions): Settings {
   return {
     reserve: parseReserve(options['reserve']) ?? DEFAULTS.reserve,
     weeklyReserve: parseWeeklyReserve(options['weeklyReserve']) ?? DEFAULTS.weeklyReserve,
     lastMinutes: parseLastMinutes(options['lastMinutes']) ?? DEFAULTS.lastMinutes,
     weeklyLastHours: parseWeeklyLastHours(options['weeklyLastHours']) ?? DEFAULTS.weeklyLastHours,
+    resumeFloor: parseResumeFloor(options['resumeFloor']) ?? DEFAULTS.resumeFloor,
+    weeklyResumeFloor: parseResumeFloor(options['weeklyResumeFloor']) ?? DEFAULTS.weeklyResumeFloor,
     pausePrompt: parsePausePrompt(options['pausePrompt']),
     autoResume: parseAutoResume(options['autoResume']),
     headless: parseHeadless(options['headless']) ?? DEFAULTS.headless,
@@ -172,6 +195,8 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
       weeklyReserve: 'option',
       lastMinutes: 'option',
       weeklyLastHours: 'option',
+      resumeFloor: 'option',
+      weeklyResumeFloor: 'option',
       pausePrompt: 'option',
       autoResume: 'option',
       headless: 'option',
@@ -211,6 +236,22 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
       out.from.weeklyLastHours = 'env'
     }
   }
+  if (env.resumeFloor !== undefined) {
+    const f = parseResumeFloor(env.resumeFloor)
+    if (f === undefined) warnings.push(badWarning('SPARE10_RESUME_FLOOR', env.resumeFloor, fmtPct(base.resumeFloor)))
+    else {
+      out.resumeFloor = f
+      out.from.resumeFloor = 'env'
+    }
+  }
+  if (env.weeklyResumeFloor !== undefined) {
+    const f = parseResumeFloor(env.weeklyResumeFloor)
+    if (f === undefined) warnings.push(badWarning('SPARE10_WEEKLY_RESUME_FLOOR', env.weeklyResumeFloor, fmtPct(base.weeklyResumeFloor)))
+    else {
+      out.weeklyResumeFloor = f
+      out.from.weeklyResumeFloor = 'env'
+    }
+  }
   if (env.pausePrompt !== undefined) {
     // Set but empty is meaningful: `SPARE10_PAUSE_PROMPT= claude` forces stop-and-ask for this run.
     out.pausePrompt = parsePausePrompt(env.pausePrompt)
@@ -246,12 +287,18 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
     if (spec.kind !== 'five_hour') out.testKind = spec.kind
     if (spec.inMs !== undefined) out.testInMs = spec.inMs
   }
+  // B54: a floor above 0 at or above its reserve does nothing. The weekly one only while it is watched.
+  if (out.resumeFloor > 0 && out.resumeFloor >= out.reserve) warnings.push(floorWarning('five_hour', out.resumeFloor, out.reserve))
+  if (out.weeklyReserve > 0 && out.weeklyResumeFloor > 0 && out.weeklyResumeFloor >= out.weeklyReserve) {
+    warnings.push(floorWarning('seven_day', out.weeklyResumeFloor, out.weeklyReserve))
+  }
   return out
 }
 
 /**
  * B47: the settings after a failed env read. The D0.2 fallback (the options only), with both spans 0
- * from 'unread': an unknown span keeps the guard on until the reset.
+ * from 'unread': an unknown span keeps the guard on until the reset. The floors keep their options: for a
+ * floor, the guarded side is a floor in force (floor 1.3 item 9).
  */
 export function unreadEnv(base: Settings): Effective {
   const out = withEnv(base, {})

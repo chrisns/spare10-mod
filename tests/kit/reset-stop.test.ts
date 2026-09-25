@@ -157,7 +157,7 @@ async function loopStop($: Engine, w: World, used = 93, ms = RESETS_MS, auto = t
 // ---- B34: the stop at its due time ----
 
 test('Stop here then the reset: one resume prompt, the stop cleared, the notice', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   expect(count(transcript(w), stoppedWork(clock(RESETS_MS)))).toBe(1)
@@ -176,7 +176,7 @@ test('Stop here then the reset: one resume prompt, the stop cleared, the notice'
 })
 
 test('a second tick after the release sends nothing', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await pastDue(w, RESETS)
@@ -188,7 +188,7 @@ test('a second tick after the release sends nothing', async ($, on) => {
 })
 
 test('a loop Stop, then a prompt question answered with Esc: the reset sends one resume prompt', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.advance(MIN)
@@ -208,7 +208,7 @@ test('a loop Stop, then a prompt question answered with Esc: the reset sends one
 })
 
 test('Stop here on a prompt question of an idle session: the stop ends at the reset, nothing is sent, and the notice says to type', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
@@ -245,7 +245,7 @@ test('/spare10 stop, then a refused step, then the reset: one resume prompt', as
 
 for (const offset of [0, 500, 1000, 1500, 2500]) {
   test(`markWork does not bring back a stop that /spare10 resume cleared (envGetDelayMs on SPARE10_STOPPED, resume ${offset} ms after the step)`, async ($, on) => {
-    const w = world(on, { spans: 'off', pct: 93 })
+    const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
     await begin($, w)
     expect((await $.command.run(cmd('stop'))).text).toBe(stopTripped(clock(RESETS_MS)))
     await w.clock.settle()
@@ -269,7 +269,7 @@ for (const offset of [0, 500, 1000, 1500, 2500]) {
 }
 
 test('a stop past its reset with the weekly window in the reserve is extended until the weekly reset', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, resetsAt: SOON, weekPct: 50, weekResetsAt: RESETS })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, resetsAt: SOON, weekPct: 50, weekResetsAt: RESETS })
   await begin($, w)
   await loopStop($, w, 93, SOON_MS)
   w.weekPct = 95 // the weekly window reaches its reserve while the 5-hour stop lasts
@@ -346,7 +346,7 @@ test('a stop with the auto tag sends nothing when autoResume is off now', async 
 })
 
 test('/exit ends a stopped conversation for good: nothing is sent at the reset', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'S1', resume: { id: 'S1' } })
@@ -358,7 +358,7 @@ test('/exit ends a stopped conversation for good: nothing is sent at the reset',
 // ---- B35: the person takes the release over ----
 
 test('a person prompt after the reset and before the tick takes the release over with the reset note', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(RESETS_MS + MIN)
@@ -374,7 +374,7 @@ test('a person prompt after the reset and before the tick takes the release over
 })
 
 test('a person prompt that arrives while the tick releases (envGetDelayMs): no resume prompt, and the prompt carries the note', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(DUE - 1)
@@ -393,7 +393,7 @@ test('a person prompt that arrives while the tick releases (envGetDelayMs): no r
 })
 
 test('a person prompt that arrives while the tick clears the stop (envSetDelayMs): no resume prompt, and the prompt carries the note', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(DUE - 1)
@@ -411,7 +411,7 @@ test('a person prompt that arrives while the tick clears the stop (envSetDelayMs
 })
 
 test('a person prompt whose sense outlasts the tick clearing the stop (usageDelayMs): the tick hands it over, no resume prompt, and the prompt carries the note', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(DUE - 1)
@@ -449,7 +449,7 @@ test('a person prompt after the reset takes over a stop with no work: no note, a
 })
 
 test('a prompt nobody typed after the reset does not take the release over', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(RESETS_MS + MIN)
@@ -464,7 +464,7 @@ test('a prompt nobody typed after the reset does not take the release over', asy
 })
 
 test('a prompt question open in a stopped session: the reset lets the prompt in with the note, and no resume prompt comes', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   const p = $.prompt.submit(typed('carry on'))
@@ -486,7 +486,7 @@ test('a prompt question open in a stopped session: the reset lets the prompt in 
 })
 
 test('a prompt question open in a stopped session whose check is slow (envGetDelayMs on SPARE10_CONSENT): the tick still sends nothing', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   const p = $.prompt.submit(typed('carry on'))
@@ -507,7 +507,7 @@ test('a prompt question open in a stopped session whose check is slow (envGetDel
 
 for (const verb of ['stop', 'resume'] as const) {
   test(`/spare10 ${verb} while the tick releases (envGetDelayMs): no resume prompt, and the overdue reply`, async ($, on) => {
-    const w = world(on, { spans: 'off', pct: 93 })
+    const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
     await begin($, w)
     await loopStop($, w)
     await w.clock.set(DUE - 1)
@@ -527,7 +527,7 @@ for (const verb of ['stop', 'resume'] as const) {
 }
 
 test('/spare10 stop after the reset and before the tick: no resume prompt, and the reply says so', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(RESETS_MS + MIN)
@@ -542,7 +542,7 @@ test('/spare10 stop after the reset and before the tick: no resume prompt, and t
 })
 
 test('/spare10 resume after the reset and before the tick: the stop is cleared, no resume prompt', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(RESETS_MS + MIN)
@@ -559,7 +559,7 @@ test('/spare10 resume after the reset and before the tick: the stop is cleared, 
 // ---- 4.7, B39: /clear and /resume ----
 
 test('/clear before the reset: the old stop is dropped, and nothing is sent', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await clear($, w, 'S2')
@@ -573,7 +573,7 @@ test('/clear before the reset: the old stop is dropped, and nothing is sent', as
 })
 
 test('/clear during the release (envGetDelayMs): no resume prompt', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(DUE - 1)
@@ -590,7 +590,7 @@ test('/clear during the release (envGetDelayMs): no resume prompt', async ($, on
 })
 
 test('/resume back to a cleared conversation before the due time: the stop applies again and continues', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await clear($, w, 'S2')
@@ -608,7 +608,7 @@ test('/resume back to a cleared conversation before the due time: the stop appli
 // ---- 4.6.2: the person at the terminal ----
 
 test('text in the prompt box delays the resume prompt for up to ten ticks', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   w.box = 'half typed'
@@ -625,7 +625,7 @@ test('text in the prompt box delays the resume prompt for up to ten ticks', asyn
 })
 
 test('text in the prompt box that the person clears lets the resume prompt go at the next tick', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   w.box = 'half typed'
@@ -637,7 +637,7 @@ test('text in the prompt box that the person clears lets the resume prompt go at
 })
 
 test('the draft that Stop here restored does not delay the resume prompt', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   const p = $.prompt.submit(typed('carry on'))
@@ -669,7 +669,7 @@ test('a stop without the auto tag is never continued', async ($, on) => {
 })
 
 test('a dropped resume prompt logs the failure', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, submitDrop: 'another plugin dropped it' })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, submitDrop: 'another plugin dropped it' })
   await begin($, w)
   await loopStop($, w)
   await pastDue(w, RESETS)
@@ -699,7 +699,7 @@ test('a 0.1 stop value is never continued', async ($, on) => {
 // ---- autoResume off ----
 
 test('autoResume off: the question waits past the reset, B6 once, and a later answer applies', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -718,7 +718,7 @@ test('autoResume off: the question waits past the reset, B6 once, and a later an
 })
 
 test('autoResume off: a Stop here sends nothing at the reset', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   await loopStop($, w, 93, RESETS_MS, false)
   expect(count(transcript(w), STOPPED_AUTO_OFF)).toBe(1)
@@ -731,7 +731,7 @@ test('autoResume off: a Stop here sends nothing at the reset', async ($, on) => 
 })
 
 test('SPARE10_AUTO_RESUME=off switches it off for the run', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, env: AUTO_OFF })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, env: AUTO_OFF })
   await begin($, w)
   expect(await status($)).toContain('· at the reset wait for your answer (from SPARE10_AUTO_RESUME)')
   const held = bash($)
@@ -758,7 +758,7 @@ test('a bad SPARE10_AUTO_RESUME warns once, and autoResume stays on', async ($, 
 // ---- redraws, badge and report ----
 
 test('the ticker redraws a stopped badge at its end', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(RESETS_MS - 2 * MIN)
@@ -806,7 +806,7 @@ test('the stopped badge names the clock of the reset', async ($, on) => {
 })
 
 test('the stopped badge names a weekday for the weekly window', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 50, weekPct: 95 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 50, weekPct: 95 })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -845,7 +845,7 @@ test('/spare10 shows a stop with no work, and the work a refused step adds', asy
 // ---- 3.1: a reading without resetsAt ----
 
 test('without resetsAt a hold ends one window after the first sight, not at the one-hour fallback', { timeoutMs: 30_000 }, async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, resetsAt: null })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, resetsAt: null })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -902,7 +902,7 @@ test('session.start arms the ticker even when a start-up read fails (envGetFails
 // ---- 3.2: a Stop after an earlier stop's reset, and the texts of the merged stop ----
 
 test('Stop here on a prompt question inside the margin keeps the work of the earlier loop Stop, and the reset continues it', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(RESETS_MS - 2 * MIN)
@@ -926,7 +926,7 @@ test('Stop here on a prompt question inside the margin keeps the work of the ear
 })
 
 test('Stop here on a prompt question that names the weekly window too, after the 5-hour stop ended: the work stays, and the weekly reset continues it', { timeoutMs: 20_000 }, async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
   await begin($, w)
   await loopStop($, w)
   w.weekPct = 95 // another session reaches the weekly reserve while the 5-hour stop lasts
@@ -947,7 +947,7 @@ test('Stop here on a prompt question that names the weekly window too, after the
 })
 
 test('Stop here after the named window reset, while another window gates now: the stop names it and lasts until its reset', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
   await begin($, w)
   await w.clock.set(RESETS_MS - 2 * MIN)
   const p = $.prompt.submit(typed('carry on'))
@@ -967,7 +967,7 @@ test('Stop here after the named window reset, while another window gates now: th
 })
 
 test('a prompt question in a weekly stop: the Stop notice gives the end and the work of the merged stop', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 50, weekPct: 92 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 50, weekPct: 92 })
   await begin($, w)
   const held = bash($)
   await w.clock.settle()
@@ -987,7 +987,7 @@ test('a prompt question in a weekly stop: the Stop notice gives the end and the 
 })
 
 test('a loop that joins a prompt question counts as work: Stop here keeps it, and the reset continues it', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, agents: ['a1'] })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, agents: ['a1'] })
   await begin($, w)
   const p = $.prompt.submit(typed('hello'))
   await w.clock.settle()
@@ -1110,7 +1110,7 @@ for (const verb of ['resume', 'stop'] as const) {
   for (const offset of [500, 1500]) {
     const outcome = verb === 'resume' ? 'the stop stays over' : 'the extension never stands, and a new stop holds the weekly window'
     test(`/spare10 ${verb} while the tick extends the stop (envGetDelayMs, ${offset} ms after the due tick): ${outcome}`, async ($, on) => {
-      const w = world(on, { spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
+      const w = world(on, { floors: 'off', spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
       await begin($, w)
       await loopStop($, w)
       w.weekPct = 95 // at the due time the weekly window gates: the tick extends the stop
@@ -1145,7 +1145,7 @@ for (const verb of ['resume', 'stop'] as const) {
 }
 
 test('/spare10 resume during the extension read: the extension is never written, so a call meanwhile gets a new question, not a refusal', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, weekPct: 50, weekResetsAt: LATER })
   await begin($, w)
   await loopStop($, w)
   w.weekPct = 95
@@ -1168,7 +1168,7 @@ test('/spare10 resume during the extension read: the extension is never written,
 
 for (const who of ['stop', 'resume', 'prompt'] as const) {
   test(`${who === 'prompt' ? 'a person prompt' : `/spare10 ${who}`} that starts after the due tick's first read and before its release: no resume prompt, one takeover`, async ($, on) => {
-    const w = world(on, { spans: 'off', pct: 93 })
+    const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
     await begin($, w)
     await loopStop($, w)
     await w.clock.set(DUE - 1)
@@ -1192,7 +1192,7 @@ for (const who of ['stop', 'resume', 'prompt'] as const) {
 }
 
 test('/clear during the release before the engine answers the new id (D3): no resume prompt, and the debug line', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   await w.clock.set(DUE - 1)
@@ -1231,7 +1231,7 @@ test('markWork does not bring back a stop that another copy cleared while it rea
 // ---- 4.2: the watch timer, 4.6.2: the typing defers ----
 
 test('a refused tick in an idle stopped session: the watch timer re-arms the ticker, and the resume prompt still comes', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   w.afterRefusals = 1 // the next tick's timer never runs: that chain ends
@@ -1255,7 +1255,7 @@ test('a refused first tick: the watch timer that session.start arms re-arms the 
 })
 
 test('a refused watch period: the ticker re-arms the watch, and a refused tick after that is still healed', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93, everyRefusals: 1 }) // the watch interval ends at its first period
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93, everyRefusals: 1 }) // the watch interval ends at its first period
   await begin($, w)
   await loopStop($, w)
   await w.clock.advance(20 * MIN) // the ticker sees the watch is dead and starts it again
@@ -1266,7 +1266,7 @@ test('a refused watch period: the ticker re-arms the watch, and a refused tick a
 })
 
 test('a stop that ended another way leaves no typing defers: the next stop gets all ten', { timeoutMs: 20_000 }, async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   const defers = (): string[] => debug(w).filter((t) => t.startsWith('spare10: the prompt box has text.'))
   await loopStop($, w)
@@ -1295,7 +1295,7 @@ test('a stop that ended another way leaves no typing defers: the next stop gets 
 })
 
 test('a prompt box that holds only white space does not delay the resume prompt', async ($, on) => {
-  const w = world(on, { spans: 'off', pct: 93 })
+  const w = world(on, { floors: 'off', spans: 'off', pct: 93 })
   await begin($, w)
   await loopStop($, w)
   w.box = ' \n'

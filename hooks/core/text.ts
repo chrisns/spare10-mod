@@ -10,7 +10,7 @@ import type { Basis, Kind } from './reading.ts'
 // `spare10: ` here. Texts the engine does not prefix keep it: model texts (STOP, PAUSED, HEADLESS, the
 // pause instruction, the resume note), the drop reasons of prompt.submit, and debug lines.
 
-export const VERSION: string = '0.2.0' // keep equal to .claude-plugin/plugin.json
+export const VERSION: string = '0.3.0' // keep equal to .claude-plugin/plugin.json
 export const HEADER: string = 'spare10'
 export const QUESTION_OPTIONS: readonly [string, string] = ['Stop here', 'Resume']
 export const RESUME_LABEL: string = 'Resume'
@@ -27,6 +27,9 @@ export const W_FLAG: string =
  * `holdEnd`: the hold end when it is not the reset (3.1): a reading without a reset time, or a skip
  * start that is still ahead (skip 2.1), for {at}. `span`: the kind's span in ms, set only when a text
  * may name {lead} or {span} (a skip owner). `test`: a test reading, for {soon} and {lead}.
+ * The floor (floor 6.4): `to` is the end point of the consent that the text describes (the tier of a
+ * question or a Resume at the reserve, or the end point now of a covering consent to the floor).
+ * `floor` is set only for a kind at the floor: {R} becomes {F}. With neither, every text is the 0.2 text.
  */
 export type Facts = {
   used: number
@@ -39,6 +42,8 @@ export type Facts = {
   holdEnd?: number
   span?: number
   test?: boolean
+  to?: number
+  floor?: number
 }
 
 /** A window that reset or ended, for {reset}. */
@@ -145,16 +150,20 @@ const clockOf = (f: Facts): string =>
 const reserveOf = (f: Facts): string => `${fmtPct(f.reserve)}%`
 const UNTIL_RESET = 'until the window resets' // only when a caller has no figures
 
-/** {R} */
-const reserveName = (f: Facts): string => `${reserveOf(f)} ${isWeekly(f) ? 'weekly reserve' : 'reserve'}`
+/** {R}, or {F} for a kind at the floor (floor 2.1). */
+const reserveName = (f: Facts): string =>
+  f.floor !== undefined
+    ? `${fmtPct(f.floor)}% ${isWeekly(f) ? 'weekly floor' : 'floor'}`
+    : `${reserveOf(f)} ${isWeekly(f) ? 'weekly reserve' : 'reserve'}`
 /** {Rs} */
 const yourReserves = (fs: readonly Facts[]): string => fs.map((f) => `your ${reserveName(f)}`).join(' and ')
 /** {is} */
 const isAre = (fs: readonly Facts[]): string => (fs.length > 1 ? 'are' : 'is')
-/** {Rq} */
+/** {Rq}. One kind at the floor: the quota floor (floor 2.1). */
 const quotaReserve = (fs: readonly Facts[]): string => {
   const f = onlyOf(fs)
   if (f === undefined) return 'quota reserves'
+  if (f.floor !== undefined) return `${fmtPct(f.floor)}% ${isWeekly(f) ? 'weekly quota floor' : 'quota floor'}`
   return `${reserveOf(f)} ${isWeekly(f) ? 'weekly quota reserve' : 'quota reserve'}`
 }
 /** {names} */
@@ -190,11 +199,72 @@ export function untilText(f: Facts | readonly Facts[]): string {
   return `until they reset (${clocks.join(' and ')})`
 }
 
+/** {p}: an end point, '95% used', and for the weekly window '95% used of the weekly window'. */
+const pointText = (to: number, kind: Kind): string => `${fmtPct(to)}% used${kind === 'seven_day' ? ' of the weekly window' : ''}`
+
+/** A fact that names the floor: an end point (at the reserve) or the floor stage. */
+const hasFloor = (f: Facts): boolean => f.to !== undefined || f.floor !== undefined
+
+/** {use} of one kind (floor 2.1): at the floor the last part left, at the reserve its end point, else 0.2. */
+function useOne(f: Facts): string {
+  const weekly = isWeekly(f)
+  if (f.floor !== undefined) return `the last ${fmtPct(f.left)}%${weekly ? ' of the weekly window' : ''} ${untilText(f)}`
+  const name = weekly ? 'the weekly reserve' : 'the reserve'
+  if (f.to !== undefined) return f.resetsAtMs === null ? `${name} for one hour, or until ${fmtPct(f.to)}% used` : `${name} until ${fmtPct(f.to)}% used`
+  return `${name} ${untilText(f)}`
+}
+
 /** {use} */
 const useText = (fs: readonly Facts[]): string => {
   const one = onlyOf(fs)
-  if (one === undefined) return `both reserves ${untilText(fs)}`
-  return `${isWeekly(one) ? 'the weekly reserve' : 'the reserve'} ${untilText(one)}`
+  if (one !== undefined) return useOne(one)
+  if (!fs.some(hasFloor)) return `both reserves ${untilText(fs)}`
+  const [a, b] = fs
+  if (
+    a !== undefined &&
+    b !== undefined &&
+    a.floor === undefined &&
+    b.floor === undefined &&
+    a.to !== undefined &&
+    a.to === b.to &&
+    a.resetsAtMs !== null &&
+    b.resetsAtMs !== null
+  ) {
+    return `both reserves until ${fmtPct(a.to)}% used`
+  }
+  return fs.map(useOne).join(' and ')
+}
+
+/** {verb} (floor 2.1): what spare10 does at the floor in each mode. */
+const verbOf = (mode: Mode): string => (mode === 'tell' ? 'spare10 tells the agents to wind down' : 'spare10 asks you again')
+
+/** A skip start that is still ahead: a hold end that is not the reset, on a reading with a reset time. */
+const skipAhead = (f: Facts): boolean => f.resetsAtMs !== null && f.holdEnd !== undefined
+
+/**
+ * {asks} (floor 2.1): when spare10 asks again, for the kinds with an end point (`to`). '' when none.
+ * While a skip start is ahead, it says until when: from the skip start nothing gates.
+ */
+export function asksText(f: Facts | readonly Facts[], mode: Mode = 'hold'): string {
+  const fs = listOf(f).filter((x) => x.to !== undefined)
+  const verb = verbOf(mode)
+  const one = onlyOf(fs)
+  if (one !== undefined) {
+    const p = pointText(one.to ?? 0, kindOf(one))
+    if (!skipAhead(one)) return `At ${p}, ${verb}.`
+    return `Until ${clockText(one.holdEnd ?? 0, kindOf(one), one.timeZone, one.now)}, ${verb} at ${p}.`
+  }
+  const [a, b] = fs
+  if (a === undefined || b === undefined) return ''
+  const points = a.to === b.to ? `${fmtPct(a.to ?? 0)}% used of either window` : `${pointText(a.to ?? 0, 'five_hour')}, or at ${pointText(b.to ?? 0, 'seven_day')}`
+  if (!skipAhead(a) && !skipAhead(b)) return `At ${points}, ${verb}.`
+  return `Until its reserve opens, ${verb} at ${points}.`
+}
+
+/** ' {asks}', or '' when there is none. */
+const asksPart = (fs: readonly Facts[], mode: Mode): string => {
+  const a = asksText(fs, mode)
+  return a === '' ? '' : ` ${a}`
 }
 
 // ---- Skip near the reset: the placeholders of skip 2.1 ----
@@ -285,7 +355,7 @@ export const untilPhrase = (u: { at: string; lead?: string }): string => (u.lead
 export function questionText(f: Facts | readonly Facts[], opener: 'loop' | 'prompt', mode: Mode, auto = false): string {
   const fs = listOf(f)
   const head = `${cap(yourReserves(fs))} ${isAre(fs)} reached: ${personFacts(fs)}.`
-  const ask = `Continue on ${useText(fs)}?`
+  const ask = `Continue on ${useText(fs)}?${asksPart(fs, mode)}`
   const hold = opener === 'loop' ? 'All work is on hold.' : mode === 'tell' ? 'spare10 holds your prompt.' : 'spare10 holds your prompt and any other work.'
   if (!auto) return `${head} ${hold} ${ask}`
   const { at, lead } = whenOf(fs)
@@ -320,10 +390,13 @@ export const pausedText = (f: Facts | readonly Facts[]): string =>
 export const headlessText = (f: Facts | readonly Facts[], sessionId: string): string =>
   `spare10 stopped this unattended run at the quota reserve (${modelFacts(f)}). No further model requests were sent. To pick it up later: claude --resume ${sessionId}`
 
-/** B12: spare10's template. Without user text there is no User instructions paragraph. */
+/** B12: spare10's template. Without user text there is no User instructions paragraph. A kind at the floor: the floor sentence. */
 export function pauseInstruction(f: Facts | readonly Facts[], pausePrompt: string | null): string {
+  const reached = listOf(f).some((x) => x.floor !== undefined)
+    ? 'You have reached the floor of the quota reserve for this session'
+    : 'You have reached the safe usage limit for this session'
   const head =
-    `spare10 budget guard. You have reached the safe usage limit for this session (${modelFacts(f)}). ` +
+    `spare10 budget guard. ${reached} (${modelFacts(f)}). ` +
     'Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.'
   return pausePrompt === null || pausePrompt.trim() === '' ? head : `${head}\n\nUser instructions: ${pausePrompt}`
 }
@@ -369,6 +442,8 @@ export function badWarning(
     | 'SPARE10_WEEKLY_RESERVE'
     | 'SPARE10_LAST_MINUTES'
     | 'SPARE10_WEEKLY_LAST_HOURS'
+    | 'SPARE10_RESUME_FLOOR'
+    | 'SPARE10_WEEKLY_RESUME_FLOOR'
     | 'SPARE10_AUTO_RESUME'
     | 'SPARE10_HEADLESS'
     | 'SPARE10',
@@ -379,10 +454,18 @@ export function badWarning(
   if (name === 'SPARE10_WEEKLY_RESERVE') return `SPARE10_WEEKLY_RESERVE="${raw}" is not 0 or 1 to 99. spare10 uses ${used}.`
   if (name === 'SPARE10_LAST_MINUTES') return `SPARE10_LAST_MINUTES="${raw}" is not 0 to 299. spare10 uses ${used}.`
   if (name === 'SPARE10_WEEKLY_LAST_HOURS') return `SPARE10_WEEKLY_LAST_HOURS="${raw}" is not 0 to 167. spare10 uses ${used}.`
+  if (name === 'SPARE10_RESUME_FLOOR') return `SPARE10_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`
+  if (name === 'SPARE10_WEEKLY_RESUME_FLOOR') return `SPARE10_WEEKLY_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`
   if (name === 'SPARE10_AUTO_RESUME') return `SPARE10_AUTO_RESUME="${raw}" is not on or off. spare10 uses ${used}.`
   if (name === 'SPARE10_HEADLESS') return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`
 }
+
+/** B54: a floor at or above its reserve does nothing. */
+export const floorWarning = (kind: Kind, floor: number, reserve: number): string =>
+  kind === 'seven_day'
+    ? `the weekly resume floor (${fmtPct(floor)}%) is not below the weekly reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the weekly reserve, or to 0.`
+    : `the resume floor (${fmtPct(floor)}%) is not below the reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the reserve, or to 0.`
 
 /** B29 */
 export const timeoutWarning = (name: string, auto = false): string =>
@@ -409,9 +492,12 @@ type AutoAt = { at: string; work: boolean; lead?: string }
  * notice takes an optional list of open kinds (skip 2.4): with none, it is the D0.2 text.
  */
 export const notice = {
-  continuing: (f: Facts | readonly Facts[]): string => {
+  /** Floor 2.4: with an end point on some kind, one part per kind and {asks}. Else the 0.2 text. */
+  continuing: (f: Facts | readonly Facts[], mode: Mode = 'hold'): string => {
     const fs = listOf(f)
-    return `continuing on ${yourReserves(fs)}. spare10 stays quiet ${untilText(fs)}.`
+    if (!fs.some((x) => x.to !== undefined)) return `continuing on ${yourReserves(fs)}. spare10 stays quiet ${untilText(fs)}.`
+    const parts = fs.map((x) => `your ${reserveName(x)} ${x.to !== undefined ? `until ${fmtPct(x.to)}% used` : untilText(x)}`)
+    return `continuing on ${parts.join(' and ')}.${asksPart(fs, mode)}`
   },
   newWindow: 'held work continues on the new 5-hour window.',
   newWindowFor: (kinds: readonly Kind[]): string => `held work continues on the new ${windowNames(kinds)}.`,
@@ -510,7 +596,9 @@ export type StatusInput = {
   warnings: string[]
   timeZone?: string
   // 0.2. Every field below is optional: absent gives the 0.1 report.
-  weekly?: { reserve: number; from: Source; basis: Basis; facts?: Facts; consentUntil?: number } | 'off' // reserve 0 is off too
+  weekly?:
+    | { reserve: number; from: Source; basis: Basis; facts?: Facts; consentUntil?: number; consentTo?: number; consentEnded?: boolean }
+    | 'off' // reserve 0 is off too
   autoResume?: { on: boolean; from: Source }
   at?: { ms: number; kinds: readonly Kind[]; skip?: boolean } // when an open question or a stop continues. skip: a skip start ('at', not 'after')
   work?: boolean // the stop has work
@@ -520,6 +608,11 @@ export type StatusInput = {
   spans?: { lastMinutes: number; lastMinutesFrom: SpanSource; weeklyLastHours: number; weeklyLastHoursFrom: SpanSource }
   open?: readonly Facts[] // the open kinds: the open phase line, and the asking line
   skipStop?: boolean // the stop that applies has the skip tag
+  // The resume floor (floor 2.7). Absent: no floor rows and the 0.2 help line.
+  floors?: { resumeFloor: number; resumeFloorFrom: Source; weeklyResumeFloor: number; weeklyResumeFloorFrom: Source }
+  consentTo?: number // the end point now of the 5-hour consent to the floor, in force or ended
+  consentEnded?: boolean // that consent reached its end point (consentUntil is then absent)
+  consented?: readonly Facts[] // the consented kinds, `to` set from their covering consents: the phase line {asks}
 }
 
 const GLYPH: Record<Phase, string> = {
@@ -584,7 +677,10 @@ function phaseLine(s: StatusInput): string {
     blind: 'Claude Code reports no 5-hour quota. spare10 lets all work through.',
     waiting: 'no reading yet. spare10 lets all work through.',
     armed: stepsIn(s.reserve, watchedWeekly(s)?.reserve),
-    consented: `you chose to continue. spare10 is quiet ${quietOf(s)}.`,
+    consented:
+      s.consented !== undefined && s.consented.some((f) => f.to !== undefined)
+        ? `you chose to continue. ${asksText(s.consented, s.mode)}`
+        : `you chose to continue. spare10 is quiet ${quietOf(s)}.`,
     open: openRs === '' ? 'the reset is near, so spare10 lets all work through.' : `the reset is near. ${openRs}, so spare10 lets all work through.`,
     stopped,
     asking,
@@ -659,8 +755,11 @@ function weeklyRows(s: StatusInput): { reserve: string[]; reading: string[]; con
     return { ...none, reserve: [field('weekly reserve', `off. spare10 does not watch the weekly window (${fromText(from, 'SPARE10_WEEKLY_RESERVE')})`)] }
   }
   const f = w.facts ?? factsOf(w.basis, w.reserve, s.timeZone, 'seven_day', s.now)
-  const consent =
-    w.consentUntil === undefined ? 'none' : `until ${clockText(w.consentUntil, 'seven_day', s.timeZone, s.now)} (you chose to continue)`
+  const consent = consentValue(
+    w.consentUntil === undefined ? undefined : clockText(w.consentUntil, 'seven_day', s.timeZone, s.now),
+    w.consentTo,
+    w.consentEnded,
+  )
   return {
     reserve: [field('weekly reserve', `${fmtPct(w.reserve)}% of the weekly window (${fromText(w.from, 'SPARE10_WEEKLY_RESERVE')})`)],
     reading: [field('weekly reading', readingValue(w.basis, f, s.now))],
@@ -668,15 +767,52 @@ function weeklyRows(s: StatusInput): { reserve: string[]; reading: string[]; con
   }
 }
 
+/** Floor 2.7: a consent row. Full: until the reset. To the floor: its end point or the reset. Ended: at its end point. */
+function consentValue(until: string | undefined, to: number | undefined, ended: boolean | undefined): string {
+  if (ended === true && to !== undefined) return `ended at ${fmtPct(to)}% used (you chose to continue until then)`
+  if (until === undefined) return 'none'
+  return to === undefined ? `until ${until} (you chose to continue)` : `until ${fmtPct(to)}% used or ${until} (you chose to continue)`
+}
+
+/** Floor 2.7: the floor is in force for a kind: an attended run, and 0 < floor < reserve. */
+const floorInForce = (floor: number, reserve: number, attended: boolean): boolean => attended && floor > 0 && floor < reserve
+
+/** Floor 2.7: the `resume floor` row, and the `weekly floor` row while the weekly window is watched. */
+function floorRows(s: StatusInput): string[] {
+  const fl = s.floors
+  if (fl === undefined) return []
+  const verb = s.mode === 'tell' ? 'spare10 tells the agents to wind down' : 'spare10 asks again'
+  const row = (floor: number, reserve: number, from: string, weekly: boolean): string => {
+    if (floor <= 0) return `off. A Resume lasts until the ${weekly ? 'weekly reset' : 'reset'} (${from})`
+    if (floor >= reserve) return `${fmtPct(floor)}% does nothing, because it is not below the ${weekly ? 'weekly reserve' : 'reserve'} (${from})`
+    if (!s.attended) return `${fmtPct(floor)}%: this run is unattended and never asks, so the floor does nothing (${from})`
+    return `${fmtPct(floor)}%: after a Resume, ${verb} at ${pointText(Math.round((100 - floor) * 10) / 10, weekly ? 'seven_day' : 'five_hour')} (${from})`
+  }
+  const rows = [field('resume floor', row(fl.resumeFloor, s.reserve, fromText(fl.resumeFloorFrom, 'SPARE10_RESUME_FLOOR'), false))]
+  const w = watchedWeekly(s)
+  if (w !== undefined) {
+    rows.push(field('weekly floor', row(fl.weeklyResumeFloor, w.reserve, fromText(fl.weeklyResumeFloorFrom, 'SPARE10_WEEKLY_RESUME_FLOOR'), true)))
+  }
+  return rows
+}
+
+/** Floor 2.7: the help line names the floor while a floor is in force for a watched kind. */
+function floorHelp(s: StatusInput): boolean {
+  const fl = s.floors
+  if (fl === undefined) return false
+  const w = watchedWeekly(s)
+  return floorInForce(fl.resumeFloor, s.reserve, s.attended) || (w !== undefined && floorInForce(fl.weeklyResumeFloor, w.reserve, s.attended))
+}
+
 // The warning of 2.7 when the reset clock does not run.
 const TICKER_WARNING = 'spare10 cannot check the reset in this session. Type a prompt to continue after the reset.'
 
 /**
  * B22: what /spare10 prints. The engine puts `spare10: ` in front of the reply, so the first line
- * reads `spare10: version 0.2.0` (a deviation from B22's `spare10 {VERSION}`, defect D1).
+ * reads `spare10: version {VERSION}` (a deviation from B22's `spare10 {VERSION}`, defect D1).
  */
 export function statusReport(s: StatusInput): string {
-  const consent = s.consentUntil === undefined ? 'none' : `until ${formatClock(s.consentUntil, s.timeZone)} (you chose to continue)`
+  const consent = consentValue(s.consentUntil === undefined ? undefined : formatClock(s.consentUntil, s.timeZone), s.consentTo, s.consentEnded)
   const weekly = weeklyRows(s)
   const atReset =
     s.autoResume === undefined || !s.attended
@@ -689,6 +825,7 @@ export function statusReport(s: StatusInput): string {
     field('reserve', `${fmtPct(s.reserve)}% of the 5-hour window (${fromText(s.reserveFrom, 'SPARE10_RESERVE')})`),
     ...weekly.reserve,
     ...spanRows(s),
+    ...floorRows(s),
     field('at the reserve', actionValue(s)),
     ...atReset,
     field('reading', readingValue(s.basis, s.facts ?? factsOf(s.basis, s.reserve, s.timeZone), s.now)),
@@ -702,7 +839,9 @@ export function statusReport(s: StatusInput): string {
     ...(s.tickerStale === true ? [`  ⚠ ${TICKER_WARNING}`] : []),
     ...s.warnings.map((w) => `  ⚠ ${w}`),
     '',
-    '/spare10 resume   continue on the reserve until the window resets',
+    floorHelp(s)
+      ? '/spare10 resume   continue on the reserve until the floor, or past the floor until the reset'
+      : '/spare10 resume   continue on the reserve until the window resets',
     '/spare10 stop     stop at the reserve now',
   ]
   return lines.join('\n')
@@ -716,6 +855,12 @@ export type ReplyCase = 'asking' | 'stopped' | 'tripped' | 'consented' | 'below'
 const openText = (fs: readonly Facts[]): string =>
   fs.length === 0 ? 'the reserve is open' : `${yourReserves(fs)} ${isAre(fs)} open ${untilText(fs)}`
 
+/** Floor 2.8: one part of the consented reply: its end point, or its reset. */
+const resumedPart = (f: Facts): string => {
+  if (f.to !== undefined) return `until ${pointText(f.to, kindOf(f))}`
+  return isWeekly(f) ? `${untilText(f)} on the weekly window` : untilText(f)
+}
+
 /**
  * B23 ('tripped' is "tripped, not stopped"). 'overdue': a stop past its end that nobody released yet,
  * with the windows that reset and the open ones. 'open': no kind gates and some kind is open (`f`: the
@@ -726,14 +871,16 @@ export function resumeReply(
   f?: Facts | readonly Facts[],
   named?: readonly Named[],
   open?: readonly Facts[],
+  mode: Mode = 'hold',
 ): string {
   const fs = f === undefined ? [] : listOf(f)
   const use = fs.length === 0 ? `the reserve ${UNTIL_RESET}` : useText(fs)
+  const asks = asksPart(fs, mode)
   switch (c) {
     case 'asking':
-      return `resumed. Held work continues on ${use}.`
+      return `resumed. Held work continues on ${use}.${asks}`
     case 'stopped':
-      return `resumed. You can use ${use}. Type a prompt to continue.`
+      return `resumed. You can use ${use}.${asks} Type a prompt to continue.`
     case 'overdue': {
       const ev = eventText(named ?? [], open ?? [])
       return ev === '' ? 'the stop is over. Type a prompt to continue.' : `${ev}, and the stop is over. Type a prompt to continue.`
@@ -741,8 +888,9 @@ export function resumeReply(
     case 'open':
       return `nothing to resume. The reset is near, so ${openText(fs)}.`
     case 'tripped':
-      return `you can use ${use}.`
+      return `you can use ${use}.${asks}`
     case 'consented':
+      if (fs.some((x) => x.to !== undefined)) return `already resumed ${fs.map(resumedPart).join(', and ')}.${asks}`
       return `already resumed ${fs.length === 0 ? UNTIL_RESET : untilText(fs)}.`
     case 'below':
       if (fs.length > 0) return `nothing to resume. ${personFacts(fs)}.`
@@ -824,9 +972,17 @@ export const unknownVerb = (verb: string): string =>
 /**
  * Section 12.1, 2.9. `opens` (skip 2.9), for a test reading at or above the trip point with a span:
  * when its reserve opens ({at} and {lead}), 'now' when it is open at once (`f.span` gives {span}), or
- * 'real' when the real reading beneath is in the reserve too and keeps the hold (B45).
+ * 'real' when the real reading beneath is in the reserve too and keeps the hold (B45). Floor 2.9:
+ * 'raised' is a raise in place (B53). `pastFloor`: the floor of the kind when the test reading is past
+ * it. `realIn`: the real reading beneath is in the reserve, so a Resume on the test reading covers it.
  */
-export function simulateReply(kind: 'set' | 'off' | 'bad' | 'weekly-off', f?: Facts, opens?: { at: string; lead: string } | 'now' | 'real'): string {
+export function simulateReply(
+  kind: 'set' | 'raised' | 'off' | 'bad' | 'weekly-off',
+  f?: Facts,
+  opens?: { at: string; lead: string } | 'now' | 'real',
+  pastFloor?: number,
+  realIn?: boolean,
+): string {
   if (kind === 'off') return 'test reading cleared. Consent and stop for this window are cleared too.'
   if (kind === 'weekly-off') return 'the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.'
   if (kind === 'bad' || f === undefined) {
@@ -846,7 +1002,12 @@ export function simulateReply(kind: 'set' | 'off' | 'bad' | 'weekly-off', f?: Fa
   } else if (opens !== undefined) {
     opensText = ` The ${weekly ? 'weekly reserve' : 'reserve'} opens at ${opens.at}, ${opens.lead}.`
   }
-  return `test reading set to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}. It can only raise the real reading.${opensText} Run /spare10 simulate off to clear it.`
+  // Floor 2.9: the test reading is past the floor, and a Resume on it covers the real reading beneath.
+  const floorText = pastFloor === undefined ? '' : ` This is past your ${fmtPct(pastFloor)}% ${weekly ? 'weekly floor' : 'floor'}.`
+  const realText = realIn === true ? ` A Resume on the test reading also lets real work use the ${weekly ? 'weekly reserve' : 'reserve'}.` : ''
+  const verb = kind === 'raised' ? 'raised' : 'set'
+  const stays = kind === 'raised' ? ' Your earlier answers stay.' : ''
+  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run /spare10 simulate off to clear it.`
 }
 
 /** A /spare10 that threw. */

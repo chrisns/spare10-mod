@@ -25,10 +25,11 @@ import {
   step,
   stopRec,
   typed,
-  world,
+  world02 as world,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // Skip near the reset for held work and questions, through the engine (skip design B41 to B46, 2.2 to
 // 2.7, 3.5, 4.2 to 4.6). An independent set beside tests/kit/skip.test.ts: attended with autoResume on
 // and off, both kinds, a kind with no reset time, test windows, tell mode and unattended wait at the
@@ -688,7 +689,7 @@ test('a Stop here on a test window over a real trip is extended until the real s
   const end = T0 + 22 * MIN
   const start = T0 + 2 * MIN
   expect((await $.command.run(cmd('simulate 95 in 22m'))).text).toBe(
-    `test reading set to 95% used, resets ${hhmm(end)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.`,
+    `test reading set to 95% used, resets ${hhmm(end)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.`,
   )
   const held = bash($)
   await w.clock.settle()
@@ -720,7 +721,7 @@ test('a test window over a real trip without a reset time opens nothing: the rea
   await begin($, w)
   const end = T0 + 10 * MIN
   expect((await $.command.run(cmd('simulate 95 in 10m'))).text).toBe(
-    `test reading set to 95% used, resets ${hhmm(end)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. Run /spare10 simulate off to clear it.`,
+    `test reading set to 95% used, resets ${hhmm(end)}. It can only raise the real reading. The real reading is also in the reserve, so the test window does not open it. A Resume on the test reading also lets real work use the reserve. Run /spare10 simulate off to clear it.`,
   )
   const held = bash($)
   await w.clock.settle()
