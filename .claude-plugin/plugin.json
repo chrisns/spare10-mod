@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "spare10",
-  "version": "0.1.0",
-  "description": "Keeps the last part of your 5-hour quota for you. At the reserve, spare10 holds all work and asks you whether to continue.",
+  "version": "0.2.0",
+  "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. Shortly before the reset, it lets work use the reserve.",
   "author": {
     "name": "Chris Nesbitt-Smith"
   },
@@ -25,21 +25,52 @@
       "min": 1,
       "max": 99
     },
+    "weeklyReserve": {
+      "type": "number",
+      "title": "Weekly reserve (%)",
+      "description": "Keep this much of the weekly window for yourself. 1 to 99, one decimal at most. 0 switches the weekly guard off. SPARE10_WEEKLY_RESERVE overrides it for one run.",
+      "default": 10,
+      "min": 0,
+      "max": 99
+    },
+    "lastMinutes": {
+      "type": "number",
+      "title": "Open reserve before 5-hour reset (min)",
+      "description": "This many minutes before the 5-hour window resets, spare10 stops guarding the reserve and lets all work use it, because the quota refreshes soon. 0 switches this off. 0 to 299, one decimal at most. SPARE10_LAST_MINUTES overrides it for one run.",
+      "default": 20,
+      "min": 0,
+      "max": 299
+    },
+    "weeklyLastHours": {
+      "type": "number",
+      "title": "Open weekly reserve before weekly reset (h)",
+      "description": "This many hours before the weekly window resets, spare10 stops guarding the weekly reserve and lets all work use it. 0 switches this off. 0 to 167, one decimal at most. SPARE10_WEEKLY_LAST_HOURS overrides it for one run.",
+      "default": 8,
+      "min": 0,
+      "max": 167
+    },
     "pausePrompt": {
       "type": "string",
       "title": "Pause prompt",
       "description": "Leave empty to stop and ask you. Or write an instruction, and spare10 gives it to every agent instead of stopping. SPARE10_PAUSE_PROMPT overrides it for one run.",
       "default": ""
     },
+    "autoResume": {
+      "type": "boolean",
+      "title": "Continue at the reset",
+      "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
+      "default": true
+    },
     "headless": {
       "type": "string",
       "title": "Unattended runs (-p, SDK)",
-      "description": "What spare10 does inside the reserve when nobody can answer: off (watch only), prompt (tell every agent to wind down), stop (refuse tools and further requests). SPARE10_HEADLESS overrides it for one run.",
+      "description": "What spare10 does inside the reserve when nobody can answer: off (watch only), prompt (tell every agent to wind down), stop (refuse tools and further requests), wait (hold, then continue at the reset). SPARE10_HEADLESS overrides it for one run.",
       "default": "off",
       "options": [
         "off",
         "prompt",
-        "stop"
+        "stop",
+        "wait"
       ]
     },
     "scope": {

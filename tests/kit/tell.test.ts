@@ -26,8 +26,12 @@ const INSTR_LATER = instruction(LATER)
 const TOLD_NOTICE = 'your 10% reserve is reached. spare10 told the agents to wind down.'
 const toldLine = (key: string): string => `spare10: told ${key}`
 
-// R7: the tell-mode prompt question, and the B10 drop text.
-const PROMPT_QUESTION = `Your 10% reserve is reached: ${pf(93, 7, RESETS)}. spare10 holds your prompt. Continue on the reserve until ${clock(RESETS)}?`
+// R7: the tell-mode prompt question (autoResume on: what no answer and Stop here mean), and the B10 drop
+// text. With the shipped spans the prompt goes in at the skip start, 20 min before the reset (skip 2.2).
+const promptQuestion = (iso: string): string =>
+  `Your 10% reserve is reached: ${pf(93, 7, iso)}. spare10 holds your prompt. Continue on the reserve until ${clock(iso)}? ` +
+  `If you do not answer, your prompt goes in at ${clock(new Date(Date.parse(iso) - 20 * 60_000).toISOString())}, 20 min before the reset, unless a reserve is still reached. Stop here gives it back to you.`
+const PROMPT_QUESTION = promptQuestion(RESETS)
 const NOT_STARTED = `spare10: not started. This session is inside your 10% reserve until ${clock(RESETS)}. Send the prompt again to be asked again, or run /spare10 resume.`
 const CONTINUING = `continuing on your 10% reserve. spare10 stays quiet until ${clock(RESETS)}.`
 const STOPPED_NOTICE = 'stopped at your 10% reserve. Type a prompt to be asked again, or run /spare10 resume.'
@@ -351,9 +355,7 @@ test('in a new window a person prompt asks again until main is told in that wind
   expect(await $.prompt.submit(typed('two'))).toEqual({
     drop: `spare10: not started. This session is inside your 10% reserve until ${clock(LATER)}. Send the prompt again to be asked again, or run /spare10 resume.`,
   })
-  expect(w.asked.map((a) => a.question)).toEqual([
-    `Your 10% reserve is reached: ${pf(93, 7, LATER)}. spare10 holds your prompt. Continue on the reserve until ${clock(LATER)}?`,
-  ])
+  expect(w.asked.map((a) => a.question)).toEqual([promptQuestion(LATER)])
   expect(ctx(await bash($))).toEqual([INSTR_LATER]) // main is told in the new window
   expect(await $.prompt.submit(typed('three'))).toMatchObject({ text: 'three' })
   expect(w.asked).toHaveLength(1)

@@ -1,14 +1,20 @@
 # spare10-mod
 
 spare10 (https://github.com/alesdi/spare10) re-invented as a Claude Code mod: a plugin with a function-hooks module.
-It targets Claude Code 2.1.281, where function hooks are early access (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`).
+It targets Claude Code 2.1.281 and later (tested on 2.1.282), where function hooks are early access (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`).
 
 - The repo root is the plugin root and a one-plugin marketplace (`.claude-plugin/`).
 - `hooks/register.tsx` is the only file that uses `$`. Every hook and every function that gets `$` lives there.
 - `hooks/core/*.ts` is pure. It never names `$`, and imports only types from `claude-code` and other core files.
 - `hooks/core/text.ts` holds every text that a person or the model reads. Keep its `VERSION` equal to `plugin.json`.
 - The engine puts `spare10: ` in front of each transcript line (`$.ui.log` without `to`) and each `command.run` reply. So never start those texts with `spare10`. Model texts, drop reasons and debug lines keep their own `spare10: `. A pure test and a kit test guard this.
-- `SPARE10_CONSENT` is `<session id> <iso>`. The process env reaches every descendant, also the `claude daemon` of `--bg` sessions. An attended session takes only its own stamp. A Resume on a test reading never goes into the env.
+- `SPARE10_CONSENT` (the 5-hour window) and `SPARE10_WEEKLY_CONSENT` (the weekly window) are `<session id> <iso>`. The process env reaches every descendant, also the `claude daemon` of `--bg` sessions. An attended session takes only its own stamp. A Resume on a test reading never goes into the env.
+- `SPARE10_STOPPED` is `<session id> <untilMs> <atMs> <tags>`. The tags are a comma list of kinds (`five_hour`, `seven_day`) and `work`, `auto`, `test`, `skip`, then the real tags. `skip` means that the until is a skip start: no margin. A 0.1 value (three tokens) still stops the 5-hour window, and never continues or extends.
+- A real tag is `real_<kind>:<resetMs>` (TS1): the real reading of that kind was in the reserve when the stop took the kind, and `resetMs` is its reset then, the identity of its window. A bare `real_<kind>` (or `:0`) has an unknown reset. Only a `skip` or `test` stop writes them. A stop holds past its until while such a kind's real reading gates with a reset less than half a window from `resetMs`, or either reset is unknown. `atMs` plays no part. An extension writes the current reset of each gating kind. A merge keeps the later window per kind and drops a tag whose reset has passed.
+- A kind in the last `lastMinutes` or `weeklyLastHours` before its reset is open. An open kind never gates, and no stop holds it. A kind with no reset time is never open. The spans come from the newest copy (`$.spare10.spans()`), and are 0 when that call or the env read fails.
+- The kit world runs the shipped spans (20 min, 8 h). The reset-path kit files pass `spans: 'off'` to `world()`. So does a test that must keep the reset timing past a skip start.
+- Arm timers only from `session.start` (the ticker and its watch timer), from those two timers, or from the watchdog in `session.measure` and `ui.render`. A timer armed in a gate can die with its dispatch and shares its turn hold. The only other timers are `restoreDraft`, the `session.end` redraws and the badge pulse (`$.clock.every` in `ui.render`).
+- A hold parks first and reads `next.budget` on each cycle (B40).
 - Tests: `tests/core` (pure), `tests/kit` (through the engine), helpers in `tests/helpers` (never `*.test.ts`).
 - Check: `scripts/check.sh` (validate twice, `claude plugin test .`, tsc from package-lock.json). It must pass before a commit.
 - Once per Claude Code version, run `claude -p "/plugin-types"` first. It is local and makes no model request.
