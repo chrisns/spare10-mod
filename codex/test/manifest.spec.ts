@@ -119,12 +119,13 @@ test('manifest: codex/mcp.json equals design 3.2, and passes every option variab
   }
 })
 
-test('manifest: codex/bin/broker.sh is an executable POSIX sh script that runs ./codex/dist/spare10.mjs', () => {
+test('manifest: codex/bin/broker.sh is an executable POSIX sh script that runs codex/dist/spare10.mjs by its full path', () => {
   const file = 'codex/bin/broker.sh'
   assert.equal(statSync(join(ROOT, file)).mode & 0o755, 0o755)
   const sh = text(file)
   assert.ok(sh.startsWith('#!/bin/sh\n'))
-  assert.match(sh, /exec "\$n" \.\/codex\/dist\/spare10\.mjs/)
+  // The cwd is the plugin root (codex/mcp.json). The full path puts the install in the argv of the broker.
+  assert.match(sh, /exec "\$n" "\$PWD\/codex\/dist\/spare10\.mjs"/)
   assert.match(sh, /process\.versions\.node\.split\("\."\)\[0\] >= 20/)
   assert.match(sh, /^echo "spare10: no Node\.js 20 or later found\. .*" >&2\nexit 1\n$/m)
 })

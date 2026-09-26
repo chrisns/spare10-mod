@@ -186,6 +186,29 @@ test('a parked loop whose own dispatch is abandoned is denied at once, and the o
   expect(w.ran).toEqual(['Bash:a1'])
 })
 
+test('a parked loop abandoned after a carrier cycle parks no more, and the live waiter still re-arms', { plugins: [above] }, async ($, on) => {
+  const w = world(on, { pct: 93, agents: ['a1'] })
+  await begin($, w)
+  const bg = bash($, 'a1')
+  await w.clock.settle()
+  const main = bash($, undefined, 'abandon me')
+  await w.clock.settle()
+  const before = w.parkCalls
+  w.cap() // one carrier cycle for both waiters: each round listens for its own abort
+  await w.clock.settle()
+  expect(w.parkCalls).toBe(before + 2)
+  await w.clock.advance(1000)
+  expect((await main).deny).toBe('a hook above settled first')
+  await w.clock.settle()
+  const after = w.parkCalls
+  w.cap()
+  await w.clock.settle()
+  expect(w.parkCalls).toBe(after + 1) // only the live waiter parks again
+  w.release('Resume')
+  expect((await bg).result).toBe('ran')
+  expect(w.ran).toEqual(['Bash:a1'])
+})
+
 test('a decision from another copy in env releases the waiter at its next carrier cycle and withdraws this dialog', async ($, on) => {
   const w = world(on, { pct: 93, agents: ['a1'] })
   await begin($, w)
@@ -389,6 +412,24 @@ test('an actuator read failure holds and asks', async ($, on) => {
   expect(w.ran).toEqual([])
   w.release('Resume')
   expect((await held).result).toBe('ran')
+})
+
+test('a failed write of the answer logs a debug line, and the Resume still holds in this copy', async ($, on) => {
+  const w = world(on, { pct: 93, envSetFails: ['SPARE10_CONSENT'] })
+  await begin($, w)
+  const held = bash($)
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  w.release('Resume')
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
+  const failed = debug(w).filter((t) => t.startsWith(debugLine.settleFailed('')))
+  expect(failed).toHaveLength(1)
+  expect(failed[0]).toContain('env.set SPARE10_CONSENT failed')
+  expect(transcript(w)).not.toContain(notice.continuing(F93)) // the write failed before the notice
+  expect((await bash($)).result).toBe('ran') // this copy's slot holds the consent
+  expect(w.asked).toHaveLength(1)
 })
 
 test('the pass path costs under 20 ms per call', async ($, on) => {

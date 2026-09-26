@@ -1,8 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, realpathSync } from 'node:fs'
+import { realpathSync, statSync, type Stats } from 'node:fs'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
+import { dirname } from 'node:path'
 import type { Duplex } from 'node:stream'
+import { codexDebug } from '../../hooks/core/codex.ts'
 import type { Clock, Timer } from './clock.ts'
+import type { Log } from './log.ts'
 import { guardTestPath, type Paths } from './paths.ts'
 import {
   A_READ_MS,
@@ -76,6 +79,7 @@ export class DaemonError extends Error {
 type Json = Record<string, unknown>
 
 const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v)
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 // ---- Frames (RFC 6455) ----
 
@@ -243,7 +247,42 @@ type Rpc = {
   notify(method: string, params?: unknown): void
 }
 
-type Opts = { connectMs: number; maxMessage: number }
+/** `uid`: the user that must own the socket and its folder, or undefined on a host with no POSIX uids. */
+type Opts = { connectMs: number; maxMessage: number; uid: number | undefined }
+
+/** Where the daemon socket alias leads: the real socket, no socket at all, or a socket that is not safe to dial. */
+export type SocketAt = { real: string } | { missing: string } | { unsafe: string }
+
+/** The stat of a path, as socketAt reads it. The specs give a fake one. */
+export type StatOf = (path: string) => Pick<Stats, 'isSocket' | 'uid' | 'mode'>
+
+/**
+ * The daemon socket at the end of `alias`. Codex links the alias to a short path in a shared temp folder,
+ * so another user could put a socket there (after a reboot empties the folder, for example). spare10 dials
+ * it only when it is a socket, `uid` owns it and its folder, and the folder is not world-writable. So a
+ * user outside the group of the folder cannot answer in the daemon's place, or swap the socket before the
+ * connect. A group-writable folder passes on purpose: a host with the umask 002 makes its folders so.
+ * `stat`: the real stat, or a fake one in the specs.
+ */
+export function socketAt(alias: string, uid: number | undefined, stat: StatOf = statSync): SocketAt {
+  let real: string
+  let sock: ReturnType<StatOf>
+  let dir: ReturnType<StatOf>
+  try {
+    // The alias can pass the 104-byte sun_path limit of macOS. Its target is short (gap-1 2.2).
+    real = realpathSync(alias)
+    sock = stat(real)
+    dir = stat(dirname(real))
+  } catch (e) {
+    return { missing: errText(e) }
+  }
+  const unsafe = (why: string): SocketAt => ({ unsafe: `the daemon socket ${real} is not safe to dial: ${why}` })
+  if (!sock.isSocket()) return unsafe('it is not a socket')
+  if (uid !== undefined && sock.uid !== uid) return unsafe(`the user ${sock.uid} owns it`)
+  if (uid !== undefined && dir.uid !== uid) return unsafe(`the user ${dir.uid} owns its folder`)
+  if ((dir.mode & 0o002) !== 0) return unsafe('every user can write to its folder')
+  return { real }
+}
 
 /** Opens the WebSocket on the real socket path. It resolves with the upgraded socket and the bytes after the headers. */
 function upgrade(socketPath: string, clock: Clock, o: Opts): Promise<{ socket: Duplex; head: Buffer }> {
@@ -304,14 +343,11 @@ function upgrade(socketPath: string, clock: Clock, o: Opts): Promise<{ socket: D
  */
 async function withConnection<T>(socketAlias: string, version: string, clock: Clock, timeoutMs: number, o: Opts, fn: (rpc: Rpc) => Promise<T>): Promise<T> {
   guardTestPath({}, 'daemon socket', socketAlias)
-  let real: string
-  try {
-    // The alias can pass the 104-byte sun_path limit of macOS. Its target is short (gap-1 2.2).
-    real = realpathSync(socketAlias)
-  } catch (e) {
-    throw new DaemonError('connect', `no daemon socket: ${(e as Error).message}`)
-  }
-  const { socket, head } = await upgrade(real, clock, o)
+  // The check again at each connect: the socket can change after udsDaemon made the client.
+  const at = socketAt(socketAlias, o.uid)
+  if ('missing' in at) throw new DaemonError('connect', `no daemon socket: ${at.missing}`)
+  if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
+  const { socket, head } = await upgrade(at.real, clock, o)
   const reader = new FrameReader(o.maxMessage)
   const joiner = new MessageJoiner(o.maxMessage)
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: DaemonError) => void; method: string }>()
@@ -434,14 +470,18 @@ const badReply = (method: string, what: string): DaemonError => new DaemonError(
 export const NOT_MATERIALIZED = /is not materialized yet/
 
 /**
- * The daemon client of `paths.socket`, or undefined when no socket file exists (no daemon). With
- * SPARE10_CODEX_TEST=1, a socket under ~/.codex throws (3.9). `o` sets the handshake timeout and the size
- * cap, for the specs.
+ * The daemon client of `paths.socket`, or undefined when no socket file exists (no daemon). A socket that is
+ * not safe to dial (socketAt) throws a DaemonError: the link counts it as no daemon, with a debug line. With
+ * SPARE10_CODEX_TEST=1, a socket under ~/.codex throws (3.9). `o` sets the handshake timeout, the size cap
+ * and the owner uid (default: this process's uid), for the specs.
  */
 export function udsDaemon(paths: Pick<Paths, 'socket'>, version: string, clock: Clock, o: Partial<Opts> = {}): Daemon | undefined {
   guardTestPath({}, 'daemon socket', paths.socket)
-  if (!existsSync(paths.socket)) return undefined
-  const opts: Opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE }
+  const uid = 'uid' in o ? o.uid : process.getuid?.()
+  const at = socketAt(paths.socket, uid)
+  if ('missing' in at) return undefined
+  if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
+  const opts: Opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid }
   const op = <T>(timeoutMs: number, fn: (rpc: Rpc) => Promise<T>): Promise<T> =>
     withConnection(paths.socket, version, clock, timeoutMs, opts, fn)
   return {
@@ -506,22 +546,40 @@ export function udsDaemon(paths: Pick<Paths, 'socket'>, version: string, clock: 
 // ---- The link of one broker ----
 
 export type DaemonLink = {
-  /** The daemon client, or undefined when no daemon socket exists now. */
+  /** The daemon client, or undefined when no daemon socket exists now, or when it is not safe to dial. */
   get(): Daemon | undefined
   /** True when the daemon lists the thread in `thread/loaded/list`. A failed read is false and is not kept. */
   hosted(threadId: string): Promise<boolean>
+  /** As `hosted`, but a failed read is undefined: nobody knows yet. With no daemon it is false. */
+  known(threadId: string): Promise<boolean | undefined>
 }
 
 /**
- * The daemon of one broker. `make` runs at each `get`, so a daemon that starts or stops later shows. `hosted`
- * keeps a list that names the thread for HOSTED_TTL_MS (60 s), and reads a list that does not name it again
- * after HOSTED_MISS_TTL_MS, so a thread that loaded later shows. Reads at the same time share one call.
+ * The daemon of one broker. `make` runs at each `get`, so a daemon that starts or stops later shows. A `make`
+ * that throws (a socket that is not safe to dial, the test guard) is no daemon, with one debug line for each
+ * new reason. `hosted` keeps a list that names the thread for HOSTED_TTL_MS (60 s), and reads a list that
+ * does not name it again after HOSTED_MISS_TTL_MS, so a thread that loaded later shows. Reads at the same
+ * time share one call. A failed read writes a debug line.
  */
-export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { ttlMs?: number; missTtlMs?: number } = {}): DaemonLink {
+export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { ttlMs?: number; missTtlMs?: number; log?: Log } = {}): DaemonLink {
   const ttl = o.ttlMs ?? HOSTED_TTL_MS
   const missTtl = o.missTtlMs ?? HOSTED_MISS_TTL_MS
   let cache: { at: number; ids: ReadonlySet<string> } | undefined
   let reading: Promise<ReadonlySet<string> | undefined> | undefined
+  let told: string | undefined
+
+  const get = (): Daemon | undefined => {
+    try {
+      const d = make()
+      told = undefined
+      return d
+    } catch (e) {
+      const why = errText(e)
+      if (why !== told) o.log?.debug(codexDebug.liveFailed('daemon', why))
+      told = why
+      return undefined
+    }
+  }
 
   const refresh = (d: Daemon): Promise<ReadonlySet<string> | undefined> => {
     if (reading !== undefined) return reading
@@ -533,7 +591,10 @@ export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { tt
           cache = { at: clock.now(), ids: set }
           return set
         },
-        () => undefined,
+        (e: unknown) => {
+          o.log?.debug(codexDebug.readFailed('the loaded threads', errText(e)))
+          return undefined
+        },
       )
       .finally(() => {
         reading = undefined
@@ -541,10 +602,14 @@ export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { tt
     return reading
   }
 
-  return {
-    get: make,
-    async hosted(threadId) {
-      const d = make()
+  /**
+   * `hosted` (a failed read is false) or `known` (a failed read is undefined). Each awaits once, as
+   * `hosted` always did: the specs count the turns of a chain.
+   */
+  const lookup =
+    <F extends false | undefined>(failed: F) =>
+    async (threadId: string): Promise<boolean | F> => {
+      const d = get()
       if (d === undefined) {
         cache = undefined
         return false
@@ -555,7 +620,8 @@ export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { tt
         if (age >= 0 && age < (has ? ttl : missTtl)) return has
       }
       const ids = await refresh(d)
-      return ids?.has(threadId) ?? false
-    },
-  }
+      return ids === undefined ? failed : ids.has(threadId)
+    }
+
+  return { get, hosted: lookup(false), known: lookup(undefined) }
 }

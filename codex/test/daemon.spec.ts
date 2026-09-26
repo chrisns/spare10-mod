@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, symlinkSync } from 'node:fs'
+import { chmodSync, mkdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { codexDebug } from '../../hooks/core/codex.ts'
 import { VERSION } from '../../hooks/core/text.ts'
 import { realClock } from '../src/clock.ts'
 import {
@@ -14,11 +15,13 @@ import {
   FrameReader,
   MessageJoiner,
   OP,
+  socketAt,
   udsDaemon,
   type Daemon,
 } from '../src/daemon.ts'
 import { DAEMON_CONNECT_MS, HOSTED_MISS_TTL_MS, HOSTED_TTL_MS, LOADED_MS, THREAD_READ_MS } from '../src/timing.ts'
 import { fakeClock } from './helpers/clock.ts'
+import { memoryLog } from './helpers/log.ts'
 import { memoryDaemon } from './helpers/memory-daemon.ts'
 import { tempDir } from './helpers/tmp.ts'
 import { DROP, fakeDaemon, HANG, RpcFail, type FakeDaemon } from './helpers/uds-daemon.ts'
@@ -301,6 +304,73 @@ test('a call on a socket that went away rejects as a connect error', async (t) =
   await assert.rejects(d.loaded(), isDaemonError('connect'))
 })
 
+test('the socket trust check: the fake passes, and the real layout of this user passes', async (t) => {
+  const fake = await fakeDaemon(t)
+  const uid = process.getuid?.()
+  assert.deepEqual(socketAt(fake.alias, uid), { real: realpathSync(fake.real) })
+  assert.ok('missing' in socketAt(join(dirname(fake.real), 'gone.sock'), uid), 'no socket is missing, not unsafe')
+})
+
+test('the socket trust check: a folder that every user can write to, another owner, or no socket is no daemon, with a reason', async (t) => {
+  const uid = process.getuid?.()
+  if (uid === undefined) return t.skip('no POSIX uids')
+  const fake = await fakeDaemon(t, { handlers: { 'account/rateLimits/read': () => ({ rateLimits: { usedPercent: 0 } }) } })
+  const unsafe = (re: RegExp) => (e: unknown): boolean => isDaemonError('connect')(e) && /is not safe to dial/.test(String(e)) && re.test(String(e))
+  // Another user as the owner of the socket and its folder (the uid seam).
+  assert.throws(() => udsDaemon({ socket: fake.alias }, VERSION, realClock, { uid: uid + 1 }), unsafe(/the user \d+ owns it/))
+  // The folder of the socket is open to every user, as a folder that another user made in /tmp can be.
+  chmodSync(dirname(fake.real), 0o777)
+  assert.throws(() => udsDaemon({ socket: fake.alias }, VERSION, realClock), unsafe(/every user can write to its folder/))
+  chmodSync(dirname(fake.real), 0o700)
+  assert.ok(udsDaemon({ socket: fake.alias }, VERSION, realClock) !== undefined, 'the same socket passes again')
+  // A file that is not a socket.
+  const home = tempDir(t)
+  const file = join(home, 'plain.sock')
+  writeFileSync(file, '')
+  assert.throws(() => udsDaemon({ socket: file }, VERSION, realClock), unsafe(/it is not a socket/))
+  assert.equal(fake.calls.length, 0, 'no untrusted socket was dialled')
+})
+
+test('the socket trust check: a folder that another user owns is no daemon, also when this user owns the socket (the stat seam)', async (t) => {
+  const uid = process.getuid?.()
+  if (uid === undefined) return t.skip('no POSIX uids')
+  const fake = await fakeDaemon(t)
+  const real = realpathSync(fake.real)
+  const folder = dirname(real)
+  assert.equal(statSync(real).uid, uid, 'this user owns the socket')
+  // The real stats, except that the user uid + 1 owns the folder of the socket.
+  const stat = (p: string) => {
+    const s = statSync(p)
+    return p === folder ? { isSocket: () => s.isSocket(), uid: uid + 1, mode: s.mode } : s
+  }
+  assert.deepEqual(socketAt(fake.alias, uid, stat), { unsafe: `the daemon socket ${real} is not safe to dial: the user ${uid + 1} owns its folder` })
+  assert.deepEqual(socketAt(fake.alias, uid, statSync), { real }, 'with the real stats, the same socket passes')
+  assert.equal(fake.calls.length, 0, 'no socket was dialled')
+})
+
+test('the socket trust check runs again at each connect: a socket that became unsafe after the client was made is a connect error', async (t) => {
+  const fake = await fakeDaemon(t, { handlers: { 'account/rateLimits/read': () => ({ rateLimits: { usedPercent: 0 } }) } })
+  const d = client(fake)
+  chmodSync(dirname(fake.real), 0o777)
+  await assert.rejects(d.rateLimits(), (e: unknown) => isDaemonError('connect')(e) && /is not safe to dial/.test(String(e)))
+  assert.equal(fake.conns.length, 0, 'it never connected')
+})
+
+test('the link: a socket that is not safe to dial is no daemon, with one debug line for each new reason', async (t) => {
+  const fake = await fakeDaemon(t)
+  const log = memoryLog()
+  chmodSync(dirname(fake.real), 0o777)
+  const link = daemonLink(() => udsDaemon({ socket: fake.alias }, VERSION, realClock), realClock, { log })
+  assert.equal(link.get(), undefined)
+  assert.equal(await link.hosted('T1'), false)
+  assert.equal(await link.known('T1'), false, 'no daemon is known: not hosted')
+  const why = `the daemon socket ${realpathSync(fake.real)} is not safe to dial: every user can write to its folder`
+  assert.deepEqual(log.lines, [codexDebug.liveFailed('daemon', why)])
+  chmodSync(dirname(fake.real), 0o700)
+  assert.ok(link.get() !== undefined, 'a safe socket is the daemon again')
+  assert.equal(fake.conns.length, 0)
+})
+
 test('the test guard: a socket under ~/.codex throws before any file access', () => {
   assert.equal(process.env.SPARE10_CODEX_TEST, '1', 'the specs run with SPARE10_CODEX_TEST=1')
   assert.throws(
@@ -390,6 +460,23 @@ test('hosted(): a list that does not name the thread is read again after the mis
   // The new list also answers T1 from the cache.
   assert.equal(await link.hosted('T1'), true)
   assert.equal(d.callsOf('loaded').length, 2)
+})
+
+test('known(): a failed read is undefined with a debug line, a good read is true or false, and no daemon is false', async () => {
+  const clock = fakeClock(0)
+  const d = memoryDaemon(clock, { loaded: new Error('down') })
+  const log = memoryLog()
+  let present = true
+  const link = daemonLink(() => (present ? d : undefined), clock, { log })
+  assert.equal(await link.known('T1'), undefined)
+  assert.equal(await link.hosted('T1'), false, 'hosted keeps its rule: a failed read is false')
+  assert.deepEqual(log.lines, [codexDebug.readFailed('the loaded threads', 'down'), codexDebug.readFailed('the loaded threads', 'down')])
+  d.script.loaded = ['T1']
+  assert.equal(await link.known('T1'), true)
+  assert.equal(await link.known('T2'), false, 'from the cache')
+  present = false
+  assert.equal(await link.known('T1'), false)
+  assert.equal(log.lines.length, 2)
 })
 
 test('hosted(): a failed read is false and is not kept, reads at the same time share one call, and no daemon is false', async () => {

@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { attendedFrom, codexText } from '../../hooks/core/codex.ts'
 import type { HostKind } from '../../hooks/core/codex.ts'
-import { readJson } from './files.ts'
+import { readOwnJson } from './files.ts'
 import type { Env, Paths } from './paths.ts'
 import type { Rollouts } from './rollout.ts'
 import { checkId, sessionDir, warnOnce } from './store.ts'
@@ -51,14 +51,14 @@ export function nestedParent(env: Env, sid: string): string | undefined {
 
 /**
  * B37, 3.10: the `child` policy that the attended root of the parent session wrote, for the settings of a
- * nested run. Undefined when the run is not nested, or the parent has none. A parent state of another
- * format counts as none. Bad JSON throws (the settings log it and go on without it).
+ * nested run. Undefined when the run is not nested, or the parent has none. A parent state that is torn or
+ * of another format counts as none. Bad JSON throws (the settings log it and go on without it).
  */
 export function parentChildOf(paths: Pick<Paths, 'data'>, env: Env, sid: string): 'stop' | undefined {
   const parent = nestedParent(env, sid)
   if (parent === undefined) return undefined
   checkId('session id', parent)
-  const st = readJson<unknown>(join(sessionDir(paths, parent), 'state.json'))
+  const st = readOwnJson<unknown>(join(sessionDir(paths, parent), 'state.json'))
   if (typeof st !== 'object' || st === null || (st as { v?: unknown }).v !== 1) return undefined
   return (st as { child?: unknown }).child === 'stop' ? 'stop' : undefined
 }

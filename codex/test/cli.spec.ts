@@ -132,6 +132,24 @@ test('cli: stop over a held stop clears noDialog, and the held call then takes t
   assert.deepEqual(w.daemon.callsOf('interrupt'), [[SID, 'U-held']])
 })
 
+test('cli: stop over a held stop with no daemon clears noDialog, and the reply says that the held call still waits', async (t) => {
+  const w = world(t)
+  const b = await w.broker({ form: false })
+  w.reading(SID, 92, { reset: RESET })
+  const h = b.call('tool', { turn: 'U-held' })
+  await w.settle()
+  assert.equal(w.state().stopMeta?.noDialog, true, 'a held stop')
+  assert.equal(h.box.done, false)
+  const r = await w.cli(['stop', '--session', SID])
+  assert.equal(r.code, 0)
+  assert.equal(w.state().stopMeta, undefined)
+  // No interrupt can reach a thread that no daemon hosts: the call holds on under the plain stop.
+  assert.match(r.out, /^spare10: already stopped( until \d\d:\d\d)?\. Held work waits\. Run !spare10 resume to continue it now\.$/)
+  await w.settle()
+  assert.equal(h.box.done, false, 'the held call still waits')
+  assert.match((await w.cli(['status', '--session', SID])).out, /Held work waits\. Run !spare10 resume to continue it now\./)
+})
+
 test('cli: --data and --codex-home set the paths, and simulate and set work from a terminal', async (t) => {
   const w = world(t)
   await w.broker()
@@ -147,7 +165,7 @@ test('cli: --data and --codex-home set the paths, and simulate and set work from
   assert.equal(w.state().test?.kinds.five_hour?.pct, 92)
   assert.equal(w.state().test?.hostPid, 4000, 'bound to the host of the session')
   const help = await w.cli(['help'])
-  assert.deepEqual(help, { code: 0, out: `spare10: ${codexText.help(w.paths.bin)}` })
+  assert.deepEqual(help, { code: 0, out: `spare10: ${codexText.help(w.paths.bin, w.paths.home)}` })
 })
 
 test('cli: status from a terminal with no session reads the daemon and writes only live.json and seed.json (LCX-REAL shape)', async (t) => {

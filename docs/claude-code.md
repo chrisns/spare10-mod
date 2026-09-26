@@ -413,6 +413,8 @@ The vscode and mobile surfaces have no footer, so there the dialog is the only s
 
 `/spare10` runs at once, also while a turn runs.
 Only you can run `resume` and `stop`, from the prompt box or a remote surface.
+Claude cannot run them. It can still consent for you when it can write a settings file.
+See item 55 of the [Known limitations](how-it-works.md#known-limitations).
 You cannot type `/spare10` while the dialog is on the screen, because the dialog holds the keys.
 Use `/spare10 resume` or `/spare10 stop` when no dialog shows, or from a remote surface.
 
@@ -619,6 +621,7 @@ The command takes this form:
   If that reset is less than 20 minutes away, the reserve is open at once.
   If that live reading is in the reserve, spare10 waits 5 minutes after the reset, not 60 s.
   Without a live reading, it ends 5 hours from now, or 7 days for the weekly window.
+  A live reset that has passed, or that is more than one window ahead, counts as no live reading.
 - Each window has one test reading.
   A new value for a window clears the consent and the stop.
   A higher value without `in` is different: it raises the test reading in place, and your answers stay.

@@ -103,13 +103,19 @@ export const parsed = (text: string | undefined): Record<string, unknown> => (te
 
 export type World = ReturnType<typeof world>
 
-export function world(t: TestContext, o: { daemon?: boolean; config?: Record<string, unknown>; env?: Env } = {}) {
+/**
+ * The world of one spec. `homeAtRoot`: HOME is the temp root, so the data dir is under the home folder, as
+ * in a real setup. Else HOME is an empty folder name in the root, so no path is under it, and the texts show
+ * every path as it is.
+ */
+export function world(t: TestContext, o: { daemon?: boolean; config?: Record<string, unknown>; env?: Env; homeAtRoot?: boolean } = {}) {
   const root = tempDir(t, 's10w')
   const data = join(root, 'data')
   const plugin = join(root, 'plugin')
+  const home = o.homeAtRoot === true ? root : join(root, 'home')
   const brokerFile = join(plugin, 'codex', 'dist', 'spare10.mjs')
   const cliFile = join(plugin, 'codex', 'dist', 'cli.mjs')
-  const baseEnv: Env = { CODEX_HOME: root, SPARE10_CODEX_DATA: data, SPARE10_CODEX_TEST: '1', ...(o.env ?? {}) }
+  const baseEnv: Env = { CODEX_HOME: root, SPARE10_CODEX_DATA: data, SPARE10_CODEX_TEST: '1', HOME: home, ...(o.env ?? {}) }
   const clock: FakeClock = fakeClock(T0)
   const wake: MemoryWake = memoryWake()
   const log: MemoryLog = memoryLog()
@@ -299,7 +305,15 @@ export function world(t: TestContext, o: { daemon?: boolean; config?: Record<str
   return {
     root,
     data,
-    paths: { codexHome: root, data, pluginRoot: plugin, socket: join(root, 'app-server-control', 'app-server-control.sock'), launcher: join(data, 'bin', 'spare10'), bin: join(data, 'bin') } satisfies Paths,
+    paths: {
+      codexHome: root,
+      data,
+      pluginRoot: plugin,
+      socket: join(root, 'app-server-control', 'app-server-control.sock'),
+      launcher: join(data, 'bin', 'spare10'),
+      bin: join(data, 'bin'),
+      home,
+    } satisfies Paths,
     env: baseEnv,
     clock,
     wake,

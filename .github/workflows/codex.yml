@@ -1,6 +1,8 @@
 name: "Codex"
 # The Codex adapter checks (Codex design 6.4). This runner has no Claude Code and no Codex,
 # so it runs no Claude check and no end-to-end run. scripts/check.sh runs those locally.
+# The root tsc (hooks/register.tsx and tests/) needs the Claude Code types that `/plugin-types` writes.
+# They are never committed, so only scripts/check.sh runs it. tsc -p codex below checks hooks/core.
 on:
   push:
   pull_request:
@@ -10,8 +12,13 @@ jobs:
   codex:
     name: Codex adapter
     runs-on: ubuntu-latest
+    # A normal run takes less than a minute. A spec that hangs fails the job here, not after 6 hours.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No step pushes, so the token does not stay in .git/config for the install scripts of npm ci.
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22

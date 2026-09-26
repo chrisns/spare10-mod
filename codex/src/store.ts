@@ -1,15 +1,17 @@
-import { readdirSync, statSync, unlinkSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GateSite, HostKind } from '../../hooks/core/codex.ts'
+import { parseStopped } from '../../hooks/core/decide.ts'
 import type { Answered, ConsentSlots, Tomb } from '../../hooks/core/decide.ts'
 import type { QuestionCore, Via } from '../../hooks/core/flow.ts'
 import type { Anchored, Kind } from '../../hooks/core/reading.ts'
 import { VERSION } from '../../hooks/core/text.ts'
 import type { Clock } from './clock.ts'
-import { firstLine, readJson, withLock, writeJson } from './files.ts'
+import { firstLine, readOwnJson, withLock, writeFileAtomic, writeJson } from './files.ts'
 import type { LockOptions } from './files.ts'
 import type { Paths } from './paths.ts'
-import { NOTICE_TTL_MS } from './timing.ts'
+import { NOTICE_TTL_MS, PRUNE_AFTER_MS, PRUNE_EVERY_MS, PRUNE_MAX } from './timing.ts'
 import type { Wake } from './wake.ts'
 
 // The state files of a session and their one lock (Codex design 3.7). Every write of state.json,
@@ -120,7 +122,7 @@ export type Tx = {
 export type SessionStore = {
   sid: string
   dir: string
-  /** The state with no lock. An absent file, or one of another format, gives a fresh state. Bad JSON throws. */
+  /** The state with no lock. An absent or torn file, or one of another format, gives a fresh state. Bad JSON throws. */
   read(): SessionState
   /**
    * Runs `fn` under the session lock. `fn` must be synchronous file work. The files that changed are
@@ -174,9 +176,12 @@ export const freshThread = (sid: string, tid: string): ThreadState => ({
   denied: [],
 })
 
-/** The file as a T, undefined when it is absent. A file of another format throws FormatError. Bad JSON throws. */
+/**
+ * The file as a T, undefined when it is absent or torn by an OS crash (readOwnJson). A file of another format
+ * throws FormatError. Bad JSON throws.
+ */
 function readStamped<T>(file: string): T | undefined {
-  const v = readJson<unknown>(file)
+  const v = readOwnJson<unknown>(file)
   if (v === undefined) return undefined
   if (!isObject(v) || v['v'] !== FORMAT) throw new FormatError(file, isObject(v) ? v['v'] : undefined)
   return v as T
@@ -382,8 +387,12 @@ function cwdOf(transcript: string | null | undefined): string | undefined {
   }
 }
 
-/** Every session folder with a state.json, newest first. A folder that cannot be read is left out. */
-export function listSessions(paths: Pick<Paths, 'data'>): SessionRow[] {
+/**
+ * Every session folder with a state.json, newest first. A folder that cannot be read is left out. With
+ * `since`, a folder whose state.json did not change after that time is left out before any file read, so
+ * the old folders cost one stat each.
+ */
+export function listSessions(paths: Pick<Paths, 'data'>, since?: number): SessionRow[] {
   let names: string[]
   try {
     names = readdirSync(join(paths.data, 'sessions'))
@@ -400,6 +409,7 @@ export function listSessions(paths: Pick<Paths, 'data'>): SessionRow[] {
     } catch {
       continue
     }
+    if (since !== undefined && mtime <= since) continue
     let transcript: string | null | undefined
     try {
       transcript = readStamped<SessionState>(file)?.transcript
@@ -410,4 +420,118 @@ export function listSessions(paths: Pick<Paths, 'data'>): SessionRow[] {
     rows.push(cwd === undefined ? { sid, mtime } : { sid, mtime, cwd })
   }
   return rows.sort((a, b) => b.mtime - a.mtime || a.sid.localeCompare(b.sid))
+}
+
+/** True when a session file in `dir` (not its lock) changed after `since`. It stops at the first one. */
+function changedSince(dir: string, since: number): boolean {
+  const newer = (file: string): boolean => {
+    try {
+      return statSync(file).mtimeMs > since
+    } catch {
+      return false // absent
+    }
+  }
+  if (['state.json', 'question.json', 'answer.json'].some((name) => newer(join(dir, name)))) return true
+  let threads: string[] = []
+  try {
+    threads = readdirSync(join(dir, 'threads'))
+  } catch {
+    // No thread files.
+  }
+  return threads.some((name) => newer(join(dir, 'threads', name)))
+}
+
+/** The start of the name of a folder that a prune moved out of `sessions/`. */
+const PRUNED = '.pruned-'
+
+/** Removes a folder tree. A failure leaves it for the next prune. */
+function removeTree(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // The next prune tries again.
+  }
+}
+
+/**
+ * Removes old session folders, so the data dir does not grow with each session (3.7). It runs at most once
+ * per PRUNE_EVERY_MS for each data dir (the file `pruned` keeps the time), and removes at most PRUNE_MAX
+ * folders. A folder goes only when none of its files changed for PRUNE_AFTER_MS, it has no open question
+ * and no stop that ends in that time, and no host or broker pid in it is alive. So the report, the sweep and
+ * a stop lose nothing that they still need. The folder goes under its session lock, by a rename out of
+ * `sessions/` first, so a broker that resumes the session later starts a fresh folder. It never throws. The
+ * ids it removed.
+ */
+export function pruneSessions(paths: Pick<Paths, 'data'>, owner: string, now: number, alive: (pid: number) => boolean): string[] {
+  const root = join(paths.data, 'sessions')
+  const stamp = join(paths.data, 'pruned') // not in sessions/, where each entry is a session
+  let names: string[]
+  try {
+    let last = Number.NaN
+    try {
+      last = Number(readFileSync(stamp, 'utf8'))
+    } catch {
+      // No prune yet.
+    }
+    if (now - last >= 0 && now - last < PRUNE_EVERY_MS) return []
+    names = readdirSync(root)
+    writeFileAtomic(stamp, String(now))
+  } catch {
+    return []
+  }
+  const live = (pid: number | undefined): boolean => pid !== undefined && pid > 0 && alive(pid)
+  /** True while nothing in `dir` needs the folder. */
+  const unused = (dir: string): boolean => {
+    if (changedSince(dir, now - PRUNE_AFTER_MS) || existsSync(join(dir, 'question.json'))) return false
+    try {
+      const st = readOwnJson<Partial<SessionState>>(join(dir, 'state.json'))
+      if (st !== undefined && (st.v !== FORMAT || live(st.hostPid))) return false
+      const stop = parseStopped(st?.stopped)
+      if (stop !== undefined && stop.windowEnd > now - PRUNE_AFTER_MS) return false
+      let threads: string[] = []
+      try {
+        threads = readdirSync(join(dir, 'threads'))
+      } catch {
+        // No thread files.
+      }
+      for (const name of threads.filter((n) => n.endsWith('.json'))) {
+        const th = readOwnJson<Partial<ThreadState>>(join(dir, 'threads', name))
+        if (th === undefined) continue
+        if (th.v !== FORMAT || live(th.brokerPid) || live(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false
+      }
+    } catch {
+      return false // bad JSON: a person's edit stays
+    }
+    return true
+  }
+  const gone: string[] = []
+  for (const name of names) {
+    if (name.startsWith(PRUNED)) {
+      removeTree(join(root, name)) // a prune that stopped half way
+      continue
+    }
+    if (gone.length >= PRUNE_MAX) break
+    if (!SAFE_ID.test(name)) continue
+    const dir = join(root, name)
+    if (!unused(dir)) continue
+    const trash = join(root, `${PRUNED}${name}-${randomBytes(4).toString('hex')}`)
+    try {
+      const moved = withLock(
+        join(dir, 'state.lock'),
+        owner,
+        () => {
+          if (!unused(dir)) return false
+          renameSync(dir, trash)
+          return true
+        },
+        { waitMs: 0 },
+      )
+      if (!moved) continue
+    } catch {
+      continue // a busy lock or a failed rename: the folder stays for the next prune
+    }
+    removeTree(trash)
+    gone.push(name)
+  }
+  return gone
 }

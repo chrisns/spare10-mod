@@ -53,6 +53,15 @@ export const LOCK_WAIT_MS = 2_000
 export const LOCK_SLEEP_MIN_MS = 2
 export const LOCK_SLEEP_MAX_MS = 10
 
+/** A session folder whose files did not change for this long can go: 30 days, past the end of any window (3.7). */
+export const PRUNE_AFTER_MS = 30 * 24 * 3_600_000
+
+/** The prune of old session folders runs at most this often for each data dir. */
+export const PRUNE_EVERY_MS = 24 * 3_600_000
+
+/** One prune removes at most this many session folders. The next prune goes on. */
+export const PRUNE_MAX = 500
+
 /** The production Wake polls the session files this often while the broker holds a call (3.7). */
 export const WAKE_POLL_MS = 1_000
 
@@ -61,6 +70,13 @@ export const DAEMON_CONNECT_MS = 1_000
 export const A_READ_MS = 5_000
 export const A_NEAR_MS = 2_000
 export const INTERRUPT_MS = 8_000
+/**
+ * An interrupt mark older than this is lost: its process died, or it could not remove the mark of a failed
+ * interrupt (4.4). A live owner is done sooner. The owner reads the mark time before it takes the lock.
+ * Its worst path is LOCK_WAIT_MS (mark), connect, INTERRUPT_MS, connect, THREAD_READ_MS and LOCK_WAIT_MS (unmark).
+ * The lifetime is longer than that sum. It is shorter than TICK_MS, so the next sweep cycle takes a lost mark.
+ */
+export const INTERRUPT_MARK_MS = 2 * INTERRUPT_MS + 2 * LOCK_WAIT_MS
 /** A caller that finds a turn marked by another process asks `thread/turns/list` this often, for at most INTERRUPT_MS (4.4). */
 export const INTERRUPT_POLL_MS = 250
 export const START_MS = 5_000

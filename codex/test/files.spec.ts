@@ -16,10 +16,12 @@ import {
   LockTimeout,
   ensureDir,
   firstLine,
+  isTorn,
   pidAlive,
   readBack,
   readFrom,
   readJson,
+  readOwnJson,
   tryLock,
   unlock,
   withLock,
@@ -83,6 +85,28 @@ test('files: readJson gives undefined for an absent file, and throws for bad JSO
   writeFileSync(join(dir, 'bad.json'), '{ "reserve": 15,')
   assert.throws(() => readJson(join(dir, 'bad.json')), SyntaxError)
   assert.throws(() => readJson(dir))
+})
+
+test('files: readOwnJson reads a file torn by an OS crash as absent, and still throws for other bad JSON', (t) => {
+  const dir = tempDir(t)
+  assert.equal(readOwnJson(join(dir, 'none.json')), undefined)
+  for (const [name, text] of [
+    ['empty', ''],
+    ['blank', ' \n'],
+    ['nul', '\0\0\0\0'],
+    ['cut', '{\n  "v": 1,\n  "rev\0\0\0'],
+  ] as const) {
+    assert.equal(isTorn(text), true, name)
+    writeFileSync(join(dir, `${name}.json`), text)
+    assert.equal(readOwnJson(join(dir, `${name}.json`)), undefined, name)
+    if (text.trim() === '') assert.throws(() => readJson(join(dir, `${name}.json`)), SyntaxError, `${name}: readJson keeps its rule`)
+  }
+  writeFileSync(join(dir, 'edit.json'), '{ not json')
+  assert.equal(isTorn('{ not json'), false)
+  assert.throws(() => readOwnJson(join(dir, 'edit.json')), SyntaxError, 'a person edit is not torn')
+  writeJson(join(dir, 'ok.json'), { v: 1, text: 'a\u0000b' })
+  assert.equal(isTorn(readFileSync(join(dir, 'ok.json'), 'utf8')), false, 'writeJson never writes a NUL byte')
+  assert.deepEqual(readOwnJson(join(dir, 'ok.json')), { v: 1, text: 'a\u0000b' })
 })
 
 test('files: an atomic write is never seen half done by a reader', async (t) => {

@@ -757,6 +757,7 @@ test('the resume prompt has no spare10 prefix, the model notes keep theirs', () 
     debugLine.boxDefer(3),
     debugLine.budget(10, 5000),
     debugLine.checkFailed('Error: gone'),
+    debugLine.settleFailed('Error: gone'),
   ]
   for (const t of kept) expect(t.startsWith('spare10: ')).toBe(true)
   expect(headlessText(BOTH, 'S1').startsWith('spare10 stopped this unattended run')).toBe(true)
@@ -767,6 +768,7 @@ test('the resume prompt has no spare10 prefix, the model notes keep theirs', () 
   expect(debugLine.boxDefer(3)).toBe('spare10: the prompt box has text. The resume prompt waits (3 of 10).')
   expect(debugLine.budget(10, 5000)).toBe('spare10: held 10 min. Budget left 5000 ms.')
   expect(debugLine.checkFailed('Error: gone')).toBe('spare10: the reset check did not run: Error: gone')
+  expect(debugLine.settleFailed('Error: gone')).toBe('spare10: could not write the answer: Error: gone')
 })
 
 // The 0.2 transcript lines, warnings and command replies: the engine prefixes each one.
@@ -1027,6 +1029,7 @@ function newTexts(): string[] {
     debugLine.boxDefer(10),
     debugLine.budget(0, 1999),
     debugLine.checkFailed('Error: gone'),
+    debugLine.settleFailed('Error: gone'),
     stepsIn(10, 10),
     stepsIn(12.5, 0),
     clockText(NEXT_THU, 'seven_day', TZ, T0),

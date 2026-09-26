@@ -1,6 +1,5 @@
 import type { Readable, Writable } from 'node:stream'
-import { codexDebug, render } from '../../hooks/core/codex.ts'
-import { HEADLESS_GENERIC, NOT_STARTED_GENERIC, STOP_GENERIC } from '../../hooks/core/text.ts'
+import { codexDebug, genericRefusal, isGateSite, render } from '../../hooks/core/codex.ts'
 import { realClock, type Clock } from './clock.ts'
 import type { Log } from './log.ts'
 
@@ -81,23 +80,11 @@ const isId = (v: unknown): v is Id => typeof v === 'string' || (typeof v === 'nu
 const keyOf = (id: Id): string => `${typeof id}:${String(id)}`
 
 /**
- * The refusal of a held call that has no decided answer (3.4, 4.2): a prompt is blocked with
- * NOT_STARTED_GENERIC, a tool is denied and a step gets the text as context with STOP_GENERIC. Unattended,
- * the text is HEADLESS_GENERIC. Stop and PreCompact end the turn. The other sites cannot refuse, so "".
+ * The refusal of a held call that has no decided answer (3.4, 4.2): the answer of genericRefusal, the one
+ * rule that the gate also uses when it fails. A site that cannot refuse, or an unknown site, gives "".
  */
 export function heldRefusal(site: unknown, attended: boolean): string {
-  switch (site) {
-    case 'prompt':
-      return render('prompt', { kind: 'block', text: attended ? NOT_STARTED_GENERIC : HEADLESS_GENERIC })
-    case 'tool':
-    case 'step':
-      return render(site, { kind: 'deny', text: attended ? STOP_GENERIC : HEADLESS_GENERIC })
-    case 'stop':
-    case 'compact':
-      return render(site, { kind: 'end' })
-    default:
-      return ''
-  }
+  return isGateSite(site) ? render(site, genericRefusal(site, attended)) : ''
 }
 
 /**

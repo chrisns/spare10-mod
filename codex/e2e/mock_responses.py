@@ -171,8 +171,12 @@ def limits_for(items):
     """The rate limit headers of a request: limits-<WORD>.json for its first word when it exists, else limits.json."""
     _, prompt = last_prompt(items)
     words = prompt.split()
-    if words and re.fullmatch(r"[A-Z0-9]+", words[0]) and os.path.exists(os.path.join(WORK, f"limits-{words[0]}.json")):
-        return read_json(f"limits-{words[0]}.json", {})
+    if words and re.fullmatch(r"[A-Z0-9]+", words[0]):
+        # The name comes from the folder list, never from the request, so a request cannot name another path.
+        want = f"limits-{words[0]}.json"
+        for name in os.listdir(WORK):
+            if name == want:
+                return read_json(name, {})
     return read_json("limits.json", {})
 
 

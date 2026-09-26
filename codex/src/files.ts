@@ -37,25 +37,48 @@ export function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
 }
 
+/** The text of `file`, or undefined when it is absent. */
+function readText(file: string): string | undefined {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch (e) {
+    if (absent(e)) return undefined
+    throw e
+  }
+}
+
 /**
  * The parsed JSON of `file`, or undefined when the file is absent. Any other failure throws: bad JSON (a
  * person edited the file), a folder, no access. So the caller chooses: fail open when it senses, fail closed
  * when it acts, and the error text for CX12.
  */
 export function readJson<T>(file: string): T | undefined {
-  let text: string
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (e) {
-    if (absent(e)) return undefined
-    throw e
-  }
-  return JSON.parse(text) as T
+  const text = readText(file)
+  return text === undefined ? undefined : (JSON.parse(text) as T)
+}
+
+/**
+ * True for the text of a write that an OS crash tore: empty, only white space, or with a NUL byte. The
+ * rename of writeFileAtomic can reach the disk before the data (it does not fsync), so a kernel panic or a
+ * power loss can leave such a file. writeJson never writes one, and a person's edit has no NUL byte.
+ */
+export const isTorn = (text: string): boolean => text.trim() === '' || text.includes('\0')
+
+/**
+ * readJson for a file that only spare10 writes (the session files, 3.7): a torn file (isTorn) is absent too.
+ * So the next write replaces it, and a lost stop or consent only makes spare10 ask again. Other bad JSON
+ * still throws.
+ */
+export function readOwnJson<T>(file: string): T | undefined {
+  const text = readText(file)
+  return text === undefined || isTorn(text) ? undefined : (JSON.parse(text) as T)
 }
 
 /**
  * Writes `data` to `file` in one step: a temp file in the same folder, with `mode`, then `rename`. A reader
- * sees the old file or the new one, never a part, also when the writer dies (SIGKILL) half way.
+ * sees the old file or the new one, never a part, also when the writer dies (SIGKILL) half way. It does not
+ * fsync (a full flush costs about 8 ms on macOS, under the session lock), so an OS crash can tear the new
+ * file: readOwnJson reads such a session file as absent.
  */
 export function writeFileAtomic(file: string, data: string, mode = 0o600): void {
   ensureDir(dirname(file))

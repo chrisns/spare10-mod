@@ -17,12 +17,34 @@ The project uses [Semantic Versioning](https://semver.org/).
 - **Weekly-only plans.** On a plan with only a weekly window, spare10 watches that window. The report says that the plan has no 5-hour window.
 - **Luna Reserve.** spare10 lets work on Codex's Luna Reserve model through while Codex uses it.
 - **Reset credits.** After a Codex reset credit, an earlier **Resume** does not cover the new window.
+- **Codex session cleanup.** spare10 removes the files of a Codex session 30 days after their last change. It does this only when no process of that session runs.
 
 ### Changed
 
 - **Docs.** The README is much shorter. Its quick start covers Claude Code and Codex. It has Codex screenshots. The details moved to pages in `docs/`.
 - **Texts.** The texts take their host words, such as `/spare10` and `Claude Code`, from one place. The Claude Code texts do not change.
 - **Marketplace.** The marketplace descriptions name both Claude Code and Codex.
+- **Codex paths.** The Codex texts never name your home folder. A report row shows `~/...`. The `!` command and the `PATH` line use `"$HOME/..."`. A path with a space or a quote now works in the `!` command.
+- **Known limitation 55.** A new known limitation says that Claude can consent for you when it can write a settings file. The `/spare10` command section links to it.
+
+### Fixed
+
+- **Long holds.** A long hold no longer keeps a little memory for each 10 s cycle.
+- **Test reading.** `/spare10 simulate` without `in` no longer uses a live reset that has passed, or that is more than one window ahead. The test window then ends one window from now. Before, such a test did nothing, and the reply named an old reset time. This also applies to `SPARE10_SIMULATE` and to Codex.
+- **Debug log.** When spare10 cannot write your answer, it writes a debug line. Before, it dropped the error with no trace.
+- **Codex held work after a stop.** A held step no longer uses an earlier **Resume** after a stop ends. When a window is in its reserve again, spare10 asks again.
+- **Codex hold limit.** A held step now ends at the hold limit also when the question file has another format.
+- **Codex stop sweep.** A stop sweep now tries again on a turn whose earlier interrupt was lost.
+- **Codex wake.** A waiting spare10 process now wakes only when a session file changes, not at each lock or thread write.
+- **Codex daemon warning.** A failed daemon read at the start of a session no longer shows the no-daemon warning for the whole session. The debug log records the failed read.
+- **Codex state files.** A computer crash can leave a state file empty. spare10 then reads the file as new and asks again. Before, such a file switched the guard off for that session.
+- **Codex stop reply.** During a stop, `spare10 stop` now says what happens to held work. It says "Held work waits" when the work stays held. It says "Held work is refused" only when spare10 ends the held work on the Codex daemon.
+- **Codex set reply.** `spare10 set` names a `SPARE10_*` variable as the winner only when its value is valid. A bad value has no effect, and the report warns about it.
+- **Codex consent warning.** The Codex report warns about a consent past its window in Codex words. It does not name `SPARE10_CONSENT`, because Codex keeps consent in the session files.
+
+### Security
+
+- **Codex daemon socket.** spare10 uses the Codex daemon socket only when you own it and its folder. If every user can write to that folder, spare10 works as without the daemon.
 
 ## [0.3.0] - 2026-09-25
 

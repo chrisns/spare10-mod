@@ -193,7 +193,6 @@ type Question = QuestionCore & {
   budgetLogAt: number // the last B40 debug line
   checking: boolean // one waiter runs the check at a time
   waiting: number
-  raiser?: Raiser
 }
 type Release = { raw: string; record: StoppedRecord; cancelled: boolean }
 type Wake = { p: Promise<'woke'>; fire: () => void }
@@ -718,10 +717,6 @@ async function hold($: EngineInterface, signal: AbortSignal, key: string, left: 
   if (q0 !== undefined) q0.waiting += 1
   try {
     const waiter = crypto.randomUUID()
-    const aborted = new Promise<'aborted'>((resolve) => {
-      if (signal.aborted) resolve('aborted')
-      else signal.addEventListener('abort', () => resolve('aborted'), { once: true })
-    })
     let fast = 0
     for (;;) {
       const o = outcomes.get(key)
@@ -751,7 +746,19 @@ async function hold($: EngineInterface, signal: AbortSignal, key: string, left: 
       await noteBudget($, key, left())
       // A hand-off or a close that came while this waiter read the env: act on it now, not after a carrier cycle.
       if (outcomes.has(key) || signal.aborted || needsRaise.has(key) || !questions.has(key)) continue
-      const r = await Promise.race([carrier, wake.p, aborted])
+      // One abort promise per round, its listener gone when the round ends: a promise that never
+      // settles would keep one race reaction per cycle for the whole hold. No await since the check above.
+      let end = (): void => undefined
+      const round = new Promise<'aborted'>((resolve) => {
+        end = () => resolve('aborted')
+      })
+      signal.addEventListener('abort', end, { once: true })
+      let r: 'woke' | 'rejected' | 'aborted'
+      try {
+        r = await Promise.race([carrier, wake.p, round])
+      } finally {
+        signal.removeEventListener('abort', end)
+      }
       if (r === 'aborted') return 'aborted'
       if (r === 'rejected' && performance.now() - t0 < FAST_MS) {
         fast += 1
@@ -887,7 +894,6 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
 function raise($: EngineInterface, key: string, r: Raiser): void {
   const q = questions.get(key)
   if (q === undefined || outcomes.has(key)) return // settled before this waiter got to it
-  q.raiser = r
   const text = questionText(q.facts, q.opener, q.mode, q.auto)
   // The entry lives until this ask ends, never less: a question settled before its dialog reaches hook 5
   // must still find it there, so that hook 5 withdraws the dialog (4.3).
@@ -922,7 +928,6 @@ function lost($: EngineInterface, key: string, r: Raiser): void {
     if (q.waiting === 0) return forget($, key) // nothing is held any more
     if (q.handoffs < HANDOFF_LIMIT) {
       q.handoffs += 1
-      q.raiser = undefined
       needsRaise.add(key)
       $.ui.log(debugLine.handedOn(q.handoffs), { to: 'debug' })
       wakeAll() // a live waiter picks it up
@@ -983,8 +988,9 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
     }
     if (openKey === key) openKey = undefined // the decision is readable in env now
     await $.spare10.poke({ from: ENV }) // wake the newest copy's waiters (3.6)
-  } catch {
-    // best effort: this copy's caches and outcomes already hold the decision
+  } catch (err) {
+    // Best effort: this copy's caches and outcomes already hold the decision. The debug log says what failed.
+    $.ui.log(debugLine.settleFailed(String(err)), { to: 'debug' })
   } finally {
     // Closed only now: a crossing during the writes joins the settled question and gets its outcome.
     if (openKey === key) openKey = undefined

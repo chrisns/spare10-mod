@@ -1,18 +1,18 @@
 import { join } from 'node:path'
-import { codexText, defaultText, initialPresence, nextPresence, optionText, OPTIONS, parseSetValue } from '../../hooks/core/codex.ts'
+import { codexText, defaultText, initialPresence, nextPresence, optionText, OPTIONS, parseSetValue, shownPath } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot, Command, OptionName } from '../../hooks/core/codex.ts'
 import { watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective } from '../../hooks/core/config.ts'
-import { formatStopped, parseStopped, phaseOf } from '../../hooks/core/decide.ts'
+import { formatStopped, parseStopped } from '../../hooks/core/decide.ts'
 import type { Holder, Phase } from '../../hooks/core/decide.ts'
 import {
   commandHolders,
-  consentBeyond,
-  factsFrom,
+  consentPastWindow,
   gatesAfter,
   modeOf,
   raisesInPlace,
   resumeCase,
+  resumeReadReply,
   seenOf,
   seenSplit,
   simulateText,
@@ -27,7 +27,6 @@ import {
   stopWriteOf,
   takeoverSense,
   testReading,
-  tripOf,
   withRealEntries,
 } from '../../hooks/core/flow.ts'
 import type { Seen } from '../../hooks/core/flow.ts'
@@ -56,9 +55,9 @@ import { A_NEAR_MS, LIVE_RELEASE_MAX_AGE_MS } from './timing.ts'
 // The commands (Codex design 2.8, 4.19, 4.20, 7.2 commands.ts): the report, resume, stop, simulate, set and
 // help. A typed prompt `spare10 ...` in the root thread and the CLI run the same functions, on the session
 // files. The replies are the core replies with the Codex host words, and have no prefix: the gate and the
-// CLI add `spare10: `. Codex adds three things to register.tsx: the reply case `asking` in place of
-// `stopped` while held work waits under a stop, a stop clears the held stop, and a stop that writes a
-// stop runs the stop sweep.
+// CLI add `spare10: `. Codex adds three things to register.tsx: the replies say what happens to held work
+// (resume `asking`, and stop `asking` when it refuses held work or HELD_WAITS when held work waits under the
+// stop), a stop clears the held stop, and a stop that writes a stop runs the stop sweep.
 
 export type CommandDeps = Pick<Deps, 'paths' | 'clock' | 'log' | 'owner'> & {
   /** The env of the broker, or of the CLI: `SPARE10_HEADLESS` and the variables that win over an option. */
@@ -185,15 +184,21 @@ function envWins(eff: Effective, name: OptionName): boolean {
 export function createCommands(d: CommandDeps): Commands {
   const attendedOf = (sx: SessionCtx): boolean => d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
 
-  /** Held work of the session waits: a held entry of a live broker in any thread (4.19 heldInPlace, 4.20 `asking`). */
-  const heldLive = (sx: SessionCtx): boolean => {
+  /** The threads of the session with held work: a held entry of a live broker (4.19 heldInPlace, 4.20 `asking`). */
+  const heldThreads = (sx: SessionCtx): string[] => {
     try {
-      for (const tid of threadIds(sx.store)) {
-        if (readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true) return true
-      }
+      return threadIds(sx.store).filter((tid) => readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true)
     } catch {
-      return false
+      return []
     }
+  }
+
+  /** Held work of the session waits: a held entry of a live broker in any thread. */
+  const heldLive = (sx: SessionCtx): boolean => heldThreads(sx).length > 0
+
+  /** A thread of `tids` runs on the daemon. Its held call leaves a plain stop by an interrupt (4.4 refuse.ts holdStopped). */
+  const anyHosted = async (tids: readonly string[]): Promise<boolean> => {
+    for (const tid of tids) if (await d.daemon.hosted(tid).catch(() => false)) return true
     return false
   }
 
@@ -221,7 +226,7 @@ export function createCommands(d: CommandDeps): Commands {
     const holders = guarded ? d.sense.holders(sx, s, split.gating) : []
     const stop = guarded ? stoppedNow(sx, s.now, split.gating, holders) : undefined
     const question = d.questions.openQuestion(sx)
-    const p0 = seenOf({
+    const p = seenOf({
       cfg: s.cfg,
       now: s.now,
       bases: s.bases,
@@ -233,21 +238,9 @@ export function createCommands(d: CommandDeps): Commands {
       question,
       told: toldOf(state),
       sessionId: sx.sid,
+      present: s.present, // 4.15: the phase reads the bases of the kinds the host reports, so a weekly-only plan is armed
     })
-    // 4.15: the phase reads the bases of the kinds the host reports, so a weekly-only plan is armed.
-    const phase = phaseOf({
-      enabled: s.cfg.enabled,
-      basis: p0.bases.five_hour,
-      tripped: p0.tripped,
-      consented: s.cfg.enabled && p0.tripped && p0.gating.length === 0 && p0.open.length === 0,
-      open: s.cfg.enabled && p0.tripped && p0.gating.length === 0 && p0.open.length > 0,
-      stopped: p0.stop !== undefined,
-      asking: question !== undefined && !question.silent,
-      told: p0.tripped && p0.toldCount > 0,
-      attended: p0.attended,
-      bases: s.present.map((k) => p0.bases[k]),
-    })
-    return { p: { ...p0, phase }, s, state }
+    return { p, s, state }
   }
 
   const statusText: Commands['statusText'] = async (sx0, o) => {
@@ -259,9 +252,9 @@ export function createCommands(d: CommandDeps): Commands {
     const hosted = sx0 === undefined ? false : await d.daemon.hosted(sx.sid).catch(() => false)
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)]
     for (const k of p.kinds) {
-      // R13: a consent that lies beyond this window is ignored, and the report says so (B30).
-      const w = consentBeyond(k, state[consentField(k.kind)], now)
-      if (w !== undefined) warnings.push(w)
+      // R13: a consent that lies beyond this window is ignored, and the report says so (B30). Codex keeps it in the session state (CX48).
+      const c = consentPastWindow(k, state[consentField(k.kind)], now)
+      if (c !== undefined) warnings.push(codexText.consentBeyond(k.kind, c.until, now))
     }
     const st = p.stop
     // 2.5: the reset clock of this session cannot run: a stop with work waits for its end, and the root is not hosted.
@@ -295,7 +288,7 @@ export function createCommands(d: CommandDeps): Commands {
         rows.push(['broker', codexText.brokerRow(th !== undefined && th.brokerPid > 0 && d.pidAlive(th.brokerPid))])
       }
     }
-    rows.push(['daemon', daemonRow], ['live read', liveRow], ['cli', d.paths.launcher])
+    rows.push(['daemon', daemonRow], ['live read', liveRow], ['cli', shownPath(d.paths.launcher, d.paths.home)])
     const absent = absentOf(s)
     return statusReport({
       ...input,
@@ -315,7 +308,6 @@ export function createCommands(d: CommandDeps): Commands {
     if (!cfg.enabled || !attendedOf(sx)) return resumeReply('off')
     const sNow = await d.sense.sense(sx).catch(() => undefined) // skip 4.6: the takeover names what opened
     const now = sNow?.now ?? d.clock.now()
-    const absent = sNow === undefined ? undefined : absentOf(sNow)
     const overdue = await takeOverdueStop(sx, { cfg, now, attended: true, ...takeoverSense(sNow) })
     if (overdue !== undefined) return resumeReply('overdue', undefined, overdue.reset, overdue.open)
     const open = d.questions.openQuestion(sx)
@@ -326,9 +318,9 @@ export function createCommands(d: CommandDeps): Commands {
     }
     const s = sNow ?? (await d.sense.sense(sx))
     const mode = modeOf(cfg)
-    const read = s.kinds.filter((k) => k.basis.kind !== 'none')
-    if (read.length === 0) return resumeReply('none', undefined, undefined, undefined, 'hold', absent) // B23, CX17
-    if (!s.tripped) return resumeReply('below', factsFrom(read, s.now), undefined, undefined, 'hold', absent)
+    const absent = absentOf(s)
+    const early = resumeReadReply(s, absent) // B23, CX17
+    if (early !== undefined) return early
     const c = resumeCase(s, d.sense.split(sx, s), mode)
     if ('reply' in c) return c.reply
     const wasStopped = stoppedNow(sx, s.now, c.gating, commandHolders(s.kinds)) !== undefined // TS1: also a stop that a kind of it still holds
@@ -377,23 +369,20 @@ export function createCommands(d: CommandDeps): Commands {
       return stopAskingReply(late) ?? stopAskingIdle(late.q ?? open, cfg.autoResume, now)
     }
     const s = sNow ?? (await d.sense.sense(sx))
-    const absent = absentOf(s)
-    const read = s.kinds.filter((k) => k.basis.kind !== 'none')
-    if (read.length === 0 || !s.tripped) {
-      // B24 with CX17: a weekly-only plan names no 5-hour trip.
-      const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : undefined
-      const facts = read.length === 0 ? undefined : factsFrom(read, s.now)
-      return stopReply(read.length === 0 ? 'none' : 'below', facts, tripOf(cfg.reserve), undefined, weeklyTrip, undefined, absent)
-    }
-    const c = stopCase(s, cfg)
+    const c = stopCase(s, cfg, absentOf(s)) // B24 with CX17: a weekly-only plan names no 5-hour trip
     if ('reply' in c) return c.reply
     const raw = sx.store.read().stopped
     const st = stoppedNow(sx, s.now, c.ks, commandHolders(s.kinds)) // TS1: also a stop that a kind of it still holds
     if (stopKept(st, c.ks)) {
       // A stop in force that names each kind that gates now stays. A held stop becomes a plain stop (4.4).
+      // Before the writes: a refused call can remove its held entry before the reply.
+      const held = heldThreads(sx)
       const wasHeld = keepStop(sx, raw, c.real, s.now)
+      // 4.4: a plain stop interrupts a held call of a hosted thread (the sweep, or the broker that holds it
+      // first). Every other held call waits under the stop, as the report says, and continues at its end.
+      const refused = wasHeld && (await anyHosted(held))
       if (wasHeld) await d.sweep.sweep(sx)
-      return heldLive(sx) ? stopReply('asking') : stopKeptReply(st, c.facts, cfg.autoResume, s.now)
+      return refused ? stopReply('asking') : stopKeptReply(st, c.facts, cfg.autoResume, s.now, held.length > 0)
     }
     const written = sx.store.locked((tx) => {
       clearConsent(tx.state)
@@ -456,7 +445,7 @@ export function createCommands(d: CommandDeps): Commands {
         const source = envWins(eff, o.name) ? `${o.env} wins` : inFile ? 'config.json' : 'default'
         return [o.name, optionText(o.name, valueOf(eff, o.name)), source] as const
       })
-      return codexText.setList(path, rows)
+      return codexText.setList(shownPath(path, d.paths.home), rows)
     }
     const option = OPTIONS.find((o) => o.name === words[0])
     if (option === undefined) return codexText.setUnknown(words[0] ?? '')
@@ -472,9 +461,11 @@ export function createCommands(d: CommandDeps): Commands {
     try {
       old = setOption(d.paths, d.owner, name, value).old
     } catch (e) {
-      return codexText.setFailed(path, errText(e))
+      return codexText.setFailed(shownPath(path, d.paths.home), errText(e))
     }
-    const wins = d.env[option.env] !== undefined ? codexText.setEnvWins(option.env) : ''
+    // A15: only a variable that parses wins (withEnv). The variable must be set here: a nested run gets its
+    // parent's child policy as `headless` from the env source with no SPARE10_HEADLESS.
+    const wins = envWins(eff, name) && d.env[option.env] !== undefined ? codexText.setEnvWins(option.env) : ''
     if (value === undefined) return `${codexText.setDefault(name, defaultText(name))}${wins}`
     const was = old === undefined ? undefined : option.parse(old)
     const oldText = was === undefined ? defaultText(name) : optionText(name, was)
@@ -486,7 +477,7 @@ export function createCommands(d: CommandDeps): Commands {
       case 'status':
         return statusText(sx, { cli: o.cli, full: true })
       case 'help':
-        return codexText.help(d.paths.bin)
+        return codexText.help(d.paths.bin, d.paths.home)
       case 'resume':
         return resumeCommand(sx)
       case 'stop':

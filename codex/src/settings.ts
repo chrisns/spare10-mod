@@ -1,6 +1,6 @@
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, configOptions } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, configOptions, shownPath } from '../../hooks/core/codex.ts'
 import type { HostKind, OptionName } from '../../hooks/core/codex.ts'
 import { DEFAULTS, fromOptions, withEnv } from '../../hooks/core/config.ts'
 import type { Effective, EnvReads } from '../../hooks/core/config.ts'
@@ -56,7 +56,8 @@ export function readConfig(path: string): { raw: unknown } | { error: string } {
 }
 
 export type SettingsDeps = {
-  paths: Pick<Paths, 'data'>
+  /** `home`: the CX11 and CX12 warnings show config.json as `~/...` under it. */
+  paths: Pick<Paths, 'data' | 'home'>
   log: Log
   /** The broker env (env_vars), or the CLI env. It is read once. */
   env: Env
@@ -86,6 +87,7 @@ function markOf(path: string): string {
 /** The settings in force (5.2). The result is cached until config.json, the parent's child policy or the simulate kind changes. */
 export function createSettings(d: SettingsDeps): SettingsSource {
   const path = configPath(d.paths)
+  const shown = shownPath(path, d.paths.home) // the path as CX11 and CX12 show it
   const base = envReadsOf(d.env)
   if (base.simulate !== undefined && !ownsSimulate(d.hostKind)) {
     delete base.simulate
@@ -107,14 +109,14 @@ export function createSettings(d: SettingsDeps): SettingsSource {
     const env: EnvReads = base.headless === undefined && child !== undefined ? { ...base, headless: child } : { ...base }
     const read = readConfig(path)
     if ('raw' in read && isObject(read.raw)) {
-      const { options, warnings } = configOptions(path, read.raw) // CX11 for each bad value
+      const { options, warnings } = configOptions(shown, read.raw) // CX11 for each bad value
       const eff = withEnv(fromOptions(options), env, { simulateKind })
       eff.warnings = [...warnings, ...eff.warnings]
       return eff
     }
     // 5.2: config.json does not read, does not parse, or is not an object. The defaults and the env, and
     // each span that no variable sets becomes 0, so each reserve holds until the reset (CX12).
-    const cx12 = 'error' in read ? codexText.configUnread(path, read.error) : configOptions(path, read.raw).warnings[0]
+    const cx12 = 'error' in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0]
     const eff = withEnv(DEFAULTS, env, { simulateKind })
     if (eff.from.lastMinutes !== 'env') {
       eff.lastMinutes = 0

@@ -18,14 +18,18 @@ import { tempDir } from './helpers/tmp.ts'
 // The kit port (8.2):
 // Each tests/kit case and the Codex case that tests it: codex/test/kit-port.txt, kept complete by kit-port.spec.ts.
 
-function setup(t: Parameters<typeof tempDir>[0], o: { env?: Env; hostKind?: HostKind; child?: () => 'stop' | undefined; kind?: () => Kind; config?: string } = {}) {
-  const data = join(tempDir(t), 'data')
+function setup(
+  t: Parameters<typeof tempDir>[0],
+  o: { env?: Env; hostKind?: HostKind; child?: () => 'stop' | undefined; kind?: () => Kind; config?: string; homeAtRoot?: boolean } = {},
+) {
+  const root = tempDir(t)
+  const data = join(root, 'data')
   mkdirSync(data, { recursive: true })
   if (o.config !== undefined) writeFileSync(join(data, 'config.json'), o.config)
   const log = memoryLog()
   const asked = { child: 0 }
   const settings = createSettings({
-    paths: { data },
+    paths: { data, home: o.homeAtRoot === true ? root : join(root, 'home') },
     log,
     env: o.env ?? {},
     parentChild: () => {
@@ -118,6 +122,13 @@ test('settings: a config.json that is not an object is unread too', (t) => {
     assert.equal(eff.from.weeklyLastHours, 'unread')
     assert.deepEqual(eff.warnings, [codexText.configUnread(path, 'it is not a JSON object')], config)
   }
+})
+
+test('settings: CX11 and CX12 show a config.json under the home folder as ~/..., never with the name of the home folder', (t) => {
+  const bad = setup(t, { config: JSON.stringify({ reserve: 150 }), homeAtRoot: true })
+  assert.deepEqual(bad.settings.get().warnings, [codexText.configBad('~/data/config.json', 'reserve', 150, '1 to 99', '10')])
+  const unread = setup(t, { config: '[1, 2]', homeAtRoot: true })
+  assert.deepEqual(unread.settings.get().warnings, [codexText.configUnread('~/data/config.json', 'it is not a JSON object')])
 })
 
 test('settings: the result is kept until config.json changes, and setOption round trips (autoResume off)', (t) => {
