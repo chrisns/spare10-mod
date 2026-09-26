@@ -8,7 +8,7 @@
     "e2e:codex": "sh codex/e2e/run.sh"
   },
   "devDependencies": {
-    "@types/node": "22.20.4",
+    "@types/node": "24.19.0",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }
