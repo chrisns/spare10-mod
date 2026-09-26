@@ -26,7 +26,7 @@ import { createRefusal } from './refuse.ts'
 import { createRollouts } from './rollout.ts'
 import { createSense } from './sense.ts'
 import { createSettings } from './settings.ts'
-import { sessionStore } from './store.ts'
+import { pruneSessions, sessionStore } from './store.ts'
 import type { SessionStore } from './store.ts'
 import { createInterrupts, createSweep } from './sweep.ts'
 import type { Interrupts } from './sweep.ts'
@@ -164,15 +164,12 @@ export function createBroker(d: BrokerDeps): Broker {
     } catch (e) {
       log.debug(codexDebug.writeFailed(paths.launcher, errText(e)))
     }
+    // At most once a day for each data dir: the session folders that nothing needs any more go.
+    const pruned = pruneSessions(paths, owner, clock.now(), d.pidAlive)
+    if (pruned.length > 0) log.debug(codexDebug.pruned(pruned.length))
     const rollouts = createRollouts()
-    const link = daemonLink(() => {
-      try {
-        return d.daemon(paths)
-      } catch (e) {
-        log.debug(codexDebug.liveFailed('daemon', errText(e)))
-        return undefined
-      }
-    }, clock)
+    // A factory that throws (a socket that is not safe to dial, the test guard) is no daemon, with a debug line.
+    const link = daemonLink(() => d.daemon(paths), clock, { log })
     const settings = createSettings({
       paths,
       log,

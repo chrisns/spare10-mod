@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { codexDebug } from '../../hooks/core/codex.ts'
 import type { GateSite } from '../../hooks/core/codex.ts'
 import type { Clock } from './clock.ts'
-import { readJson } from './files.ts'
+import { readOwnJson } from './files.ts'
 import type { Log } from './log.ts'
 import type { Rollouts } from './rollout.ts'
 import { FORMAT } from './store.ts'
@@ -90,9 +90,9 @@ export function threadIds(store: Pick<SessionStore, 'dir'>): string[] {
   }
 }
 
-/** A thread file with no lock: undefined when it is absent or of another format. Bad JSON throws. */
+/** A thread file with no lock: undefined when it is absent, torn (readOwnJson) or of another format. Bad JSON throws. */
 export function readThread(store: Pick<SessionStore, 'dir'>, tid: string): ThreadState | undefined {
-  const v = readJson<unknown>(join(store.dir, 'threads', `${tid}.json`))
+  const v = readOwnJson<unknown>(join(store.dir, 'threads', `${tid}.json`))
   if (typeof v !== 'object' || v === null || (v as { v?: unknown }).v !== FORMAT) return undefined
   return v as ThreadState
 }

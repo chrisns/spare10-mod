@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexText, withPrefix } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, withPrefix } from '../../hooks/core/codex.ts'
 import { formatConsent } from '../../hooks/core/decide.ts'
 import { HEADLESS_GENERIC, NOT_STARTED_GENERIC, STOP_GENERIC } from '../../hooks/core/text.ts'
 import { createGate, genericRefusal, parseGateInput } from '../src/gate.ts'
@@ -51,6 +51,19 @@ test('gate: a sense failure passes (the sensor fails open)', async (t) => {
   assert.equal(await b.gate('stop'), '')
   assert.equal(await b.gate('prompt', { prompt: 'hello' }), '')
   assert.equal(b.forms().length, 0)
+})
+
+test('gate: a state.json torn by an OS crash does not open the guard: the gate holds and asks, and a Resume writes the file again', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  await b.gate('start')
+  w.reading(SID, 95, { reset: RESET })
+  writeFileSync(w.file('state.json'), '')
+  b.script('resume')
+  assert.deepEqual(Object.keys(parsed(await b.gate('tool'))), ['systemMessage'], 'Resume lets the tool run, with its line')
+  assert.equal(b.forms().length, 1, 'it asked')
+  assert.ok((w.state().consent ?? '') !== '', 'the Resume wrote a consent into a fresh state.json')
+  assert.doesNotThrow(() => JSON.parse(readFileSync(w.file('state.json'), 'utf8')))
 })
 
 test('gate: the Luna model passes while the live read says allowed false, and holds while allowed true and tripped (A7)', async (t) => {
@@ -307,6 +320,28 @@ test('gate: the first root gate shows the start warnings once per session: CX7, 
   const v = world(t, { config: { scope: 'opt-in' } })
   const c = await v.broker({ start: false, hostKind: 'daemon' })
   assert.equal(parsed(await c.gate('start'))['systemMessage'], `${withPrefix(codexText.optInDaemon)}\n${withPrefix(codexText.cliHint(v.paths.launcher, v.paths.bin))}`)
+})
+
+test('gate: a failed thread/loaded/list at the first root gate records no CX6 or CX7, and writes a debug line', async (t) => {
+  const w = world(t, { daemon: true })
+  let fails = 1
+  w.daemon.script.loaded = () => {
+    if (fails > 0) {
+      fails -= 1
+      throw new Error('the daemon call took longer than 2000 ms')
+    }
+    return [...w.hosted]
+  }
+  const b = await w.broker({ start: false, hosted: true })
+  // Only CX19: the read failed, so nobody knows if the session runs on the daemon.
+  assert.equal(parsed(await b.gate('start'))['systemMessage'], withPrefix(codexText.cliHint(w.paths.launcher, w.paths.bin)))
+  const warned = w.state().warned ?? []
+  assert.ok(!warned.includes('CX6') && !warned.includes('CX7'), `no lasting CX6 or CX7: ${warned.join(', ')}`)
+  assert.ok(w.log.lines.includes(codexDebug.readFailed('the loaded threads', 'the daemon call took longer than 2000 ms')), 'the failed read has a debug line')
+  // A daemon that answers but does not list the thread still warns (a new session).
+  const v = world(t, { daemon: true })
+  const c = await v.broker({ start: false })
+  assert.equal(parsed(await c.gate('start'))['systemMessage'], [codexText.noDaemon(true), codexText.cliHint(v.paths.launcher, v.paths.bin)].map(withPrefix).join('\n'))
 })
 
 // Q1: a thread with no rollout (TUI /side, codex exec --ephemeral, an ephemeral app-server thread) has no

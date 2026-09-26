@@ -170,13 +170,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
     const hostPid = state?.hostPid ?? 0
     const hostKind: HostKind = state?.hostKind ?? 'unknown'
     const rollouts = createRollouts()
-    const link = daemonLink(() => {
-      try {
-        return d.daemon(paths)
-      } catch {
-        return undefined
-      }
-    }, d.clock)
+    const link = daemonLink(() => d.daemon(paths), d.clock, { log })
     const settings = createSettings({ paths, log, env, parentChild: () => undefined, simulateKind: () => 'five_hour', hostKind })
     const quota = createQuota({ paths, clock: d.clock, log, owner, daemon: link, rollouts, pidAlive: alive })
     const base = createAttendance({ hostKind, rollouts })
@@ -215,7 +209,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
       // CX36: never guess the session. The sessions of the last 24 h, newest first.
       const now = d.clock.now()
       const rows: Array<readonly [string, string, string]> = []
-      for (const r of listSessions(paths).filter((x) => now - x.mtime < RECENT_MS)) {
+      for (const r of listSessions(paths, now - RECENT_MS)) {
         let phase = 'unknown'
         try {
           const p = partsFor(r.sid)
@@ -229,7 +223,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
       return 2
     }
     if (verb === 'status') {
-      const sid = named ?? listSessions(paths).find((x) => d.clock.now() - x.mtime < RECENT_MS)?.sid
+      const sid = named ?? listSessions(paths, d.clock.now() - RECENT_MS)[0]?.sid
       const p = partsFor(sid)
       if (fromBang && !a.full) print(`spare10: ${await p.cmds.phaseLine(p.sx)}`)
       else print(`spare10: ${await p.cmds.statusText(p.sx, { cli: true, full: true })}`)

@@ -53,6 +53,15 @@ export const LOCK_WAIT_MS = 2_000
 export const LOCK_SLEEP_MIN_MS = 2
 export const LOCK_SLEEP_MAX_MS = 10
 
+/** A session folder whose files did not change for this long can go: 30 days, past the end of any window (3.7). */
+export const PRUNE_AFTER_MS = 30 * 24 * 3_600_000
+
+/** The prune of old session folders runs at most this often for each data dir. */
+export const PRUNE_EVERY_MS = 24 * 3_600_000
+
+/** One prune removes at most this many session folders. The next prune goes on. */
+export const PRUNE_MAX = 500
+
 /** The production Wake polls the session files this often while the broker holds a call (3.7). */
 export const WAKE_POLL_MS = 1_000
 

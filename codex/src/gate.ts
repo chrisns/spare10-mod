@@ -73,7 +73,7 @@ export type GateDeps = Pick<Deps, 'paths' | 'clock' | 'log' | 'owner' | 'pid'> &
   refusal: Pick<Refusal, 'refusal'>
   commands: Pick<Commands, 'run'>
   ticker: Pick<Ticker, 'start'>
-  daemon: Pick<DaemonLink, 'hosted'>
+  daemon: Pick<DaemonLink, 'known'>
   pidAlive: (pid: number) => boolean
   /** The store of a session. `waitMs`: a shorter lock wait (the Interrupt gate waits at most 500 ms). */
   storeOf: (sid: string, o?: { waitMs?: number }) => SessionStore
@@ -262,7 +262,8 @@ export function createGate(d: GateDeps): Gate {
     const cfg = d.settings.get()
     const att = d.attendance.attended({ transcript: sx.transcript }, input.mode)
     const guarded = att.attended && cfg.enabled
-    const hosted = guarded ? await d.daemon.hosted(sx.thread).catch(() => false) : false
+    // A failed read is unknown: it records no lasting CX6 or CX7. The report reads the daemon again each time.
+    const hosted = guarded ? await d.daemon.known(sx.thread).catch(() => undefined) : false
     const now = d.clock.now()
     sx.store.locked((tx) => {
       const st = tx.state
@@ -276,7 +277,7 @@ export function createGate(d: GateDeps): Gate {
         else st.child = child
       }
       for (const w of cfg.warnings) warnOnce(st, `cfg:${w}`, w, now)
-      if (guarded && !hosted) warnOnce(st, cfg.autoResume ? 'CX6' : 'CX7', codexText.noDaemon(cfg.autoResume), now)
+      if (guarded && hosted === false) warnOnce(st, cfg.autoResume ? 'CX6' : 'CX7', codexText.noDaemon(cfg.autoResume), now)
       if (guarded && input.mode === 'bypassPermissions') warnOnce(st, 'CX8', codexText.approvalNever, now)
       if (cfg.scope === 'opt-in' && d.hostKind === 'daemon' && d.env.SPARE10 === undefined) warnOnce(st, 'CX42', codexText.optInDaemon, now)
     })

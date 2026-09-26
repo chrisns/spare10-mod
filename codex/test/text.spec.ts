@@ -561,6 +561,7 @@ const DEBUG = [
   codexDebug.mcpOutputFailed('EPIPE'),
   codexDebug.mcpClosed('stdin closed', 2),
   codexDebug.cancelled('7'),
+  codexDebug.pruned(3),
   codexDebug.boot('0.3.0', true),
   codexDebug.boot('0.3.0', false),
 ]

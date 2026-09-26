@@ -27,7 +27,7 @@ import type { Acted, KindSense, Late, QuestionCore, Sensed, StopSense, Via } fro
 import { debugLine, notice, questionText } from '../../hooks/core/text.ts'
 import { consentsOf, writeConsent } from './consent.ts'
 import type { Deps } from './deps.ts'
-import { pidAlive as realPidAlive, readJson } from './files.ts'
+import { pidAlive as realPidAlive, readOwnJson } from './files.ts'
 import { BEAT_EVERY_MS, addHeld, beat, callId, heldNames, removeHeld, turnEnded, waiterOf } from './held.ts'
 import type { HeldCall } from './held.ts'
 import type { McpServer } from './mcp.ts'
@@ -92,9 +92,9 @@ export type Questions = {
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** A session file read with no lock: the value, undefined when absent, or 'unknown' for another format (fail closed when acting). */
+/** A session file read with no lock: the value, undefined when absent or torn, or 'unknown' for another format (fail closed when acting). */
 function readFile<T>(dir: string, name: string): T | undefined | 'unknown' {
-  const v = readJson<unknown>(join(dir, name))
+  const v = readOwnJson<unknown>(join(dir, name))
   if (v === undefined) return undefined
   if (!isObject(v) || v['v'] !== FORMAT) return 'unknown'
   return v as T

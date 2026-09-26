@@ -1256,6 +1256,8 @@ var codexDebug = {
   mcpClosed: (why, open) => `spare10: the MCP server shuts down (${why}), with ${open} open call(s).`,
   /** Codex cancelled a gate call. It gets no answer. */
   cancelled: (id) => `spare10: Codex cancelled the call ${id}.`,
+  /** The broker removed this many old session folders. */
+  pruned: (n) => `spare10: removed ${n} old session folder(s).`,
   /** The background work of a broker starts. `guard`: SPARE10_CODEX_TEST reached it (D10), so no path under ~/.codex can open. */
   boot: (version, guard) => `spare10: the broker ${version} starts, and the test guard is ${guard ? "on" : "off"}.`
 };
@@ -1507,6 +1509,8 @@ var LOCK_STALE_MS = 5e3;
 var LOCK_WAIT_MS = 2e3;
 var LOCK_SLEEP_MIN_MS = 2;
 var LOCK_SLEEP_MAX_MS = 10;
+var PRUNE_AFTER_MS = 30 * 24 * 36e5;
+var PRUNE_EVERY_MS = 24 * 36e5;
 var DAEMON_CONNECT_MS = 1e3;
 var A_READ_MS = 5e3;
 var A_NEAR_MS = 2e3;
@@ -1532,15 +1536,22 @@ var absent = (e) => {
 function ensureDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 448 });
 }
-function readJson(file) {
-  let text2;
+function readText(file) {
   try {
-    text2 = readFileSync(file, "utf8");
+    return readFileSync(file, "utf8");
   } catch (e) {
     if (absent(e)) return void 0;
     throw e;
   }
-  return JSON.parse(text2);
+}
+function readJson(file) {
+  const text2 = readText(file);
+  return text2 === void 0 ? void 0 : JSON.parse(text2);
+}
+var isTorn = (text2) => text2.trim() === "" || text2.includes("\0");
+function readOwnJson(file) {
+  const text2 = readText(file);
+  return text2 === void 0 || isTorn(text2) ? void 0 : JSON.parse(text2);
 }
 function writeFileAtomic(file, data, mode = 384) {
   ensureDir(dirname(file));
@@ -1807,7 +1818,7 @@ function firstLine(file, max = FIRST_LINE_MAX_BYTES) {
 }
 
 // codex/src/store.ts
-import { readdirSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
+import { existsSync, readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, rmSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
 import { join } from "node:path";
 var FORMAT = 1;
 var FormatError = class extends Error {
@@ -1838,7 +1849,7 @@ var freshThread = (sid, tid) => ({
   denied: []
 });
 function readStamped(file) {
-  const v = readJson(file);
+  const v = readOwnJson(file);
   if (v === void 0) return void 0;
   if (!isObject2(v) || v["v"] !== FORMAT) throw new FormatError(file, isObject2(v) ? v["v"] : void 0);
   return v;
@@ -2001,7 +2012,7 @@ function cwdOf(transcript) {
     return void 0;
   }
 }
-function listSessions(paths) {
+function listSessions(paths, since) {
   let names;
   try {
     names = readdirSync(join(paths.data, "sessions"));
@@ -2018,6 +2029,7 @@ function listSessions(paths) {
     } catch {
       continue;
     }
+    if (since !== void 0 && mtime <= since) continue;
     let transcript;
     try {
       transcript = readStamped(file)?.transcript;
@@ -2918,7 +2930,7 @@ function threadIds(store) {
   }
 }
 function readThread(store, tid) {
-  const v = readJson(join2(store.dir, "threads", `${tid}.json`));
+  const v = readOwnJson(join2(store.dir, "threads", `${tid}.json`));
   if (typeof v !== "object" || v === null || v.v !== FORMAT) return void 0;
   return v;
 }
@@ -4043,11 +4055,12 @@ function createCommands(d) {
 
 // codex/src/daemon.ts
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync as existsSync2, realpathSync as realpathSync2 } from "node:fs";
+import { realpathSync as realpathSync2, statSync as statSync3 } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { dirname as dirname3 } from "node:path";
 
 // codex/src/paths.ts
-import { existsSync, readFileSync as readFileSync2, realpathSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, delimiter, dirname as dirname2, isAbsolute, join as join6, resolve, sep } from "node:path";
 var DATA_NAME = "spare10-spare10";
@@ -4073,7 +4086,7 @@ function realish(p) {
   const tail = [];
   for (; ; ) {
     try {
-      if (existsSync(head)) return join6(realpathSync(head), ...tail);
+      if (existsSync2(head)) return join6(realpathSync(head), ...tail);
     } catch {
     }
     const up = dirname2(head);
@@ -4149,6 +4162,7 @@ var DaemonError = class extends Error {
   }
 };
 var isObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var errText4 = (e) => e instanceof Error ? e.message : String(e);
 function encodeFrame(opcode, payload, mask = randomBytes2(4), fin = true) {
   const len = payload.length;
   const head = Buffer.alloc(len < 126 ? 2 : len < 65536 ? 4 : 10);
@@ -4283,6 +4297,24 @@ var MessageJoiner = class {
   }
 };
 var acceptOf = (key) => createHash("sha1").update(key + WS_GUID).digest("base64");
+function socketAt(alias, uid) {
+  let real;
+  let sock;
+  let dir;
+  try {
+    real = realpathSync2(alias);
+    sock = statSync3(real);
+    dir = statSync3(dirname3(real));
+  } catch (e) {
+    return { missing: errText4(e) };
+  }
+  const unsafe = (why) => ({ unsafe: `the daemon socket ${real} is not safe to dial: ${why}` });
+  if (!sock.isSocket()) return unsafe("it is not a socket");
+  if (uid !== void 0 && sock.uid !== uid) return unsafe(`the user ${sock.uid} owns it`);
+  if (uid !== void 0 && dir.uid !== uid) return unsafe(`the user ${dir.uid} owns its folder`);
+  if ((dir.mode & 2) !== 0) return unsafe("every user can write to its folder");
+  return { real };
+}
 function upgrade(socketPath, clock, o) {
   return new Promise((resolve3, reject) => {
     const key = randomBytes2(16).toString("base64");
@@ -4336,13 +4368,10 @@ function upgrade(socketPath, clock, o) {
 }
 async function withConnection(socketAlias, version, clock, timeoutMs, o, fn) {
   guardTestPath({}, "daemon socket", socketAlias);
-  let real;
-  try {
-    real = realpathSync2(socketAlias);
-  } catch (e) {
-    throw new DaemonError("connect", `no daemon socket: ${e.message}`);
-  }
-  const { socket, head } = await upgrade(real, clock, o);
+  const at = socketAt(socketAlias, o.uid);
+  if ("missing" in at) throw new DaemonError("connect", `no daemon socket: ${at.missing}`);
+  if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
+  const { socket, head } = await upgrade(at.real, clock, o);
   const reader = new FrameReader(o.maxMessage);
   const joiner = new MessageJoiner(o.maxMessage);
   const pending = /* @__PURE__ */ new Map();
@@ -4454,8 +4483,11 @@ var badReply = (method, what) => new DaemonError("reply", `${method}: the reply 
 var NOT_MATERIALIZED = /is not materialized yet/;
 function udsDaemon(paths, version, clock, o = {}) {
   guardTestPath({}, "daemon socket", paths.socket);
-  if (!existsSync2(paths.socket)) return void 0;
-  const opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE };
+  const uid = "uid" in o ? o.uid : process.getuid?.();
+  const at = socketAt(paths.socket, uid);
+  if ("missing" in at) return void 0;
+  if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
+  const opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid };
   const op = (timeoutMs, fn) => withConnection(paths.socket, version, clock, timeoutMs, opts, fn);
   return {
     rateLimits: (timeoutMs = A_READ_MS) => op(timeoutMs, (c) => c.request("account/rateLimits/read", { excludeResetCreditDetails: true })),
@@ -4492,8 +4524,8 @@ function udsDaemon(paths, version, clock, o = {}) {
       const t = r["data"][0];
       if (t === void 0) return void 0;
       if (!isObject5(t) || typeof t["id"] !== "string" || typeof t["status"] !== "string") throw badReply("thread/turns/list", "turn");
-      const at = t["startedAt"];
-      return { id: t["id"], status: t["status"], startedAt: typeof at === "number" && Number.isFinite(at) ? at : null };
+      const at2 = t["startedAt"];
+      return { id: t["id"], status: t["status"], startedAt: typeof at2 === "number" && Number.isFinite(at2) ? at2 : null };
     }),
     interrupt: (threadId, turnId) => op(INTERRUPT_MS, async (c) => {
       await c.request("turn/interrupt", { threadId, turnId });
@@ -4513,6 +4545,19 @@ function daemonLink(make, clock, o = {}) {
   const missTtl = o.missTtlMs ?? HOSTED_MISS_TTL_MS;
   let cache;
   let reading;
+  let told;
+  const get = () => {
+    try {
+      const d = make();
+      told = void 0;
+      return d;
+    } catch (e) {
+      const why = errText4(e);
+      if (why !== told) o.log?.debug(codexDebug.liveFailed("daemon", why));
+      told = why;
+      return void 0;
+    }
+  };
   const refresh = (d) => {
     if (reading !== void 0) return reading;
     reading = d.loaded().then(
@@ -4521,29 +4566,30 @@ function daemonLink(make, clock, o = {}) {
         cache = { at: clock.now(), ids: set3 };
         return set3;
       },
-      () => void 0
+      (e) => {
+        o.log?.debug(codexDebug.readFailed("the loaded threads", errText4(e)));
+        return void 0;
+      }
     ).finally(() => {
       reading = void 0;
     });
     return reading;
   };
-  return {
-    get: make,
-    async hosted(threadId) {
-      const d = make();
-      if (d === void 0) {
-        cache = void 0;
-        return false;
-      }
-      if (cache !== void 0) {
-        const age = clock.now() - cache.at;
-        const has = cache.ids.has(threadId);
-        if (age >= 0 && age < (has ? ttl : missTtl)) return has;
-      }
-      const ids = await refresh(d);
-      return ids?.has(threadId) ?? false;
+  const lookup = (failed) => async (threadId) => {
+    const d = get();
+    if (d === void 0) {
+      cache = void 0;
+      return false;
     }
+    if (cache !== void 0) {
+      const age = clock.now() - cache.at;
+      const has = cache.ids.has(threadId);
+      if (age >= 0 && age < (has ? ttl : missTtl)) return has;
+    }
+    const ids = await refresh(d);
+    return ids === void 0 ? failed : ids.has(threadId);
   };
+  return { get, hosted: lookup(false), known: lookup(void 0) };
 }
 
 // codex/src/log.ts
@@ -4573,10 +4619,10 @@ function fileLog(dataDir, on, clock, o = {}) {
 // codex/src/question.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { join as join8 } from "node:path";
-var errText4 = (e) => e instanceof Error ? e.message : String(e);
+var errText5 = (e) => e instanceof Error ? e.message : String(e);
 var isObject6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function readFile(dir, name) {
-  const v = readJson(join8(dir, name));
+  const v = readOwnJson(join8(dir, name));
   if (v === void 0) return void 0;
   if (!isObject6(v) || v["v"] !== FORMAT) return "unknown";
   return v;
@@ -4678,7 +4724,7 @@ function createQuestions(d) {
     } catch (e) {
       failed = true;
       if (d.mcp.closed?.() === true) return;
-      d.log.debug(codexDebug.readFailed("the answer of the form", errText4(e)));
+      d.log.debug(codexDebug.readFailed("the answer of the form", errText5(e)));
     }
     if (!stillLeads(sx, call, key)) return;
     const answer = answerOf(result, failed);
@@ -4761,7 +4807,7 @@ function createQuestions(d) {
       if (noReading(s)) return false;
       return settleAgain(sx, key, via, gatingNow, s);
     } catch (e) {
-      d.log.debug(debugLine.checkFailed(errText4(e)));
+      d.log.debug(debugLine.checkFailed(errText5(e)));
       return false;
     } finally {
       checking.delete(key);
@@ -4835,14 +4881,14 @@ function createQuestions(d) {
         return out;
       });
     } catch (e) {
-      d.log.debug(codexDebug.writeFailed("the held entry", errText4(e)));
+      d.log.debug(codexDebug.writeFailed("the held entry", errText5(e)));
       return;
     }
     if (r !== "limit") return;
     try {
       await settle(sx, key, "stop", "dialog ended without an answer");
     } catch (e) {
-      d.log.debug(codexDebug.writeFailed("the answer", errText4(e)));
+      d.log.debug(codexDebug.writeFailed("the answer", errText5(e)));
     }
   };
   const waitQuestion = async (sx, call, key) => {
@@ -4863,16 +4909,16 @@ function createQuestions(d) {
         if (q !== "unknown") {
           if (q === void 0 || q.key !== key) return "again";
           if (now >= call.since + HOLD_LIMIT_MS) {
-            await settle(sx, key, "stop", "time limit").catch((e) => d.log.debug(codexDebug.writeFailed("the answer", errText4(e))));
+            await settle(sx, key, "stop", "time limit").catch((e) => d.log.debug(codexDebug.writeFailed("the answer", errText5(e))));
             const after = readAnswer(sx);
             return after?.key === key ? after.outcome : "stop";
           }
           if (!q.silent && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
-            void raise(sx, call, key).catch((e) => d.log.debug(codexDebug.gateError(errText4(e))));
+            void raise(sx, call, key).catch((e) => d.log.debug(codexDebug.gateError(errText5(e))));
           }
           const elsewhere = decidedElsewhere(sx, q, now);
           if (elsewhere !== void 0) {
-            await settle(sx, key, elsewhere, "elsewhere").catch((e) => d.log.debug(codexDebug.writeFailed("the answer", errText4(e))));
+            await settle(sx, key, elsewhere, "elsewhere").catch((e) => d.log.debug(codexDebug.writeFailed("the answer", errText5(e))));
             return elsewhere;
           }
           if (await dueCheck(sx, key, q)) continue;
@@ -4916,12 +4962,12 @@ function nextWait(q, call, now) {
 }
 
 // codex/src/rollout.ts
-import { statSync as statSync3 } from "node:fs";
+import { statSync as statSync4 } from "node:fs";
 var TURN_ENDS_KEPT = 64;
 var FRESH_KEPT = 64;
 var statOf = (file) => {
   try {
-    const st = statSync3(file);
+    const st = statSync4(file);
     return { ino: Number(st.ino), size: Number(st.size) };
   } catch (e) {
     const code = e.code;
@@ -5101,19 +5147,19 @@ function createRollouts(d = {}) {
 }
 
 // codex/src/sweep.ts
-var errText5 = (e) => e instanceof Error ? e.message : String(e);
+var errText6 = (e) => e instanceof Error ? e.message : String(e);
 var coveredBy = (t, stopAt) => t.startedAt === null || t.startedAt * 1e3 <= stopAt;
 async function interruptTurn(daemon, thread, turn) {
   try {
     await daemon.interrupt(thread, turn);
     return { ok: true };
   } catch (e) {
-    if (!(e instanceof DaemonError && e.kind === "timeout")) return { ok: false, error: errText5(e) };
+    if (!(e instanceof DaemonError && e.kind === "timeout")) return { ok: false, error: errText6(e) };
     try {
       const t = await daemon.newestTurn(thread);
-      return t !== void 0 && t.id === turn && t.status === "inProgress" ? { ok: false, error: errText5(e) } : { ok: true };
+      return t !== void 0 && t.id === turn && t.status === "inProgress" ? { ok: false, error: errText6(e) } : { ok: true };
     } catch (e2) {
-      return { ok: false, error: errText5(e2) };
+      return { ok: false, error: errText6(e2) };
     }
   }
 }
@@ -5127,7 +5173,7 @@ function markInterrupt(sx, turn, at, log) {
       return prev === void 0 ? { kind: "mine" } : { kind: "mine", lost: prev };
     });
   } catch (e) {
-    log.debug(codexDebug.writeFailed("the interrupted turns", errText5(e)));
+    log.debug(codexDebug.writeFailed("the interrupted turns", errText6(e)));
     return { kind: "failed" };
   }
 }
@@ -5142,7 +5188,7 @@ function unmarkInterrupt(sx, turn, at, log, lost) {
       else tx.state.interrupts = i;
     });
   } catch (e) {
-    log.debug(codexDebug.writeFailed("the interrupted turns", errText5(e)));
+    log.debug(codexDebug.writeFailed("the interrupted turns", errText6(e)));
   }
 }
 var DONE_KEPT = 64;
@@ -5157,7 +5203,7 @@ function createInterrupts(d) {
       try {
         t = await daemon.newestTurn(thread);
       } catch (e) {
-        d.log.debug(codexDebug.readFailed(`the newest turn of ${thread}`, errText5(e)));
+        d.log.debug(codexDebug.readFailed(`the newest turn of ${thread}`, errText6(e)));
         return false;
       }
       if (t === void 0 || t.id !== turn || t.status !== "inProgress") return true;
@@ -5180,7 +5226,7 @@ function createInterrupts(d) {
       try {
         daemon = d.daemon.get();
       } catch (e) {
-        d.log.debug(codexDebug.interruptFailed(errText5(e)));
+        d.log.debug(codexDebug.interruptFailed(errText6(e)));
         daemon = void 0;
       }
       if (daemon === void 0) return "failed";
@@ -5202,7 +5248,7 @@ function createInterrupts(d) {
       try {
         ok = await p;
       } catch (e) {
-        d.log.debug(codexDebug.interruptFailed(errText5(e)));
+        d.log.debug(codexDebug.interruptFailed(errText6(e)));
         ok = false;
       } finally {
         if (inflight.get(key) === p) inflight.delete(key);
@@ -5237,7 +5283,7 @@ function createSweep(d) {
           try {
             t = await daemon.newestTurn(tid);
           } catch (e) {
-            d.log.debug(codexDebug.readFailed(`the newest turn of ${tid}`, errText5(e)));
+            d.log.debug(codexDebug.readFailed(`the newest turn of ${tid}`, errText6(e)));
             continue;
           }
           if (t === void 0 || t.status !== "inProgress" || !coveredBy(t, stop.at)) continue;
@@ -5247,7 +5293,7 @@ function createSweep(d) {
         if (n > 0) d.log.debug(codexDebug.swept(n));
         return n;
       } catch (e) {
-        d.log.debug(codexDebug.interruptFailed(errText5(e)));
+        d.log.debug(codexDebug.interruptFailed(errText6(e)));
         return 0;
       }
     }
@@ -5258,7 +5304,7 @@ function createSweep(d) {
 var VERBS = ["status", "help", "resume", "stop", "simulate", "set"];
 var RECENT_MS = 24 * 36e5;
 var set2 = (v) => v !== void 0 && v !== "";
-var errText6 = (e) => e instanceof Error ? e.message : String(e);
+var errText7 = (e) => e instanceof Error ? e.message : String(e);
 var codeOf2 = (e) => typeof e === "object" && e !== null ? e.code : void 0;
 function parseArgs(argv) {
   const words = [];
@@ -5325,7 +5371,7 @@ async function main(argv, d) {
   try {
     paths = pathsOf(d.env, a, d.selfFile);
   } catch (e) {
-    print(`spare10: ${commandFailed(errText6(e))}`);
+    print(`spare10: ${commandFailed(errText7(e))}`);
     return 1;
   }
   const pid = d.pid ?? process.pid;
@@ -5342,7 +5388,7 @@ async function main(argv, d) {
         print(codexText.cliSandbox(verb));
         return 2;
       }
-      print(`spare10: ${commandFailed(errText6(e))}`);
+      print(`spare10: ${commandFailed(errText7(e))}`);
       return 1;
     }
   }
@@ -5359,13 +5405,7 @@ async function main(argv, d) {
     const hostPid = state?.hostPid ?? 0;
     const hostKind = state?.hostKind ?? "unknown";
     const rollouts = createRollouts();
-    const link = daemonLink(() => {
-      try {
-        return d.daemon(paths);
-      } catch {
-        return void 0;
-      }
-    }, d.clock);
+    const link = daemonLink(() => d.daemon(paths), d.clock, { log });
     const settings = createSettings({ paths, log, env, parentChild: () => void 0, simulateKind: () => "five_hour", hostKind });
     const quota = createQuota({ paths, clock: d.clock, log, owner, daemon: link, rollouts, pidAlive: alive });
     const base = createAttendance({ hostKind, rollouts });
@@ -5401,7 +5441,7 @@ async function main(argv, d) {
     if ((verb === "resume" || verb === "stop" || verb === "simulate") && named === void 0) {
       const now = d.clock.now();
       const rows = [];
-      for (const r of listSessions(paths).filter((x) => now - x.mtime < RECENT_MS)) {
+      for (const r of listSessions(paths, now - RECENT_MS)) {
         let phase = "unknown";
         try {
           const p2 = partsFor(r.sid);
@@ -5415,7 +5455,7 @@ async function main(argv, d) {
       return 2;
     }
     if (verb === "status") {
-      const sid = named ?? listSessions(paths).find((x) => d.clock.now() - x.mtime < RECENT_MS)?.sid;
+      const sid = named ?? listSessions(paths, d.clock.now() - RECENT_MS)[0]?.sid;
       const p2 = partsFor(sid);
       if (fromBang && !a.full) print(`spare10: ${await p2.cmds.phaseLine(p2.sx)}`);
       else print(`spare10: ${await p2.cmds.statusText(p2.sx, { cli: true, full: true })}`);
@@ -5432,7 +5472,7 @@ async function main(argv, d) {
     print(`spare10: ${reply}`);
     return 0;
   } catch (e) {
-    print(`spare10: ${commandFailed(errText6(e))}`);
+    print(`spare10: ${commandFailed(errText7(e))}`);
     return 1;
   }
 }
@@ -5457,7 +5497,7 @@ if (isMain()) {
       process.exitCode = code;
     },
     (e) => {
-      process.stdout.write(`spare10: ${commandFailed(errText6(e))}
+      process.stdout.write(`spare10: ${commandFailed(errText7(e))}
 `);
       process.exitCode = 1;
     }

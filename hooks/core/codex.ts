@@ -862,6 +862,8 @@ export const codexDebug = {
   mcpClosed: (why: string, open: number): string => `spare10: the MCP server shuts down (${why}), with ${open} open call(s).`,
   /** Codex cancelled a gate call. It gets no answer. */
   cancelled: (id: string): string => `spare10: Codex cancelled the call ${id}.`,
+  /** The broker removed this many old session folders. */
+  pruned: (n: number): string => `spare10: removed ${n} old session folder(s).`,
   /** The background work of a broker starts. `guard`: SPARE10_CODEX_TEST reached it (D10), so no path under ~/.codex can open. */
   boot: (version: string, guard: boolean): string => `spare10: the broker ${version} starts, and the test guard is ${guard ? 'on' : 'off'}.`,
 }
