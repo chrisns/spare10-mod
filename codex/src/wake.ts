@@ -5,9 +5,10 @@ import type { Clock, Timer } from './clock.ts'
 import type { Log } from './log.ts'
 import { WAKE_POLL_MS } from './timing.ts'
 
-// The Wake source (Codex design 3.7). A waiter of a session watches the session folder. Any change there
-// wakes every waiter of that session in this broker (the Codex form of wakeAll). The specs use one
-// in-process emitter that the world shares (codex/test/helpers/wake.ts), and every store write fires it.
+// The Wake source (Codex design 3.7). A waiter of a session watches the session folder. A change of a
+// session file there (WAKE_FILES) wakes every waiter of that session in this broker (the Codex form of
+// wakeAll). The lock, the temp files and the thread files wake no one. The specs use one in-process
+// emitter that the world shares (codex/test/helpers/wake.ts), and every store write fires it.
 
 export type Wake = {
   /** Calls `fn` at each change in `dir`. The result stops the watch. */
@@ -34,9 +35,12 @@ const marksOf = (dir: string): string => WAKE_FILES.map((f) => markOf(join(dir, 
 /** One folder watch: `onEvent` at each change in `dir`, `onError` when the watch fails. It throws when it cannot start. */
 export type WatchDir = (dir: string, onEvent: () => void, onError: (e: unknown) => void) => { close(): void }
 
-/** The folder watch of Node: `fs.watch`, not recursive. */
+/** The folder watch of Node: `fs.watch`, not recursive. An event with no file name wakes too. */
 export const nodeWatchDir: WatchDir = (dir, onEvent, onError) => {
-  const w = watch(dir, { persistent: true }, () => onEvent())
+  const w = watch(dir, { persistent: true }, (_ev, name) => {
+    // A lock, a temp file or the folder itself tells a waiter nothing: the poll compares only WAKE_FILES.
+    if (name === null || name === undefined || WAKE_FILES.includes(String(name))) onEvent()
+  })
   w.on('error', onError)
   return w
 }

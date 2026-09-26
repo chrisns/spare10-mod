@@ -146,6 +146,10 @@ test('sweep: a stop that the CLI wrote is swept, and a later sweep (the root tic
   w.setState({ stopped: stopRecord() })
   const cli = w.broker()
   assert.equal(await cli.sweep.sweep(cli.sx), 1)
+  turns(w, {
+    [SID]: { id: 'U1', status: 'interrupted', startedAt: startedAt(T0) - 60 },
+    [CHILD]: { id: 'C1', status: 'inProgress', startedAt: startedAt(T0) - 60 },
+  })
   await w.advance(30 * SEC)
   bind(w, CHILD)
   const root = w.broker()
@@ -173,6 +177,40 @@ test('sweep: a failed interrupt unmarks the turn so the next sweep tries again, 
   w.daemon.script.newestTurn = () => (calls++ === 0 ? { id: 'U1', status: 'inProgress', startedAt: startedAt(T0) - 60 } : { id: 'U1', status: 'interrupted', startedAt: startedAt(T0) - 60 })
   assert.equal(await b.sweep.sweep(b.sx), 1)
   assert.equal(typeof w.state().interrupts?.['U1'], 'number')
+})
+
+test('sweep: a lost mark (its process died before the interrupt went out) is swept again, and a fresh mark of another process is not', async (t) => {
+  const w = logicWorld(t, { daemon: true })
+  w.daemon.script.loaded = [SID, CHILD]
+  turns(w, {
+    [SID]: { id: 'U1', status: 'inProgress', startedAt: startedAt(T0) - 60 },
+    [CHILD]: { id: 'C1', status: 'inProgress', startedAt: startedAt(T0) - 60 },
+  })
+  bind(w, SID, CHILD)
+  // U1: a mark of T0 - 30 s whose interrupt never went out. C1: another process marked it just now.
+  w.setState({ stopped: stopRecord(), interrupts: { U1: T0 - 30 * SEC, C1: T0 } })
+  const b = w.broker()
+  assert.equal(await b.sweep.sweep(b.sx), 1)
+  assert.deepEqual(w.daemon.callsOf('interrupt'), [[SID, 'U1']])
+  assert.equal(w.state().interrupts?.['U1'], T0, 'the sweep takes the lost mark')
+  // An interrupt of a retaken mark that fails puts the lost mark back, so CX39 still sees it and the next sweep tries again.
+  w.daemon.script.interrupt = new DaemonError('rpc', 'turn/interrupt: thread not found', -32600)
+  w.setState({ interrupts: { U1: T0 - 30 * SEC, C1: T0 } })
+  const c = w.broker()
+  assert.equal(await c.sweep.sweep(c.sx), 0)
+  assert.deepEqual(w.state().interrupts, { U1: T0 - 30 * SEC, C1: T0 })
+  // Once the mark of C1 is older than its lifetime, a sweep takes it too.
+  w.daemon.script.interrupt = undefined
+  await w.advance(20 * SEC)
+  const d = w.broker()
+  assert.equal(await d.sweep.sweep(d.sx), 2)
+  assert.deepEqual(
+    w.daemon.callsOf('interrupt').slice(-2).sort(),
+    [
+      [CHILD, 'C1'],
+      [SID, 'U1'],
+    ].sort(),
+  )
 })
 
 test('sweep: under a held stop the held work stays in place, and every other running turn is swept (4.4)', async (t) => {

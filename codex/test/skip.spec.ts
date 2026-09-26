@@ -76,6 +76,48 @@ test('skip: a Stop here after the skip start refuses the held work, writes no st
   assert.equal(await b.gate('tool'), '', 'new work goes on')
 })
 
+// A Resume answers one round only. A held call that a stop then holds decides afresh when the stop ends.
+for (const [site, second] of [
+  ['tool', { action: 'accept', content: { choice: 'stop' } }],
+  ['step', { action: 'decline' }],
+] as const) {
+  test(`skip: a held ${site} call that got a Resume and then ${second.action === 'decline' ? 'a declined form' : 'a Stop here'} asks again at the weekly skip start, and the old Resume does not cover the new 5-hour window`, async (t) => {
+    const w = world(t)
+    const b = await w.broker()
+    const reset1 = T0 + HOUR
+    const weekReset = T0 + 11 * HOUR // its skip start: T0 + 3 h
+    w.reading(SID, 92, { reset: reset1, weekly: 50, weeklyReset: weekReset })
+    const h = b.call(site)
+    await w.settle()
+    assert.deepEqual(question(w)?.kinds, ['five_hour'])
+    // The weekly window trips while the first question is open. The Resume answers only the 5-hour window.
+    w.reading(SID, 92, { reset: reset1, weekly: 92, weeklyReset: weekReset })
+    b.host.answer({ action: 'accept', content: { choice: 'resume' } })
+    await w.settle()
+    assert.equal(h.box.done, false)
+    assert.equal(b.forms().length, 2)
+    assert.deepEqual(question(w)?.kinds, ['seven_day'])
+    // A Stop here or a declined form on the weekly question: the call holds in place under the weekly stop.
+    b.host.answer(second)
+    await w.settle()
+    assert.equal(h.box.done, false)
+    assert.notEqual(w.state().stopped, undefined)
+    // The 5-hour window resets, and its new window climbs into the reserve.
+    await w.advance(reset1 - T0 + 5 * MIN)
+    w.reading(SID, 92, { reset: T0 + 6 * HOUR, weekly: 92, weeklyReset: weekReset })
+    await w.advance(10 * MIN)
+    assert.equal(h.box.done, false, 'the weekly stop still holds the call')
+    // At the weekly skip start the stop ends. The new 5-hour window gates, so the call asks again.
+    await w.advance(weekReset - 8 * HOUR - w.clock.now() + SEC)
+    assert.equal(h.box.done, false, 'no pass on the Resume of the old window')
+    assert.equal(b.forms().length, 3)
+    assert.deepEqual(question(w)?.kinds, ['five_hour'])
+    b.host.answer({ action: 'accept', content: { choice: 'resume' } })
+    await w.settle()
+    assert.equal(h.box.done, true)
+  })
+}
+
 test('skip: a test window over a real trip does not open its reserve (B45)', async (t) => {
   const w = world(t)
   const b = await w.broker()

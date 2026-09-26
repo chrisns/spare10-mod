@@ -61,6 +61,11 @@ export const DAEMON_CONNECT_MS = 1_000
 export const A_READ_MS = 5_000
 export const A_NEAR_MS = 2_000
 export const INTERRUPT_MS = 8_000
+/**
+ * An interrupt mark older than this is lost: its process died, or it could not remove the mark of a failed
+ * interrupt (4.4). A live owner is done sooner: connect, INTERRUPT_MS, connect, THREAD_READ_MS, LOCK_WAIT_MS.
+ */
+export const INTERRUPT_MARK_MS = 2 * INTERRUPT_MS
 /** A caller that finds a turn marked by another process asks `thread/turns/list` this often, for at most INTERRUPT_MS (4.4). */
 export const INTERRUPT_POLL_MS = 250
 export const START_MS = 5_000

@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { realClock } from '../src/clock.ts'
 import { writeJson } from '../src/files.ts'
+import { sessionStore } from '../src/store.ts'
 import { WAKE_POLL_MS } from '../src/timing.ts'
 import { WAKE_FILES, fsWake } from '../src/wake.ts'
 import type { WatchDir } from '../src/wake.ts'
@@ -43,6 +44,40 @@ test('fsWake: a write of state.json by rename wakes a waiter through the file ev
   t.after(stop)
   writeJson(join(dir, 'state.json'), { v: 1, rev: 1 })
   assert.equal(await w.woke, true)
+})
+
+/** Waits on real time until `done()` is true, for at most `ms`. */
+async function until(done: () => boolean, ms: number): Promise<boolean> {
+  for (let waited = 0; waited < ms; waited += 20) {
+    if (done()) return true
+    await realClock.sleep(20)
+  }
+  return done()
+}
+
+test('fsWake: through the file events, a lock, a temp file and a thread file wake no waiter, and a write of state.json does', async (t) => {
+  const data = tempDir(t)
+  const clock = fakeClock(0) // the poll never runs: only the file events of fs.watch wake
+  const wake = fsWake(clock, memoryLog())
+  const store = sessionStore({ data }, '01a0da06-c266-7842-bc97-1128f6549960', 'test', wake)
+  store.locked((tx) => {
+    tx.state.attended = true // the folder and state.json exist before the watch
+  })
+  let woke = 0
+  t.after(wake.watch(store.dir, () => (woke += 1)))
+  await realClock.sleep(200) // the events of the set-up, if any come late
+  woke = 0
+  store.locked(() => undefined) // state.lock comes and goes, and nothing is written
+  store.locked((tx) => {
+    tx.thread('01a0da07-0000-7000-8000-00000000c41d').beat = 1 // threads/<tid>.json and state.lock only
+  })
+  writeFileSync(join(store.dir, 'state.json.1.ab.tmp'), '{}')
+  await realClock.sleep(500)
+  assert.equal(woke, 0, 'no session file changed')
+  store.locked((tx) => {
+    tx.state.attended = false
+  })
+  assert.equal(await until(() => woke > 0, 3_000), true, 'the write of state.json wakes')
 })
 
 /** A folder watch that never starts: only the poll sees a change. */

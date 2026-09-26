@@ -1667,6 +1667,7 @@ var DAEMON_CONNECT_MS = 1e3;
 var A_READ_MS = 5e3;
 var A_NEAR_MS = 2e3;
 var INTERRUPT_MS = 8e3;
+var INTERRUPT_MARK_MS = 2 * INTERRUPT_MS;
 var INTERRUPT_POLL_MS = 250;
 var START_MS = 5e3;
 var LOADED_MS = 2e3;
@@ -4958,7 +4959,10 @@ function createGate(d) {
         if (v.text === "stop" || v.text === "paused") markWork(sx, d.log);
         if (o.block === true) return blockOf(s, a, sx.sid);
         const r2 = await d.refusal.refusal(sx, call, site, v.text, s, a);
-        if (r2.kind === "hold") continue;
+        if (r2.kind === "hold") {
+          resumed = [];
+          continue;
+        }
         return r2;
       }
       if (v.kind === "tell") {
@@ -4981,7 +4985,10 @@ function createGate(d) {
       if (out === "dropped") return refused(s, a);
       if (o.block === true) return blockOf(s, a, sx.sid);
       const r = await d.refusal.refusal(sx, call, site, s.attended ? site === "tool" ? "stop" : "paused" : "headless", s, a);
-      if (r.kind === "hold") continue;
+      if (r.kind === "hold") {
+        resumed = [];
+        continue;
+      }
       return r;
     }
   };
@@ -5854,6 +5861,7 @@ function createQuestions(d) {
           return "dropped";
         }
         const now = d.clock.now();
+        if (q === "unknown" && now >= call.since + HOLD_LIMIT_MS) return "stop";
         if (q !== "unknown") {
           if (q === void 0 || q.key !== key) return "again";
           if (now >= call.since + HOLD_LIMIT_MS) {
@@ -6291,21 +6299,23 @@ function markInterrupt(sx, turn, at, log) {
   try {
     return sx.store.locked((tx) => {
       const i = tx.state.interrupts ?? {};
-      if (i[turn] !== void 0) return "taken";
+      const prev = i[turn];
+      if (prev !== void 0 && Math.abs(at - prev) < INTERRUPT_MARK_MS) return { kind: "taken" };
       tx.state.interrupts = { ...i, [turn]: at };
-      return "mine";
+      return prev === void 0 ? { kind: "mine" } : { kind: "mine", lost: prev };
     });
   } catch (e) {
     log.debug(codexDebug.writeFailed("the interrupted turns", errText7(e)));
-    return "failed";
+    return { kind: "failed" };
   }
 }
-function unmarkInterrupt(sx, turn, at, log) {
+function unmarkInterrupt(sx, turn, at, log, lost) {
   try {
     sx.store.locked((tx) => {
       const i = { ...tx.state.interrupts ?? {} };
       if (i[turn] !== at) return;
-      delete i[turn];
+      if (lost !== void 0) i[turn] = lost;
+      else delete i[turn];
       if (Object.keys(i).length === 0) delete tx.state.interrupts;
       else tx.state.interrupts = i;
     });
@@ -6355,14 +6365,14 @@ function createInterrupts(d) {
       const dm = daemon;
       const at = d.clock.now();
       const mark = markInterrupt(sx, turn, at, d.log);
-      if (mark === "failed") return "failed";
-      if (mark === "taken" && !join13) return "skipped";
+      if (mark.kind === "failed") return "failed";
+      if (mark.kind === "taken" && !join13) return "skipped";
       const p = (async () => {
-        if (mark === "taken") return ended(dm, thread, turn);
+        if (mark.kind === "taken") return ended(dm, thread, turn);
         const r = await interruptTurn(dm, thread, turn);
         if (r.ok) return true;
         d.log.debug(codexDebug.interruptFailed(r.error));
-        unmarkInterrupt(sx, turn, at, d.log);
+        unmarkInterrupt(sx, turn, at, d.log, mark.lost);
         return false;
       })();
       inflight.set(key, p);
@@ -6382,7 +6392,7 @@ function createInterrupts(d) {
         done.delete(k);
       }
       d.onInterrupted?.(thread, turn);
-      return mark === "mine" ? "sent" : "joined";
+      return mark.kind === "mine" ? "sent" : "joined";
     }
   };
 }
@@ -6550,7 +6560,9 @@ function markOf2(file) {
 }
 var marksOf2 = (dir) => WAKE_FILES.map((f) => markOf2(join11(dir, f))).join(" ");
 var nodeWatchDir = (dir, onEvent, onError) => {
-  const w = watch(dir, { persistent: true }, () => onEvent());
+  const w = watch(dir, { persistent: true }, (_ev, name) => {
+    if (name === null || name === void 0 || WAKE_FILES.includes(String(name))) onEvent();
+  });
   w.on("error", onError);
   return w;
 };

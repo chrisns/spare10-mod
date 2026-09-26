@@ -437,6 +437,8 @@ export function createQuestions(d: QuestionDeps): Questions {
           return 'dropped'
         }
         const now = d.clock.now()
+        // Another format: no settle can write it. At the hold limit the call refuses before Codex drops it (fail closed).
+        if (q === 'unknown' && now >= call.since + HOLD_LIMIT_MS) return 'stop'
         if (q !== 'unknown') {
           if (q === undefined || q.key !== key) return 'again' // decide again: sense, then open or join
           if (now >= call.since + HOLD_LIMIT_MS) {

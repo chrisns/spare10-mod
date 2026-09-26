@@ -350,7 +350,11 @@ export function createGate(d: GateDeps): Gate {
         if (v.text === 'stop' || v.text === 'paused') markWork(sx, d.log)
         if (o.block === true) return blockOf(s, a, sx.sid)
         const r = await d.refusal.refusal(sx, call, site, v.text, s, a)
-        if (r.kind === 'hold') continue // the verdict turned to hold while the call held: ask
+        if (r.kind === 'hold') {
+          // The verdict turned to hold while the call held: ask. An earlier Resume answers no later round.
+          resumed = []
+          continue
+        }
         return r
       }
       if (v.kind === 'tell') {
@@ -373,7 +377,10 @@ export function createGate(d: GateDeps): Gate {
       if (out === 'dropped') return refused(s, a) // Codex ignores it
       if (o.block === true) return blockOf(s, a, sx.sid)
       const r = await d.refusal.refusal(sx, call, site, s.attended ? (site === 'tool' ? 'stop' : 'paused') : 'headless', s, a)
-      if (r.kind === 'hold') continue
+      if (r.kind === 'hold') {
+        resumed = [] // as above: the Resume of an older question does not answer this round
+        continue
+      }
       return r
     }
   }

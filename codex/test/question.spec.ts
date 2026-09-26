@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { codexText, elicitParams } from '../../hooks/core/codex.ts'
 import { formatConsent, formatStopped, parseStopped } from '../../hooks/core/decide.ts'
@@ -430,6 +430,26 @@ test('question: past the hold limit the waiter settles as Stop here with the hol
   assert.equal(await out, 'stop')
   assert.equal(answerFile(w)?.via, 'time limit')
   assert.match(texts(w)[0] ?? '', /^the hold reached its time limit\. /)
+})
+
+test('question: past the hold limit a waiter whose question file has another format answers Stop here (fail closed)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const { s, a } = await tripped(w, b)
+  const call = heldCall({ since: T0 - HOLD_LIMIT_MS + MIN })
+  const { key, out } = hold(b, call, s, a)
+  let done = false
+  void out.then(() => {
+    done = true
+  })
+  await w.settle()
+  // A newer spare10 rewrites the question in its own format. No settle can write it now.
+  writeFileSync(w.file('question.json'), JSON.stringify({ ...questionFile(w), v: 2 }))
+  await w.advance(30 * SEC)
+  assert.equal(done, false, 'before the limit the call holds')
+  await w.advance(MIN)
+  assert.equal(await out, 'stop')
+  assert.notEqual(answerFile(w)?.key, key, 'nothing settled the question')
 })
 
 test('question: with Continue at the reset on, the held work continues at the skip start with the notice', async (t) => {

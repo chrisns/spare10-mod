@@ -75,6 +75,7 @@ test('timing: the values of 3.6 and 3.7 that 5.3 does not list', () => {
   assert.equal(timing.LOCK_SLEEP_MIN_MS, 2)
   assert.equal(timing.LOCK_SLEEP_MAX_MS, 10)
   assert.equal(timing.CODEX_CALL_TIMEOUT_MS, 691_200 * 1000)
+  assert.equal(timing.INTERRUPT_MARK_MS, 16_000)
   assert.ok(timing.FIRST_LINE_MAX_BYTES >= 64 * 1024)
 })
 
@@ -85,6 +86,11 @@ test('timing: the core values come from hooks/core, not from a copy', () => {
   assert.equal(timing.LIVE_LUNA_MAX_AGE_MS, core.LIVE_LUNA_MAX_AGE_MS)
   assert.equal(timing.RESET_JITTER_MS, core.RESET_JITTER_MS)
   assert.equal(timing.HARD_STOP_MAX_AGE_MS, core.HARD_STOP_MAX_AGE_MS)
+})
+
+test('timing: an interrupt mark outlives the longest interrupt of its owner', () => {
+  const owner = timing.DAEMON_CONNECT_MS + timing.INTERRUPT_MS + timing.DAEMON_CONNECT_MS + timing.THREAD_READ_MS + timing.LOCK_WAIT_MS
+  assert.ok(timing.INTERRUPT_MARK_MS > owner)
 })
 
 test('timing: a hold ends before Codex drops the call, and fits one Node timer', () => {
