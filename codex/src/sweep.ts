@@ -6,7 +6,7 @@ import type { Deps } from './deps.ts'
 import type { Log } from './log.ts'
 import { readThread, threadIds } from './held.ts'
 import type { SessionStore } from './store.ts'
-import { INTERRUPT_MS, INTERRUPT_POLL_MS } from './timing.ts'
+import { INTERRUPT_MARK_MS, INTERRUPT_MS, INTERRUPT_POLL_MS } from './timing.ts'
 
 // The stop sweep (Codex design 4.23, A18). A shell command that yields keeps polling with `write_stdin`,
 // which has no PreToolUse and gives PostToolUse only at its end, so a held-call refusal alone cannot end
@@ -78,31 +78,42 @@ export async function interruptTurn(daemon: Pick<Daemon, 'interrupt' | 'newestTu
 }
 
 /**
- * Under the lock: marks the turn as interrupted by spare10 (CX39, 4.4), before the interrupt goes out.
- * `mine`: this call marked it. `taken`: a sweep or another held call of the turn marked it first. `failed`:
- * the lock or the write failed, so nothing is marked.
+ * A mark: `mine` this call marked the turn, and `lost` is the mark older than INTERRUPT_MARK_MS that it
+ * replaced. `taken` a sweep or another held call of the turn marked it first. `failed` the lock or the
+ * write failed, so nothing is marked.
  */
-export function markInterrupt(sx: Pick<SweepCtx, 'store'>, turn: string, at: number, log: Log): 'mine' | 'taken' | 'failed' {
+export type Mark = { kind: 'mine'; lost?: number } | { kind: 'taken' } | { kind: 'failed' }
+
+/**
+ * Under the lock: marks the turn as interrupted by spare10 (CX39, 4.4), before the interrupt goes out. A
+ * mark older than INTERRUPT_MARK_MS is lost (its process died, or it could not unmark), so this call takes it.
+ */
+export function markInterrupt(sx: Pick<SweepCtx, 'store'>, turn: string, at: number, log: Log): Mark {
   try {
-    return sx.store.locked((tx) => {
+    return sx.store.locked((tx): Mark => {
       const i = tx.state.interrupts ?? {}
-      if (i[turn] !== undefined) return 'taken'
+      const prev = i[turn]
+      if (prev !== undefined && Math.abs(at - prev) < INTERRUPT_MARK_MS) return { kind: 'taken' }
       tx.state.interrupts = { ...i, [turn]: at }
-      return 'mine'
+      return prev === undefined ? { kind: 'mine' } : { kind: 'mine', lost: prev }
     })
   } catch (e) {
     log.debug(codexDebug.writeFailed('the interrupted turns', errText(e)))
-    return 'failed'
+    return { kind: 'failed' }
   }
 }
 
-/** Under the lock: the mark of a turn that was not interrupted goes, so that a later sweep or refusal tries again and CX39 stays right. */
-export function unmarkInterrupt(sx: Pick<SweepCtx, 'store'>, turn: string, at: number, log: Log): void {
+/**
+ * Under the lock: the mark of a turn that was not interrupted goes, so that a later sweep or refusal tries
+ * again and CX39 stays right. `lost`: the older mark that this one replaced comes back.
+ */
+export function unmarkInterrupt(sx: Pick<SweepCtx, 'store'>, turn: string, at: number, log: Log, lost?: number): void {
   try {
     sx.store.locked((tx) => {
       const i = { ...(tx.state.interrupts ?? {}) }
       if (i[turn] !== at) return
-      delete i[turn]
+      if (lost !== undefined) i[turn] = lost
+      else delete i[turn]
       if (Object.keys(i).length === 0) delete tx.state.interrupts
       else tx.state.interrupts = i
     })
@@ -159,14 +170,14 @@ export function createInterrupts(d: InterruptDeps): Interrupts {
       const at = d.clock.now()
       // The mark comes first, so the root Interrupt gate and CX39 know that spare10 caused it.
       const mark = markInterrupt(sx, turn, at, d.log)
-      if (mark === 'failed') return 'failed'
-      if (mark === 'taken' && !join) return 'skipped'
+      if (mark.kind === 'failed') return 'failed'
+      if (mark.kind === 'taken' && !join) return 'skipped'
       const p = (async (): Promise<boolean> => {
-        if (mark === 'taken') return ended(dm, thread, turn)
+        if (mark.kind === 'taken') return ended(dm, thread, turn)
         const r = await interruptTurn(dm, thread, turn)
         if (r.ok) return true
         d.log.debug(codexDebug.interruptFailed(r.error))
-        unmarkInterrupt(sx, turn, at, d.log)
+        unmarkInterrupt(sx, turn, at, d.log, mark.lost)
         return false
       })()
       inflight.set(key, p)
@@ -186,7 +197,7 @@ export function createInterrupts(d: InterruptDeps): Interrupts {
         done.delete(k)
       }
       d.onInterrupted?.(thread, turn)
-      return mark === 'mine' ? 'sent' : 'joined'
+      return mark.kind === 'mine' ? 'sent' : 'joined'
     },
   }
 }

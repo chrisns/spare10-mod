@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Writable } from 'node:stream'
-import { elicitParams, render } from '../../hooks/core/codex.ts'
+import { GATE_SITES, elicitParams, genericRefusal, render } from '../../hooks/core/codex.ts'
 import { HEADLESS_GENERIC, NOT_STARTED_GENERIC, STOP_GENERIC, VERSION } from '../../hooks/core/text.ts'
 import {
   ELICIT_ID_PREFIX,
@@ -239,7 +239,13 @@ test('heldRefusal: each site', () => {
   )
   assert.equal(heldRefusal('stop', true), JSON.stringify({ continue: false }))
   assert.equal(heldRefusal('compact', true), JSON.stringify({ continue: false }))
-  for (const site of ['start', 'spawn', 'interrupt', 'bogus', undefined]) assert.equal(heldRefusal(site, true), '')
+  for (const site of ['start', 'spawn', 'interrupt', 'bogus', '__proto__', 'constructor', undefined]) assert.equal(heldRefusal(site, true), '')
+})
+
+test('heldRefusal: the refusal of the gate that fails (genericRefusal) for every site and attendance, so the two can never differ', () => {
+  for (const site of GATE_SITES) {
+    for (const attended of [true, false]) assert.equal(heldRefusal(site, attended), render(site, genericRefusal(site, attended)), `${site} ${attended}`)
+  }
 })
 
 test('stdin EOF: the onClose work first, then each held call gets its refusal and the others a pass, once', async () => {

@@ -193,7 +193,7 @@ In the texts below, `HH:MM` is a reset time or the end of a test window.
 - It also has these rows: `reading`, `weekly reading`, `consent`, `weekly consent`, `guarded`, `codex exec`, `daemon`, `live read`, `cli`.
 - The option rows say `(from spare10 set)`.
 - The `daemon` row reads `no. After Stop here, spare10 holds the work in place.`
-- The `cli` row shows `$H/plugins/data/spare10-spare10/bin/spare10`.
+- The `cli` row shows `~/plugins/data/spare10-spare10/bin/spare10`, because `$H` is the home folder here.
 - The last lines are the help lines for `spare10 resume`, `spare10 stop`, `spare10 set` and `!spare10 status`.
 - No line shows `spare10: spare10:`.
 - The number of model requests did not change.

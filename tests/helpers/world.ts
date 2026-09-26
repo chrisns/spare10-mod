@@ -41,6 +41,7 @@ import type {
 //   envGetDelayMs  per env name: env.get reads the value at once and answers this many mock ms late
 //                (w.envGetDelayMs), to keep a read in flight while other work runs
 //   envSetDelayMs  env.set answers this many mock ms late (w.envSetDelayMs), to open a write window
+//   envSetFails  env names whose env.set answers { deny }, so $.env.set() rejects (w.envSetFails)
 //   storeGetFails  store.get answers { deny }, so $.store.get() rejects (w.storeGetFails)
 //   extraLimits  more rate limits listed beside five_hour, such as seven_day (w.extraLimits)
 //   weekPct      live seven_day percentUsed, undefined for no weekly entry: the 0.1 world (mutable as w.weekPct)
@@ -182,6 +183,7 @@ export type WorldOptions = {
   envGetFails?: string[]
   envGetDelayMs?: Record<string, number>
   envSetDelayMs?: number
+  envSetFails?: string[]
   storeGetFails?: boolean
   extraLimits?: SessionRateLimit[]
   weekPct?: number
@@ -214,6 +216,7 @@ export type World = {
   envGetFails: string[]
   envGetDelayMs: Record<string, number>
   envSetDelayMs: number
+  envSetFails: string[]
   storeGetFails: boolean
   extraLimits: SessionRateLimit[]
   weekPct: number | undefined
@@ -277,6 +280,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     envGetFails: opts.envGetFails ?? [],
     envGetDelayMs: opts.envGetDelayMs ?? {},
     envSetDelayMs: opts.envSetDelayMs ?? 0,
+    envSetFails: opts.envSetFails ?? [],
     storeGetFails: opts.storeGetFails ?? false,
     extraLimits: opts.extraLimits ?? [],
     weekPct: opts.weekPct,
@@ -362,6 +366,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
   })
   on('env.set', async (_$, e) => {
     if (w.envSetDelayMs > 0) await clock.sleep(w.envSetDelayMs)
+    if (w.envSetFails.includes(e.name)) return { deny: `env.set ${e.name} failed` }
     if (e.value === undefined) w.env.delete(e.name)
     else w.env.set(e.name, e.value)
     return { value: undefined }

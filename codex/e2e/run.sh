@@ -50,12 +50,34 @@ case "$work" in
   "$real_codex_home" | "$real_codex_home"/*) echo "e2e: the work folder $work is under ~/.codex" >&2; exit 2 ;;
 esac
 
+# Stops each process that has a path under the folder $1 in its command line, and waits up to 3 s for it to end.
+# These are the brokers and the CLI launchers of one run: broker.sh starts a broker with the full path of its
+# bundle. The path is plain text, not a pattern, so a broker of another folder never matches.
+stop_under() {
+  stop_pids=$(ps -A -ww -o pid= -o args= | STOP_UNDER="$1/" awk -v self="$$" '$1 != self && index($0, ENVIRON["STOP_UNDER"]) > 0 { print $1 }')
+  [ -n "$stop_pids" ] || return 0
+  kill $stop_pids 2>/dev/null || true
+  stop_tries=0
+  while [ "$stop_tries" -lt 30 ]; do
+    stop_left=
+    for p in $stop_pids; do
+      if kill -0 "$p" 2>/dev/null; then stop_left="$stop_left $p"; fi
+    done
+    [ -n "$stop_left" ] || return 0
+    stop_pids=$stop_left
+    stop_tries=$((stop_tries + 1))
+    sleep 0.1
+  done
+  kill -9 $stop_pids 2>/dev/null || true
+}
+
 mock=
 cleanup() {
   status=$?
   [ -n "$mock" ] && kill "$mock" 2>/dev/null || true
-  # A broker of a run that failed can outlive its host for a moment: it runs from the plugin cache under $work.
-  pkill -f "$work/" 2>/dev/null || true
+  # A broker of a run that failed can outlive its host for a moment. It runs from the plugin cache under $work.
+  # It must end before rm removes the folder, because its shutdown writes there.
+  stop_under "$work"
   if [ -z "$keep" ] && [ "$status" -eq 0 ]; then
     rm -rf "$work"
   else

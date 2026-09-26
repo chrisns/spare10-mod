@@ -1,12 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { codexDebug } from '../../hooks/core/codex.ts'
 import { HEADLESS_GENERIC, STOP_GENERIC, VERSION } from '../../hooks/core/text.ts'
 import { createBroker } from '../src/broker.ts'
 import { launcherText } from '../src/paths.ts'
+import { PRUNE_AFTER_MS } from '../src/timing.ts'
 import { fakeClock } from './helpers/clock.ts'
 import { codexHost, flush } from './helpers/codex-host.ts'
 import { memoryDaemon } from './helpers/memory-daemon.ts'
@@ -102,6 +103,18 @@ test('broker: the background work logs the version and the test guard once (D10,
     log.lines.filter((l) => l.includes('the broker')),
     [codexDebug.boot(VERSION, true)],
   )
+})
+
+test('broker: the background work prunes the old session folders once a day, and logs it', async (t) => {
+  const w = world(t)
+  const dir = join(w.data, 'sessions', 'S-OLD')
+  w.setState({ hostPid: 12 }, 'S-OLD')
+  const at = (T0 - PRUNE_AFTER_MS - HOUR) / 1000
+  utimesSync(join(dir, 'state.json'), at, at)
+  await w.broker()
+  assert.equal(existsSync(dir), false, 'the old folder is gone')
+  assert.ok(existsSync(join(w.data, 'sessions', SID)), 'the session of the broker stays')
+  assert.deepEqual(w.log.lines.filter((l) => l.includes('old session')), [codexDebug.pruned(1)])
 })
 
 test('broker: stdin EOF answers a held call with its refusal, after the turn/interrupt of a hosted thread', async (t) => {

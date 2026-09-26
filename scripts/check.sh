@@ -3,16 +3,21 @@
 set -eu
 cd "$(dirname "$0")/.."
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
+# Dependencies, before the first tsc: npm ci when tsc or esbuild is missing, or when package.json or
+# package-lock.json changed since the last install. npm ci is a command of its own, so set -e stops the
+# check when it fails, and npm shows its error.
+deps() {
+  deps_sum=$(cat package.json package-lock.json | shasum -a 256 | cut -d' ' -f1)
+  if [ ! -x node_modules/.bin/tsc ] || [ ! -x node_modules/.bin/esbuild ] || [ "$(cat node_modules/.spare10-lock-hash 2>/dev/null)" != "$deps_sum" ]; then
+    npm ci --no-audit --no-fund --loglevel=error
+    echo "$deps_sum" > node_modules/.spare10-lock-hash
+  fi
+}
+deps
 claude plugin validate --strict .
 claude plugin validate --strict .claude-plugin/plugin.json
 claude plugin test .
-[ -x node_modules/.bin/tsc ] || npm ci --silent
 node_modules/.bin/tsc -p .
-# Dependencies: npm ci when esbuild is missing or package-lock.json changed since the last install
-lock=$(shasum -a 256 package-lock.json | cut -d' ' -f1)
-if [ ! -x node_modules/.bin/esbuild ] || [ "$(cat node_modules/.spare10-lock-hash 2>/dev/null)" != "$lock" ]; then
-  npm ci --silent && echo "$lock" > node_modules/.spare10-lock-hash
-fi
 # Codex. The specs need Node.js 22.18 or later (type stripping). The bundle itself needs Node.js 20.
 if ! node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 18) ? 0 : 1)'; then
   echo "check: the Codex specs need Node.js 22.18 or later. This is Node.js $(node --version)." >&2

@@ -45,6 +45,7 @@ export PATH="$HOME/.codex/plugins/data/spare10-spare10/bin:$PATH"
 
 If you set `CODEX_HOME`, use that folder in place of `$HOME/.codex`.
 The `cli` row of the `spare10` report shows the path.
+spare10 writes your home folder as `~` in a row, and as `$HOME` in a command.
 Start a new Codex session after you change the file.
 Then `!spare10 status`, `!spare10 resume` and `!spare10 stop` work at any time, also while spare10 holds work.
 Codex gives the output of each `!` command to the model.
@@ -92,6 +93,7 @@ The held work continues from the point where it stopped.
   Then spare10 holds the work in place until the stop ends.
   After that, the work continues.
   Press Esc to end the turn before that time.
+  `!spare10 stop` keeps the stop and the held work, and its reply says that held work waits.
   With **Continue at the reset** off, each running loop gets one more model request.
   In it, the model reads that it must stop.
 
@@ -102,6 +104,7 @@ Codex does not put the text back in the prompt box.
 With approval `never` (for example `--yolo`), Codex cannot show the question.
 Then spare10 holds the work, and asks nothing.
 Run `!spare10 resume` to continue, or press Esc to stop.
+On the Codex daemon, `!spare10 stop` also ends the held work.
 
 ## Commands in Codex
 
@@ -134,7 +137,7 @@ spare10 keeps its options in `~/.codex/plugins/data/spare10-spare10/config.json`
 Change them with `spare10 set`.
 The options, defaults and values are the same as in [Configure](configure.md#options), without **Status badge**.
 Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `pausePrompt`, `autoResume`, `headless` and `scope`.
-A `SPARE10_*` variable wins over the file, as in Claude Code.
+A `SPARE10_*` variable with a valid value wins over the file, as in Claude Code.
 
 The Codex TUI runs its sessions on a shared daemon by default.
 A daemon session gets its variables from the daemon, not from your terminal.
@@ -202,9 +205,9 @@ Codex also gives spare10 some things that Claude Code does not:
 
 ## How spare10 works in Codex
 
-- **Sense.** spare10 reads the quota from the Codex daemon. Without the daemon, it reads the last response in the session log. If a read fails, the step goes on.
+- **Sense.** spare10 reads the quota from the Codex daemon. Without the daemon, it reads the last response in the session log. If a read fails, the step goes on. spare10 uses the daemon socket only when you own it and its folder. If every user can write to that folder, spare10 works as without the daemon.
 - **Gate.** Nine Codex hooks call the spare10 process of their thread.
 - **Hold.** The spare10 process does not answer the hook. Codex waits, for up to 8 days.
 - **Ask.** The first held step shows a Codex form. All other held steps wait on the same answer.
 - **Continue.** Timers in the spare10 process release held work. A new turn through the daemon continues stopped work.
-- **State.** Consent, stops and questions are files in `~/.codex/plugins/data/spare10-spare10/`.
+- **State.** Consent, stops and questions are files in `~/.codex/plugins/data/spare10-spare10/`. spare10 removes the files of a session 30 days after their last change, when no process of that session runs. A computer crash can leave a state file empty. spare10 then reads the file as new, and can ask you again.

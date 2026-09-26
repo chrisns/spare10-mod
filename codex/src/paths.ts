@@ -24,6 +24,8 @@ export type Paths = {
   launcher: string
   /** The folder of the launcher, for the PATH line of CX19. */
   bin: string
+  /** The home folder: `$HOME`, else os.homedir(). The texts write a path under it as `~/...` or `"$HOME/..."`, never with its name. */
+  home: string
 }
 
 /** The folder name of the data dir: `<plugin>-<marketplace>` (`core-plugins/src/store.rs` L141-146). */
@@ -142,6 +144,7 @@ const homeOfEnv = (raw: string, env: Env, pluginRoot: string): string =>
  */
 export function findPaths(env: Env, selfFile: string): Paths {
   const pluginRoot = pluginRootOf(selfFile)
+  const home = resolve(set(env.HOME) ? env.HOME : homedir())
   let codexHome: string
   let data: string
   if (set(env.SPARE10_CODEX_DATA)) {
@@ -151,7 +154,7 @@ export function findPaths(env: Env, selfFile: string): Paths {
   } else {
     codexHome = set(env.CODEX_HOME)
       ? homeOfEnv(env.CODEX_HOME, env, pluginRoot)
-      : (homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? resolve(set(env.HOME) ? env.HOME : homedir(), '.codex'))
+      : (homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join(home, '.codex'))
     data = join(codexHome, 'plugins', 'data', DATA_NAME)
   }
   const socket = join(codexHome, 'app-server-control', 'app-server-control.sock')
@@ -159,7 +162,7 @@ export function findPaths(env: Env, selfFile: string): Paths {
   guardTestPath(env, 'data dir', data)
   guardTestPath(env, 'daemon socket', socket)
   const bin = join(data, 'bin')
-  return { codexHome, data, pluginRoot, socket, launcher: join(bin, 'spare10'), bin }
+  return { codexHome, data, pluginRoot, socket, launcher: join(bin, 'spare10'), bin, home }
 }
 
 /** The command line of the process `ppid` (`ps -ww -o args=`), or an empty string when `ps` fails. */
