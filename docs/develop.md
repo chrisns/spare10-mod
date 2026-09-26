@@ -23,6 +23,10 @@ These are the four checks for Claude Code:
 3. `claude plugin test .` runs the tests in `tests/`.
 4. `tsc`, at the version in `package-lock.json`, checks the types of the hooks and the tests.
 
+Before the first check, `scripts/check.sh` runs `npm ci` when `tsc` or esbuild is missing.
+It also runs `npm ci` when `package.json` or `package-lock.json` changed since the last install.
+When `npm ci` fails, the check stops and shows the npm error.
+
 ## Load the plugin from the repo
 
 To develop, load the plugin from the repo folder.
@@ -63,6 +67,7 @@ codex/dist/spare10.mjs           the broker bundle. npm run build:codex writes i
 codex/dist/cli.mjs               the CLI bundle, for spare10 commands from a shell
 codex/types/claude-code.d.ts     the claude-code types that hooks/core imports, for the Codex type check
 codex/test/*.spec.ts             Codex tests (node --test), also the pure tests of hooks/core/codex.ts
+codex/test/scripts.spec.ts       tests of scripts/check.sh, the cleanup of codex/e2e/run.sh and its --only ids
 codex/e2e/                       end-to-end runs with the real Codex and a mock provider, with no model request
 tests/helpers/world.ts           the kit world beneath the plugin
 tests/core/*.test.ts             pure tests
@@ -93,6 +98,7 @@ docs/images/                     the screenshots in the README
 docs/live-checks.md              the live checks, as a runbook
 docs/codex-live-checks.md        the Codex live checks, as a runbook
 .github/workflows/codex.yml      runs the Codex checks on each push and pull request
+.github/renovate.json5           the Renovate rules: it does not merge a TypeScript update or a major update by itself
 .claude/CLAUDE.md                notes for Claude Code. Not at the root, where validate --strict warns.
 ```
 
@@ -145,8 +151,10 @@ After the four checks for Claude Code, `scripts/check.sh` runs these Codex check
 3. `tsc -p codex` checks the types of the Codex adapter, its tests and the shared core.
 4. `node --test` runs the tests in `codex/test/`, with `SPARE10_CODEX_TEST=1`.
 
-Before these checks, `scripts/check.sh` runs `npm ci` when esbuild is missing.
-It also runs `npm ci` when `package-lock.json` changed since the last install.
+CI runs only these Codex checks, in `.github/workflows/codex.yml`.
+It cannot check the types of `hooks/register.tsx` and `tests/`, because those checks need the Claude Code types.
+So Renovate does not merge a TypeScript update or a major update by itself.
+Run `scripts/check.sh` on the branch of such an update before you merge it.
 
 `codex/test/kit-port.txt` gives each test in `tests/kit` a line.
 The line names the Codex test for the same behaviour, or says why Codex has no such behaviour.
@@ -156,6 +164,7 @@ So when you add a test to `tests/kit`, add its line too.
 No Codex test uses your `~/.codex` or makes a request to a real model.
 `SPARE10_E2E=smoke scripts/check.sh` also runs the short end-to-end set.
 `sh codex/e2e/run.sh --smoke` runs only that set, and `--keep` keeps the work folder with its logs.
+`--only E3,E4` runs only the runs with these ids. An id that no run has fails the command.
 A failed run also keeps its work folder.
 The work folder is in `/tmp`. Set `SPARE10_E2E_TMP` to use another folder.
 Run the checks in [docs/codex-live-checks.md](codex-live-checks.md) before each release and after each update of Codex.

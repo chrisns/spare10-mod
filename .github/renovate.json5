@@ -2,10 +2,23 @@
   "extends": [
     "github>chrisns/.github:renovate"
   ],
+  // The preset automerges through GitHub, which merges at once: the ruleset of main requires no check.
+  // Renovate merges by itself only after every check on the branch passes.
+  "platformAutomerge": false,
   "packageRules": [
     {
       "matchPackageNames": ["esbuild"],
       "prBodyNotes": ["Run npm run build:codex and commit codex/dist in this PR."]
+    },
+    {
+      // CI cannot check the types of hooks/register.tsx and tests/: that needs the Claude Code types.
+      "matchPackageNames": ["typescript"],
+      "automerge": false,
+      "prBodyNotes": ["Run scripts/check.sh on this branch before the merge. CI does not check the types of hooks/register.tsx and tests/."]
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false
     }
   ]
 }

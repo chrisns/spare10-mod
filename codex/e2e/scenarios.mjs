@@ -841,9 +841,13 @@ async function main(argv) {
   }
   if (work === undefined || !existsSync(join(work, 'port'))) throw new Error('usage: scenarios.mjs --work <dir with the mock port> [--smoke] [--only E1,E2]')
   if (process.env.SPARE10_CODEX_TEST !== '1') throw new Error('e2e: set SPARE10_CODEX_TEST=1 (run.sh does)')
+  // An id must match exactly. A wrong id fails the run, so a typo never gives a pass of fewer runs.
+  const unknown = only === undefined ? [] : [...only].filter((id) => !SCENARIOS.some((s) => s.id === id))
+  if (unknown.length > 0) throw new Error(`e2e: no scenario has the id ${unknown.map((id) => JSON.stringify(id)).join(', ')}. The ids are ${SCENARIOS.map((s) => s.id).join(', ')}.`)
+  const list = SCENARIOS.filter((s) => (only === undefined ? !smoke || s.set === 'smoke' : only.has(s.id)))
+  if (list.length === 0) throw new Error('e2e: no scenario is selected')
   checkCodexVersion()
   stagePlugin(join(work, 'stage'))
-  const list = SCENARIOS.filter((s) => (only === undefined ? !smoke || s.set === 'smoke' : only.has(s.id)))
   let failed = 0
   for (const sc of list) {
     const t0 = Date.now()
