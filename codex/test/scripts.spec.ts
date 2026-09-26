@@ -120,6 +120,47 @@ test('scripts: check.sh runs npm ci when tsc is missing or a dependency file cha
   assert.equal(calls(), 7)
 })
 
+/**
+ * What is wrong with the order of `src`, a text of check.sh: deps must be a line of its own, and it must come
+ * before the first tsc, `node_modules/.bin/tsc -p .` and `claude plugin validate`. Empty when the order is right.
+ */
+function depsOrder(src: string): string[] {
+  const lines = src.split('\n')
+  const call = lines.indexOf('deps')
+  if (call < 0) return ['no line is only deps']
+  const out: string[] = []
+  const firstRun = (step: string): number => lines.findIndex((l) => l.trimStart().startsWith(step))
+  for (const step of ['node_modules/.bin/tsc', 'node_modules/.bin/tsc -p .', 'claude plugin validate']) {
+    const at = firstRun(step)
+    if (at < 0) out.push(`no line runs ${step}`)
+    else if (at < call) out.push(`${step} runs before deps`)
+  }
+  return out
+}
+
+test('scripts: check.sh calls deps on a line of its own, before the first tsc and the first validate', () => {
+  const src = read('scripts/check.sh')
+  assert.deepEqual(depsOrder(src), [])
+  assert.ok(src.split('\n').indexOf('deps') > src.split('\n').indexOf('deps() {'), 'the call comes after the function')
+  // The same check finds a wrong order in a copy. check.sh itself does not change.
+  const lines = src.split('\n')
+  const without = lines.filter((l) => l !== 'deps')
+  /** The copy with the deps call on the line after the first line that starts with `step`. */
+  const movedAfter = (step: string): string => {
+    const at = without.findIndex((l) => l.startsWith(step))
+    assert.ok(at >= 0, `check.sh runs ${step}`)
+    return [...without.slice(0, at + 1), 'deps', ...without.slice(at + 1)].join('\n')
+  }
+  assert.deepEqual(depsOrder(without.join('\n')), ['no line is only deps'])
+  assert.deepEqual(depsOrder(src.replace(/^deps$/m, 'deps || true')), ['no line is only deps'])
+  assert.deepEqual(depsOrder(movedAfter('claude plugin validate --strict .')), ['claude plugin validate runs before deps'])
+  assert.deepEqual(depsOrder(movedAfter('node_modules/.bin/tsc -p .')), [
+    'node_modules/.bin/tsc runs before deps',
+    'node_modules/.bin/tsc -p . runs before deps',
+    'claude plugin validate runs before deps',
+  ])
+})
+
 type Broker = { pid: number; exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }> }
 
 /**

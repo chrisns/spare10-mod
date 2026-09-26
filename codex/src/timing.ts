@@ -72,9 +72,11 @@ export const A_NEAR_MS = 2_000
 export const INTERRUPT_MS = 8_000
 /**
  * An interrupt mark older than this is lost: its process died, or it could not remove the mark of a failed
- * interrupt (4.4). A live owner is done sooner: connect, INTERRUPT_MS, connect, THREAD_READ_MS, LOCK_WAIT_MS.
+ * interrupt (4.4). A live owner is done sooner. The owner reads the mark time before it takes the lock.
+ * Its worst path is LOCK_WAIT_MS (mark), connect, INTERRUPT_MS, connect, THREAD_READ_MS and LOCK_WAIT_MS (unmark).
+ * The lifetime is longer than that sum. It is shorter than TICK_MS, so the next sweep cycle takes a lost mark.
  */
-export const INTERRUPT_MARK_MS = 2 * INTERRUPT_MS
+export const INTERRUPT_MARK_MS = 2 * INTERRUPT_MS + 2 * LOCK_WAIT_MS
 /** A caller that finds a turn marked by another process asks `thread/turns/list` this often, for at most INTERRUPT_MS (4.4). */
 export const INTERRUPT_POLL_MS = 250
 export const START_MS = 5_000

@@ -253,21 +253,26 @@ type Opts = { connectMs: number; maxMessage: number; uid: number | undefined }
 /** Where the daemon socket alias leads: the real socket, no socket at all, or a socket that is not safe to dial. */
 export type SocketAt = { real: string } | { missing: string } | { unsafe: string }
 
+/** The stat of a path, as socketAt reads it. The specs give a fake one. */
+export type StatOf = (path: string) => Pick<Stats, 'isSocket' | 'uid' | 'mode'>
+
 /**
  * The daemon socket at the end of `alias`. Codex links the alias to a short path in a shared temp folder,
  * so another user could put a socket there (after a reboot empties the folder, for example). spare10 dials
- * it only when it is a socket, `uid` owns it and its folder, and no other user can write to the folder.
- * Then no other user can answer in the daemon's place, or swap the socket before the connect.
+ * it only when it is a socket, `uid` owns it and its folder, and the folder is not world-writable. So a
+ * user outside the group of the folder cannot answer in the daemon's place, or swap the socket before the
+ * connect. A group-writable folder passes on purpose: a host with the umask 002 makes its folders so.
+ * `stat`: the real stat, or a fake one in the specs.
  */
-export function socketAt(alias: string, uid: number | undefined): SocketAt {
+export function socketAt(alias: string, uid: number | undefined, stat: StatOf = statSync): SocketAt {
   let real: string
-  let sock: Stats
-  let dir: Stats
+  let sock: ReturnType<StatOf>
+  let dir: ReturnType<StatOf>
   try {
     // The alias can pass the 104-byte sun_path limit of macOS. Its target is short (gap-1 2.2).
     real = realpathSync(alias)
-    sock = statSync(real)
-    dir = statSync(dirname(real))
+    sock = stat(real)
+    dir = stat(dirname(real))
   } catch (e) {
     return { missing: errText(e) }
   }

@@ -389,7 +389,11 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
   const w = world(t)
   const now = T0
   const LIVE = 77
-  const alive = (p: number): boolean => p === LIVE
+  // TURNS is dead at the first check of a folder and alive from the next one on: its host comes back between
+  // the check and the lock, so only the check under the lock can see it.
+  const TURNS = 88
+  let turnsChecks = 0
+  const alive = (p: number): boolean => p === LIVE || (p === TURNS && (turnsChecks += 1) > 1)
   const setup = (sid: string, fn: (tx: Parameters<Parameters<ReturnType<typeof w.store>['locked']>[0]>[0]) => void): string => {
     w.store({ sid }).locked(fn)
     return join(w.data, 'sessions', sid)
@@ -433,10 +437,46 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
     locked: setup('S-LOCKED', (tx) => {
       tx.state.hostPid = 12
     }),
+    // An old state.json, but a thread file that changed of late (the beat of a held call).
+    beat: setup('S-BEAT', (tx) => {
+      tx.state.hostPid = 12
+      tx.thread('T1').brokerPid = 13
+    }),
+    // The broker of the thread is dead, but the broker of one of its held calls is alive.
+    held: setup('S-HELD', (tx) => {
+      tx.state.hostPid = 12
+      const th = tx.thread('T1')
+      th.brokerPid = 13
+      th.hostPid = 14
+      th.held = [{ call: 'C1', site: 'tool', since: now - OLD, brokerPid: LIVE, hostPid: 14 }]
+    }),
+    // The host of a thread is alive, and all other pids are dead.
+    threadHost: setup('S-THREADHOST', (tx) => {
+      tx.state.hostPid = 12
+      const th = tx.thread('T1')
+      th.brokerPid = 13
+      th.hostPid = LIVE
+    }),
+    // A state.json or a thread file of a format that this version does not know (a newer spare10 wrote it).
+    format: setup('S-FORMAT', (tx) => {
+      tx.state.hostPid = 12
+    }),
+    threadFormat: setup('S-THREADFORMAT', (tx) => {
+      tx.state.hostPid = 12
+      tx.thread('T1').brokerPid = 13
+    }),
+    turns: setup('S-TURNS', (tx) => {
+      tx.state.hostPid = TURNS
+    }),
   }
   writeFileSync(join(dirs.edited, 'state.json'), '{ not json')
+  const toFormat2 = (file: string): void => writeFileSync(file, JSON.stringify({ ...(JSON.parse(readFileSync(file, 'utf8')) as object), v: 2 }))
+  toFormat2(join(dirs.format, 'state.json'))
+  toFormat2(join(dirs.threadFormat, 'threads', 'T1.json'))
   for (const [k, dir] of Object.entries(dirs)) if (k !== 'recent') age(dir, OLD)
   age(dirs.recent, PRUNE_AFTER_MS - 2 * PRUNE_EVERY_MS)
+  const beatAt = (now - 60_000) / 1000
+  utimesSync(join(dirs.beat, 'threads', 'T1.json'), beatAt, beatAt)
   const trash = join(w.data, 'sessions', '.pruned-S-GONE-abcd1234')
   mkdirSync(join(trash, 'threads'), { recursive: true })
   mkdirSync(join(w.data, 'sessions', '.none'), { recursive: true })
@@ -444,7 +484,23 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
   const gone = withLock(join(dirs.locked, 'state.lock'), 'other', () => pruneSessions({ data: w.data }, 'broker-1', now, alive))
   assert.deepEqual(gone.sort(), ['S-OLD', 'S-OLDSTOP'])
   const left = readdirSync(join(w.data, 'sessions')).sort()
-  assert.deepEqual(left, ['.none', 'S-BROKER', 'S-EDITED', 'S-HOST', 'S-LOCKED', 'S-QUESTION', 'S-RECENT', 'S-STOP'])
+  assert.deepEqual(left, [
+    '.none',
+    'S-BEAT',
+    'S-BROKER',
+    'S-EDITED',
+    'S-FORMAT',
+    'S-HELD',
+    'S-HOST',
+    'S-LOCKED',
+    'S-QUESTION',
+    'S-RECENT',
+    'S-STOP',
+    'S-THREADFORMAT',
+    'S-THREADHOST',
+    'S-TURNS',
+  ])
+  assert.equal(turnsChecks, 2, 'S-TURNS passed the first check, and the check under its lock kept it')
   assert.equal(listSessions({ data: w.data }).some((r) => r.sid === 'S-OLD'), false)
   assert.equal(readFileSync(join(w.data, 'pruned'), 'utf8'), String(now), 'the time of the prune, beside sessions/')
   // Once a day: a second prune in the same day does nothing, also with the lock free now.

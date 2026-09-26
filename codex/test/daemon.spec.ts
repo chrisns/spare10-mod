@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { codexDebug } from '../../hooks/core/codex.ts'
@@ -329,6 +329,23 @@ test('the socket trust check: a folder that every user can write to, another own
   writeFileSync(file, '')
   assert.throws(() => udsDaemon({ socket: file }, VERSION, realClock), unsafe(/it is not a socket/))
   assert.equal(fake.calls.length, 0, 'no untrusted socket was dialled')
+})
+
+test('the socket trust check: a folder that another user owns is no daemon, also when this user owns the socket (the stat seam)', async (t) => {
+  const uid = process.getuid?.()
+  if (uid === undefined) return t.skip('no POSIX uids')
+  const fake = await fakeDaemon(t)
+  const real = realpathSync(fake.real)
+  const folder = dirname(real)
+  assert.equal(statSync(real).uid, uid, 'this user owns the socket')
+  // The real stats, except that the user uid + 1 owns the folder of the socket.
+  const stat = (p: string) => {
+    const s = statSync(p)
+    return p === folder ? { isSocket: () => s.isSocket(), uid: uid + 1, mode: s.mode } : s
+  }
+  assert.deepEqual(socketAt(fake.alias, uid, stat), { unsafe: `the daemon socket ${real} is not safe to dial: the user ${uid + 1} owns its folder` })
+  assert.deepEqual(socketAt(fake.alias, uid, statSync), { real }, 'with the real stats, the same socket passes')
+  assert.equal(fake.calls.length, 0, 'no socket was dialled')
 })
 
 test('the socket trust check runs again at each connect: a socket that became unsafe after the client was made is a connect error', async (t) => {

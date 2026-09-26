@@ -1713,7 +1713,7 @@ var DAEMON_CONNECT_MS = 1e3;
 var A_READ_MS = 5e3;
 var A_NEAR_MS = 2e3;
 var INTERRUPT_MS = 8e3;
-var INTERRUPT_MARK_MS = 2 * INTERRUPT_MS;
+var INTERRUPT_MARK_MS = 2 * INTERRUPT_MS + 2 * LOCK_WAIT_MS;
 var INTERRUPT_POLL_MS = 250;
 var START_MS = 5e3;
 var LOADED_MS = 2e3;
@@ -4631,14 +4631,14 @@ var MessageJoiner = class {
   }
 };
 var acceptOf = (key) => createHash("sha1").update(key + WS_GUID).digest("base64");
-function socketAt(alias, uid) {
+function socketAt(alias, uid, stat = statSync3) {
   let real;
   let sock;
   let dir;
   try {
     real = realpathSync2(alias);
-    sock = statSync3(real);
-    dir = statSync3(dirname3(real));
+    sock = stat(real);
+    dir = stat(dirname3(real));
   } catch (e) {
     return { missing: errText4(e) };
   }

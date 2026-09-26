@@ -7,6 +7,7 @@ import { refusalText } from '../../hooks/core/flow.ts'
 import { DaemonError } from '../src/daemon.ts'
 import type { TurnInfo } from '../src/daemon.ts'
 import { coveredBy } from '../src/sweep.ts'
+import { INTERRUPT_MARK_MS } from '../src/timing.ts'
 import { CHILD, HOUR, MIN, SEC, SID, T0, heldCall, logicWorld } from './helpers/logic.ts'
 import type { LogicWorld } from './helpers/logic.ts'
 
@@ -201,7 +202,7 @@ test('sweep: a lost mark (its process died before the interrupt went out) is swe
   assert.deepEqual(w.state().interrupts, { U1: T0 - 30 * SEC, C1: T0 })
   // Once the mark of C1 is older than its lifetime, a sweep takes it too.
   w.daemon.script.interrupt = undefined
-  await w.advance(20 * SEC)
+  await w.advance(INTERRUPT_MARK_MS + SEC)
   const d = w.broker()
   assert.equal(await d.sweep.sweep(d.sx), 2)
   assert.deepEqual(

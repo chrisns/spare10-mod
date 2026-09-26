@@ -205,7 +205,7 @@ Codex also gives spare10 some things that Claude Code does not:
 
 ## How spare10 works in Codex
 
-- **Sense.** spare10 reads the quota from the Codex daemon. Without the daemon, it reads the last response in the session log. If a read fails, the step goes on. spare10 uses the daemon socket only when you own it and its folder. If other users can write to that folder, spare10 works as without the daemon.
+- **Sense.** spare10 reads the quota from the Codex daemon. Without the daemon, it reads the last response in the session log. If a read fails, the step goes on. spare10 uses the daemon socket only when you own it and its folder. If every user can write to that folder, spare10 works as without the daemon.
 - **Gate.** Nine Codex hooks call the spare10 process of their thread.
 - **Hold.** The spare10 process does not answer the hook. Codex waits, for up to 8 days.
 - **Ask.** The first held step shows a Codex form. All other held steps wait on the same answer.
