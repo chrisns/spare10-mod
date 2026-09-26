@@ -313,12 +313,19 @@ const senseCases: FlowCase[] = [
     },
   },
   {
-    name: 'testReading: in from now, else the live reset, else one window from now',
+    name: 'testReading: in from now, else the live reset while it is ahead and within one window, else one window from now',
     run: (eq) => {
+      const at = (t: number): SessionRateLimit => ({ kind: 'five_hour', percentUsed: 40, resetsAt: new Date(t).toISOString() })
       eq(testReading(92, 'five_hour', undefined, NOW), { pct: 92, resetsAtMs: NOW + 5 * HOUR })
       eq(testReading(92, 'seven_day', undefined, NOW), { pct: 92, resetsAtMs: NOW + 7 * 24 * HOUR })
-      eq(testReading(92, 'five_hour', { kind: 'five_hour', percentUsed: 40, resetsAt: new Date(R).toISOString() }, NOW), { pct: 92, resetsAtMs: R })
-      eq(testReading(92, 'five_hour', { kind: 'five_hour', percentUsed: 40, resetsAt: new Date(R).toISOString() }, NOW, 2 * MIN), { pct: 92, resetsAtMs: NOW + 2 * MIN })
+      eq(testReading(92, 'five_hour', at(R), NOW), { pct: 92, resetsAtMs: R })
+      eq(testReading(92, 'five_hour', at(R), NOW, 2 * MIN), { pct: 92, resetsAtMs: NOW + 2 * MIN })
+      eq(testReading(92, 'five_hour', at(NOW + 10 * MIN), NOW), { pct: 92, resetsAtMs: NOW + 10 * MIN }) // near, still ahead: borrowed
+      eq(testReading(92, 'five_hour', at(R - 6 * HOUR), NOW), { pct: 92, resetsAtMs: NOW + 5 * HOUR }) // passed: as no live reading
+      eq(testReading(92, 'five_hour', at(NOW), NOW), { pct: 92, resetsAtMs: NOW + 5 * HOUR }) // at the reset: passed
+      eq(testReading(92, 'five_hour', at(NOW + 6 * HOUR), NOW), { pct: 92, resetsAtMs: NOW + 5 * HOUR }) // more than one window ahead
+      eq(testReading(92, 'seven_day', { kind: 'seven_day', percentUsed: 40, resetsAt: new Date(W).toISOString() }, NOW), { pct: 92, resetsAtMs: W })
+      eq(testReading(92, 'seven_day', { kind: 'seven_day', percentUsed: 40, resetsAt: new Date(NOW - HOUR).toISOString() }, NOW), { pct: 92, resetsAtMs: NOW + 7 * 24 * HOUR })
     },
   },
   {

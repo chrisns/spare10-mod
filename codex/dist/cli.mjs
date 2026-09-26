@@ -447,7 +447,8 @@ var debugLine = {
   resumeSkipped: "spare10: the conversation changed before the resume prompt. spare10 sent nothing.",
   boxDefer: (n) => `spare10: the prompt box has text. The resume prompt waits (${n} of 10).`,
   budget: (min, ms) => `spare10: held ${min} min. Budget left ${ms} ms.`,
-  checkFailed: (err) => `spare10: the reset check did not run: ${err}`
+  checkFailed: (err) => `spare10: the reset check did not run: ${err}`,
+  settleFailed: (err) => `spare10: could not write the answer: ${err}`
 };
 var GLYPH = {
   off: "○",
@@ -2168,7 +2169,8 @@ var realBound = (k, now) => k.test ? k.realReset ?? now + FALLBACK_MS : k.window
 var modeOf = (cfg) => cfg.pausePrompt === null ? "hold" : "tell";
 function testReading(pct, kind, live, now, inMs) {
   const liveReset = live === void 0 ? null : parseReset(live.resetsAt);
-  const resetsAtMs = inMs !== void 0 ? now + inMs : liveReset ?? now + windowMs(kind);
+  const borrow = liveReset !== null && inWindow({ pct, resetsAtMs: liveReset }, now, kind) ? liveReset : null;
+  const resetsAtMs = inMs !== void 0 ? now + inMs : borrow ?? now + windowMs(kind);
   return { pct, resetsAtMs };
 }
 var resetTooRecent = (s, mems) => s.kinds.some((k) => inResetMargin(mems[k.kind].seed, k.reserve, s.now));

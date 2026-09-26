@@ -583,6 +583,7 @@ export const debugLine = {
   boxDefer: (n: number): string => `spare10: the prompt box has text. The resume prompt waits (${n} of 10).`,
   budget: (min: number, ms: number): string => `spare10: held ${min} min. Budget left ${ms} ms.`,
   checkFailed: (err: string): string => `spare10: the reset check did not run: ${err}`,
+  settleFailed: (err: string): string => `spare10: could not write the answer: ${err}`,
 }
 
 export type StatusInput = {

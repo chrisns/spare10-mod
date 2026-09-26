@@ -197,10 +197,15 @@ export const realBound = (k: KindSense, now: number): number => (k.test ? (k.rea
 /** Hold mode, or tell mode with a pause prompt. */
 export const modeOf = (cfg: Pick<Effective, 'pausePrompt'>): Mode => (cfg.pausePrompt === null ? 'hold' : 'tell')
 
-/** A test reading of a kind: `in` from now, else the live reset, else one window from now. */
+/**
+ * A test reading of a kind: `in` from now, else the live reset while it is ahead and within one window,
+ * else one window from now. A live reading keeps its reset after the window resets, until the next
+ * response: such a reset makes a test reading that basis() drops at once.
+ */
 export function testReading(pct: number, kind: Kind, live: SessionRateLimit | undefined, now: number, inMs?: number): Anchored {
   const liveReset = live === undefined ? null : parseReset(live.resetsAt)
-  const resetsAtMs = inMs !== undefined ? now + inMs : (liveReset ?? now + windowMs(kind))
+  const borrow = liveReset !== null && inWindow({ pct, resetsAtMs: liveReset }, now, kind) ? liveReset : null
+  const resetsAtMs = inMs !== undefined ? now + inMs : (borrow ?? now + windowMs(kind))
   return { pct, resetsAtMs }
 }
 
@@ -265,7 +270,7 @@ export const notStartedFor = (s: Pick<Sensed, 'kinds' | 'now'>, a: Pick<Acted, '
 
 /**
  * The open question of a session, as the core builds and reads it (4.3, 4.5, 4.6, 5.6). A host adds its
- * own fields: the waiter count, the check flag and the raiser.
+ * own fields: the waiter count and the check flag.
  */
 export type QuestionCore = {
   kinds: Kind[] // the gating kinds when it opened, five_hour first
