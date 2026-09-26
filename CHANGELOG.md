@@ -20,6 +20,7 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Docs.** The README is much shorter. Its quick start covers Claude Code and Codex. It has Codex screenshots. The details moved to pages in `docs/`.
 - **Texts.** The texts take their host words, such as `/spare10` and `Claude Code`, from one place. The Claude Code texts do not change.
 - **Marketplace.** The marketplace descriptions name both Claude Code and Codex.
 
