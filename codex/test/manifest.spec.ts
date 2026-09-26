@@ -198,7 +198,7 @@ test('manifest: the three versions are equal (6.6)', () => {
   const codex = (json('.codex-plugin/plugin.json') as { version?: unknown }).version
   assert.equal(claude, VERSION)
   assert.equal(codex, VERSION)
-  assert.match(text('hooks/core/text.ts'), new RegExp(`export const VERSION: string = '${VERSION.replace(/\./g, '\\.')}'`))
+  assert.match(text('hooks/core/text.ts'), new RegExp(`export const VERSION: string = '${VERSION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`))
 })
 
 test('manifest: every codex --version of the scripts runs in a throwaway CODEX_HOME, never in ~/.codex (D10)', () => {

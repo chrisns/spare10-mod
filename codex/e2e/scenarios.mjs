@@ -452,7 +452,7 @@ const B2_LOOP =
   'Until HH:MM, spare10 asks you again at 95% used. If you choose Stop here or do not answer, the work waits until HH:MM, ' +
   '20 min before the reset. Then spare10 continues it, unless a reserve is still reached.'
 
-const hhmm = (text) => new RegExp(`^${text.replace(/[.?*+()[\]]/g, '\\$&').replaceAll('HH:MM', '\\d{2}:\\d{2}')}$`)
+const hhmm = (text) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('HH:MM', '\\d{2}:\\d{2}')}$`)
 
 /** Waits until `f()` is true, at most `ms`. */
 async function until(f, ms, what) {

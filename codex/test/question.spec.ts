@@ -75,7 +75,7 @@ test('question: the form names the credit balance when credits can pay past 100%
   await w.settle()
   const q = questionOf('loop', s, a, s.now)
   assert.deepEqual(b.mcp.requests, [elicitParams(questionText(q.facts, 'loop', 'hold', true), '17.50')])
-  assert.match(JSON.stringify(b.mcp.requests[0]), new RegExp(codexText.creditsQuestion('17.50').replace(/[.]/g, '\\.')))
+  assert.match(JSON.stringify(b.mcp.requests[0]), new RegExp(codexText.creditsQuestion('17.50').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 })
 
 test('question: Resume releases the call, writes the consent at its tier, and queues the continuing line', async (t) => {
