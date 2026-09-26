@@ -515,3 +515,32 @@ test('unreadEnv keeps the option floors', () => {
     'the resume floor (15%) is not below the reserve (10%), so it does nothing. Set it below the reserve, or to 0.',
   ])
 })
+
+// Codex design 4.15: `present` is the kinds the host reports a window for. Without it, both.
+test('watchedKinds with present: only the reported kinds, the weekly one only above 0', () => {
+  expect(watchedKinds({ weeklyReserve: 10 }, ['seven_day'])).toEqual(['seven_day'])
+  expect(watchedKinds({ weeklyReserve: 0 }, ['seven_day'])).toEqual([])
+  expect(watchedKinds({ weeklyReserve: 10 }, ['five_hour'])).toEqual(['five_hour'])
+  expect(watchedKinds({ weeklyReserve: 0 }, ['five_hour'])).toEqual(['five_hour'])
+  expect(watchedKinds({ weeklyReserve: 10 }, ['seven_day', 'five_hour'])).toEqual(['five_hour', 'seven_day']) // KINDS order
+  expect(watchedKinds({ weeklyReserve: 10 }, [])).toEqual([])
+  // No argument: the old result and order.
+  expect(watchedKinds({ weeklyReserve: 10 })).toEqual(['five_hour', 'seven_day'])
+  expect(watchedKinds({ weeklyReserve: 0 })).toEqual(['five_hour'])
+})
+
+test('withEnv with simulateKind: SPARE10_SIMULATE with no kind word takes that kind', () => {
+  const weekly = withEnv(DEFAULTS, { simulate: '92' }, { simulateKind: 'seven_day' })
+  expect(weekly.testPct).toBe(92)
+  expect(weekly.testKind).toBe('seven_day')
+  const soon = withEnv(DEFAULTS, { simulate: '92 in 20s' }, { simulateKind: 'seven_day' })
+  expect(soon.testKind).toBe('seven_day')
+  expect(soon.testInMs).toBe(20_000)
+  // A kind word still wins.
+  expect(withEnv(DEFAULTS, { simulate: '92 5h' }, { simulateKind: 'seven_day' }).testKind).toBeUndefined()
+  expect(withEnv(DEFAULTS, { simulate: '92 weekly' }, { simulateKind: 'five_hour' }).testKind).toBe('seven_day')
+  // Without it, the 5-hour window, as before.
+  expect(withEnv(DEFAULTS, { simulate: '92' }).testKind).toBeUndefined()
+  expect(withEnv(DEFAULTS, { simulate: '92' }, {}).testKind).toBeUndefined()
+  expect(withEnv(DEFAULTS, {}, { simulateKind: 'seven_day' }).testPct).toBeUndefined()
+})

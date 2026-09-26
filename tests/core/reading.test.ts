@@ -490,3 +490,20 @@ test('atPoint: 95.0 is at the point, 94.9 is not, and none without a point or a 
   expect(atPoint(at(99), null)).toBe(false)
   expect(atPoint({ kind: 'none', why: 'no-reading' }, 95)).toBe(false)
 })
+
+// Codex design 4.15: the kind of a test reading with no kind word.
+test('parseSimulate and parseSimulateEnv take a default kind', () => {
+  expect(parseSimulate(['92'], 'seven_day')).toEqual({ pct: 92, kind: 'seven_day' })
+  expect(parseSimulate(['92', '5h'], 'seven_day')).toEqual({ pct: 92, kind: 'five_hour' })
+  expect(parseSimulate(['92', 'weekly'], 'five_hour')).toEqual({ pct: 92, kind: 'seven_day' })
+  expect(parseSimulate(['92', 'in', '9d'], 'seven_day')).toEqual({ pct: 92, kind: 'seven_day', inMs: 7 * DAY }) // capped at its window
+  expect(parseSimulate(['off'], 'seven_day')).toBe('off')
+  expect(parseSimulate(['abc'], 'seven_day')).toBeUndefined()
+  expect(parseSimulateEnv('92', 'seven_day')).toEqual({ pct: 92, kind: 'seven_day' })
+  expect(parseSimulateEnv(' 92  in 20s ', 'seven_day')).toEqual({ pct: 92, kind: 'seven_day', inMs: 20_000 })
+  expect(parseSimulateEnv('off', 'seven_day')).toBeUndefined()
+  // The defaults: the 5-hour window.
+  expect(parseSimulate(['92'])).toEqual({ pct: 92, kind: 'five_hour' })
+  expect(parseSimulateEnv('92')).toEqual({ pct: 92, kind: 'five_hour' })
+  expect(parseSimulate(['92', 'in', '9h'])).toEqual({ pct: 92, kind: 'five_hour', inMs: 5 * HOUR })
+})

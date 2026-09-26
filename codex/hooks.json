@@ -1,0 +1,28 @@
+{
+  "description": "spare10: the quota circuit breaker. Each handler calls the spare10 MCP server of its own thread.",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 691200,
+      "statusMessage": "spare10 reads the quota.",
+      "input": { "site": "start", "session": "${session_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "source": "${source}" } }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 691200,
+      "statusMessage": "spare10 checks the quota reserve. Esc stops a held step.",
+      "input": { "site": "prompt", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "prompt": "${prompt}" } }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 691200,
+      "statusMessage": "spare10 checks the quota reserve. Esc stops a held step.",
+      "input": { "site": "tool", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "tool": "${tool_name}", "call": "${tool_use_id}" } }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 691200,
+      "statusMessage": "spare10 checks the quota reserve. Esc stops a held step.",
+      "input": { "site": "step", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "tool": "${tool_name}", "call": "${tool_use_id}" } }] }],
+    "PreCompact": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 691200,
+      "statusMessage": "spare10 checks the quota reserve. Esc stops a held step.",
+      "input": { "site": "compact", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "model": "${model}", "cwd": "${cwd}", "trigger": "${trigger}" } }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 60,
+      "input": { "site": "spawn", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "agent": "${agent_id}", "agentType": "${agent_type}" } }] }],
+    "Stop": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 60,
+      "input": { "site": "stop", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "active": "${stop_hook_active}" } }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 60,
+      "input": { "site": "stop", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}", "active": "${stop_hook_active}", "agent": "${agent_id}" } }] }],
+    "Interrupt": [{ "hooks": [{ "type": "mcp_tool", "server": "spare10", "tool": "gate", "timeout": 3,
+      "input": { "site": "interrupt", "session": "${session_id}", "turn": "${turn_id}", "transcript": "${transcript_path}", "mode": "${permission_mode}", "model": "${model}", "cwd": "${cwd}" } }] }]
+  }
+}

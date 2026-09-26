@@ -53,6 +53,7 @@ import {
   untilText,
   whenOf,
   withdrawnText,
+  yourReserves,
 } from '../../hooks/core/text.ts'
 import type { Ended, Facts, Named, ReplyCase, StatusInput } from '../../hooks/core/text.ts'
 import { badgeView } from '../../hooks/core/badge.ts'
@@ -2025,5 +2026,125 @@ test('every floor notice, warning and reply starts without the engine prefix', (
   for (const t of texts) {
     expect(t.startsWith('spare10: ')).toBe(false)
     expect(t.startsWith('spare10 ')).toBe(false)
+  }
+})
+
+// ---- Codex design 2.1: the host inputs of the report and the replies. Claude passes none of them. ----
+
+// A weekly-only plan, as a host reports it: no 5-hour window, a weekly reading.
+const WO = (over: Partial<StatusInput> = {}): StatusInput =>
+  status({
+    basis: { kind: 'none', why: 'no-reading' },
+    facts: undefined,
+    weekly: { reserve: 10, from: 'option', basis: { kind: 'live', pct: 61, resetsAtMs: W } },
+    autoResume: { on: true, from: 'option' },
+    absent: ['five_hour'],
+    ...over,
+  })
+
+test('yourReserves is {Rs}', () => {
+  expect(yourReserves([F])).toBe('your 10% reserve')
+  expect(yourReserves([F, FW])).toBe('your 10% reserve and your 10% weekly reserve')
+})
+
+test('stepsIn with fiveAbsent names only the weekly trip point, or no window', () => {
+  expect(stepsIn(10, 10, true)).toBe('spare10 steps in at 90% used of the weekly window.')
+  expect(stepsIn(10, 15.5, true)).toBe('spare10 steps in at 84.5% used of the weekly window.')
+  expect(stepsIn(10, 0, true)).toBe('spare10 watches no window.')
+  expect(stepsIn(10, undefined, true)).toBe('spare10 watches no window.')
+  // Without it: the old texts.
+  expect(stepsIn(10, 10, false)).toBe('spare10 steps in at 90% used, or at 90% used of the weekly window.')
+  expect(stepsIn(10, 10)).toBe('spare10 steps in at 90% used, or at 90% used of the weekly window.')
+  expect(stepsIn(10, 0)).toBe('spare10 steps in at 90% used.')
+  expect(stepsIn(10)).toBe('spare10 steps in at 90% used.')
+})
+
+test('the report of a weekly-only plan names the missing 5-hour window (CX17) and the weekly trip point', () => {
+  expect(statusReport(WO()).split('\n')).toEqual([
+    'version 0.3.0',
+    '',
+    '  ● armed          spare10 steps in at 90% used of the weekly window.',
+    '  · reserve        10% of the 5-hour window (from /config)',
+    '  · weekly reserve 10% of the weekly window (from /config)',
+    '  · at the reserve stop and ask you',
+    '  · at the reset   continue by itself (from /config)',
+    '  · reading        none: Claude Code reports no 5-hour window for this plan',
+    '  · weekly reading live · 61% used · 39% left · resets Mon 09:00 (in 3 d 21 h)',
+    '  · consent        none',
+    '  · weekly consent none',
+    '  · guarded        yes (scope all)',
+    '  · claude -p      runs started here: stop',
+    ...FOOT,
+  ])
+  // Weekly reserve 0 on the same plan: no window is watched.
+  const off = statusReport(WO({ weekly: 'off' })).split('\n')
+  expect(off[2]).toBe('  ● armed          spare10 watches no window.')
+  expect(off).toContain('  · weekly reserve off. spare10 does not watch the weekly window (from /config)')
+  expect(off).toContain('  · reading        none: Claude Code reports no 5-hour window for this plan')
+})
+
+test('the report of a plan with no weekly window names it, and the armed line names no weekly trip point', () => {
+  const lines = statusReport(status({ weekly: { reserve: 10, from: 'option', basis: { kind: 'none', why: 'no-reading' } }, absent: ['seven_day'] })).split('\n')
+  expect(lines[2]).toBe('  ● armed          spare10 steps in at 90% used.')
+  expect(lines).toContain('  · weekly reading none: Claude Code reports no weekly window for this plan')
+  expect(lines).toContain('  · reading        live · 50% used · 50% left · resets 15:00 (in 3 h 0 min)')
+})
+
+test('heldInPlace: the stopped line says that held work waits, in place of the way back', () => {
+  expect(statusReport(status({ phase: 'stopped', heldInPlace: true })).split('\n')[2]).toBe(
+    '  ■ stopped        you chose Stop here. Held work waits. Run /spare10 resume to continue it now.',
+  )
+  expect(statusReport(status({ phase: 'stopped', heldInPlace: true, at: { ms: R, kinds: ['five_hour'] }, autoStop: true, work: true })).split('\n')[2]).toBe(
+    '  ■ stopped        you chose Stop here. spare10 continues the work after 15:00. Held work waits. Run /spare10 resume to continue it now.',
+  )
+  expect(statusReport(status({ phase: 'stopped', heldInPlace: false })).split('\n')[2]).toBe(
+    '  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run /spare10 resume.',
+  )
+})
+
+test('extraRows follow the claude -p or unattended row, and extraHelp follows the help lines', () => {
+  const extra = { extraRows: [['daemon', 'yes'], ['cli', '/x/bin/spare10']] as const, extraHelp: ['one more line', 'and another'], warnings: ['a warning'] }
+  expect(statusReport(status(extra)).split('\n')).toEqual([
+    'version 0.3.0',
+    '',
+    '  ● armed          spare10 steps in at 90% used.',
+    '  · reserve        10% of the 5-hour window (from /config)',
+    '  · at the reserve stop and ask you',
+    '  · reading        live · 50% used · 50% left · resets 15:00 (in 3 h 0 min)',
+    '  · consent        none',
+    '  · guarded        yes (scope all)',
+    '  · claude -p      runs started here: stop',
+    '  · daemon         yes',
+    '  · cli            /x/bin/spare10',
+    '  ⚠ a warning',
+    ...FOOT,
+    'one more line',
+    'and another',
+  ])
+  const unattended = statusReport(status({ ...extra, attended: false, phase: 'reserve' })).split('\n')
+  const at = unattended.indexOf('  · unattended     off (from /config)')
+  expect(at).toBeGreaterThan(0)
+  expect(unattended.slice(at + 1, at + 3)).toEqual(['  · daemon         yes', '  · cli            /x/bin/spare10'])
+})
+
+test('without the host inputs the report is the same as before', () => {
+  for (const s of [status(), status({ phase: 'stopped' }), WO({ absent: undefined })]) {
+    expect(statusReport({ ...s, absent: [], heldInPlace: false, extraRows: [], extraHelp: [] })).toBe(statusReport(s))
+  }
+})
+
+test('resumeReply and stopReply with five_hour absent name no 5-hour reading or trip point', () => {
+  const five = ['five_hour'] as const
+  expect(resumeReply('none', undefined, undefined, undefined, 'hold', five)).toBe('nothing to resume. There is no reading yet.')
+  expect(resumeReply('below', undefined, undefined, undefined, 'hold', five)).toBe('nothing to resume. There is no reading yet.')
+  expect(resumeReply('below', FW, undefined, undefined, 'hold', five)).toBe(`nothing to resume. ${personFacts(FW)}.`)
+  expect(stopReply('none', undefined, 90, undefined, 90, undefined, five)).toBe('nothing to stop. spare10 steps in at 90% used of the weekly window.')
+  expect(stopReply('below', FW, 90, undefined, 84.5, undefined, five)).toBe('nothing to stop. spare10 steps in at 84.5% used of the weekly window.')
+  expect(stopReply('none', undefined, 90, undefined, undefined, undefined, five)).toBe('nothing to stop. spare10 watches no window.')
+  // Without five_hour absent: the old texts.
+  for (const absent of [undefined, [] as Kind[], ['seven_day'] as Kind[]]) {
+    expect(resumeReply('none', undefined, undefined, undefined, 'hold', absent)).toBe('nothing to resume. There is no 5-hour reading yet.')
+    expect(stopReply('none', undefined, 90, undefined, 90, undefined, absent)).toBe('nothing to stop. spare10 steps in at 90% used, or at 90% used of the weekly window.')
+    expect(stopReply('below', F, 90, undefined, undefined, undefined, absent)).toBe('nothing to stop. spare10 steps in at 90% used.')
   }
 })

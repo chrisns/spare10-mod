@@ -244,8 +244,11 @@ const KIND_WORDS = new Map<string, Kind>([
   ['seven_day', 'seven_day'],
 ])
 
-/** The 2.9 grammar: `off`, or a percentage, then a kind word and `in {n}{s|m|h|d}` in either order. */
-export function parseSimulate(words: readonly string[]): TestSpec | 'off' | undefined {
+/**
+ * The 2.9 grammar: `off`, or a percentage, then a kind word and `in {n}{s|m|h|d}` in either order.
+ * `defaultKind`: the kind with no kind word (Codex design 4.15: the weekly window on a weekly-only plan).
+ */
+export function parseSimulate(words: readonly string[], defaultKind: Kind = 'five_hour'): TestSpec | 'off' | undefined {
   const [first, ...rest] = words
   if (first === undefined) return undefined
   if (first.toLowerCase() === 'off') return rest.length === 0 ? 'off' : undefined
@@ -265,12 +268,12 @@ export function parseSimulate(words: readonly string[]): TestSpec | 'off' | unde
     inMs = d
     i += 1
   }
-  const k = kind ?? 'five_hour'
+  const k = kind ?? defaultKind
   return inMs === undefined ? { pct, kind: k } : { pct, kind: k, inMs: Math.min(inMs, windowMs(k)) }
 }
 
 /** SPARE10_SIMULATE: the same words, split on white space. `off` and junk are no test reading. */
-export function parseSimulateEnv(raw: string | undefined): TestSpec | undefined {
-  const spec = parseSimulate((raw ?? '').trim().split(/\s+/).filter((w) => w !== ''))
+export function parseSimulateEnv(raw: string | undefined, defaultKind: Kind = 'five_hour'): TestSpec | undefined {
+  const spec = parseSimulate((raw ?? '').trim().split(/\s+/).filter((w) => w !== ''), defaultKind)
   return spec === 'off' ? undefined : spec
 }

@@ -1,0 +1,15 @@
+{
+  "name": "spare10",
+  "version": "0.3.0",
+  "description": "Keeps the last part of your 5-hour and weekly Codex quota for you. At the reserve, spare10 holds all work and asks you whether to continue. After a Resume, it asks again at the floor. Shortly before the reset, it lets work use the reserve.",
+  "keywords": ["quota", "rate-limit", "circuit-breaker"],
+  "hooks": "./codex/hooks.json",
+  "mcpServers": "./codex/mcp.json",
+  "interface": {
+    "displayName": "spare10",
+    "shortDescription": "Quota circuit breaker for Codex",
+    "developerName": "Chris Nesbitt-Smith",
+    "category": "Productivity",
+    "websiteUrl": "https://github.com/chrisns/spare10-mod"
+  }
+}

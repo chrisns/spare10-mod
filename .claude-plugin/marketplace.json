@@ -1,12 +1,12 @@
 {
   "name": "spare10",
-  "description": "spare10 as a Claude Code mod: it keeps the last part of your 5-hour quota for you.",
+  "description": "spare10: a quota circuit breaker for Claude Code and Codex.",
   "owner": { "name": "Chris Nesbitt-Smith" },
   "plugins": [
     {
       "name": "spare10",
       "source": "./",
-      "description": "Holds all work at the quota reserve and asks you whether to continue."
+      "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue."
     }
   ]
 }

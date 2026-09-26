@@ -1,6 +1,7 @@
 import type { Headless, Scope, Source, SpanSource } from './config.ts'
 import type { Mode, Phase } from './decide.ts'
 import type { Basis, Kind } from './reading.ts'
+import { HOST } from './host.ts'
 
 // Every user-facing and model-facing string (design section 2), verbatim. No $ here.
 // Every text function takes the time zone through Facts.timeZone (the kit ignores TZ).
@@ -9,15 +10,18 @@ import type { Basis, Kind } from './reading.ts'
 // command.run reply (live check LC1, defect D1). So a notice, a warning or a reply never starts with
 // `spare10: ` here. Texts the engine does not prefix keep it: model texts (STOP, PAUSED, HEADLESS, the
 // pause instruction, the resume note), the drop reasons of prompt.submit, and debug lines.
+//
+// A word that differs between hosts (a command, the host name) comes from HOST (host.ts). The Codex
+// bundle swaps host.ts, so the same texts carry the Codex words there (Codex design 2.1).
 
-export const VERSION: string = '0.3.0' // keep equal to .claude-plugin/plugin.json
+export const VERSION: string = '0.3.0' // keep equal to .claude-plugin/plugin.json and .codex-plugin/plugin.json
 export const HEADER: string = 'spare10'
 export const QUESTION_OPTIONS: readonly [string, string] = ['Stop here', 'Resume']
 export const RESUME_LABEL: string = 'Resume'
 export const COMMAND_DESCRIPTION: string = 'Show the spare10 quota breaker, or resume or stop at the reserve.'
 export const ARGUMENT_HINT: string = '[resume|stop]'
 export const STOP_GENERIC: string = 'spare10: stopped at the quota reserve. Stop now and wait for the user. Do not call any further tools.'
-export const NOT_STARTED_GENERIC: string = 'spare10: not started. spare10 could not ask you. Send the prompt again, or run /spare10 resume.'
+export const NOT_STARTED_GENERIC: string = `spare10: not started. spare10 could not ask you. Send the prompt again, or run ${HOST.command} resume.`
 export const HEADLESS_GENERIC: string = 'spare10 stopped this unattended run at the quota reserve. No further model requests were sent.'
 export const W_FLAG: string =
   'function hooks are on only in this shell. Background sessions and pane teammates start without spare10. Put CLAUDE_CODE_ENABLE_FUNCTION_HOOKS in the env block of ~/.claude/settings.json.'
@@ -130,11 +134,18 @@ export function resetText(named: readonly Named[], capital = false): string {
   return capital ? cap(text) : text
 }
 
-/** The armed detail: 'spare10 steps in at 90% used.', with the weekly trip point when it is watched. */
-export const stepsIn = (reserve: number, weeklyReserve?: number): string =>
-  weeklyReserve === undefined || weeklyReserve <= 0
-    ? `spare10 steps in at ${fmtPct(100 - reserve)}% used.`
-    : `spare10 steps in at ${fmtPct(100 - reserve)}% used, or at ${fmtPct(100 - weeklyReserve)}% used of the weekly window.`
+/**
+ * The armed detail: 'spare10 steps in at 90% used.', with the weekly trip point when it is watched.
+ * `fiveAbsent` (Codex design 2.1): the host reports no 5-hour window, so only the weekly trip point
+ * counts, or no window when the weekly window is not watched either. Claude never passes it.
+ */
+export const stepsIn = (reserve: number, weeklyReserve?: number, fiveAbsent = false): string => {
+  const weekly = weeklyReserve !== undefined && weeklyReserve > 0
+  if (fiveAbsent) return weekly ? `spare10 steps in at ${fmtPct(100 - weeklyReserve)}% used of the weekly window.` : 'spare10 watches no window.'
+  return weekly
+    ? `spare10 steps in at ${fmtPct(100 - reserve)}% used, or at ${fmtPct(100 - weeklyReserve)}% used of the weekly window.`
+    : `spare10 steps in at ${fmtPct(100 - reserve)}% used.`
+}
 
 // ---- Placeholders of 2.1. A list of Facts reads five_hour first. ----
 
@@ -156,7 +167,7 @@ const reserveName = (f: Facts): string =>
     ? `${fmtPct(f.floor)}% ${isWeekly(f) ? 'weekly floor' : 'floor'}`
     : `${reserveOf(f)} ${isWeekly(f) ? 'weekly reserve' : 'reserve'}`
 /** {Rs} */
-const yourReserves = (fs: readonly Facts[]): string => fs.map((f) => `your ${reserveName(f)}`).join(' and ')
+export const yourReserves = (fs: readonly Facts[]): string => fs.map((f) => `your ${reserveName(f)}`).join(' and ')
 /** {is} */
 const isAre = (fs: readonly Facts[]): string => (fs.length > 1 ? 'are' : 'is')
 /** {Rq}. One kind at the floor: the quota floor (floor 2.1). */
@@ -365,16 +376,16 @@ export function questionText(f: Facts | readonly Facts[], opener: 'loop' | 'prom
       opener === 'loop'
         ? `If you choose Stop here or do not answer, the work waits until ${when}. Then spare10 continues it, unless a reserve is still reached.`
         : mode === 'tell'
-          ? `If you do not answer, your prompt goes in at ${when}, unless a reserve is still reached. Stop here gives it back to you.`
-          : `If you do not answer, all of it continues at ${when}, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until ${at}.`
+          ? `If you do not answer, your prompt goes in at ${when}, unless a reserve is still reached. Stop here ${HOST.backIt}.`
+          : `If you do not answer, all of it continues at ${when}, unless a reserve is still reached. Stop here ${HOST.backPrompt} and pauses other work until ${at}.`
     return `${head} ${hold} ${ask} ${after}`
   }
   const after =
     opener === 'loop'
       ? `If you choose Stop here or do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.`
       : mode === 'tell'
-        ? `If you do not answer, your prompt goes in after ${at}, unless a reserve is still reached. Stop here gives it back to you.`
-        : `If you do not answer, all of it continues after ${at}, unless a reserve is still reached. Stop here gives your prompt back and pauses other work until ${at}.`
+        ? `If you do not answer, your prompt goes in after ${at}, unless a reserve is still reached. Stop here ${HOST.backIt}.`
+        : `If you do not answer, all of it continues after ${at}, unless a reserve is still reached. Stop here ${HOST.backPrompt} and pauses other work until ${at}.`
   return `${head} ${hold} ${ask} ${after}`
 }
 
@@ -388,7 +399,7 @@ export const pausedText = (f: Facts | readonly Facts[]): string =>
 
 /** B15 HEADLESS. */
 export const headlessText = (f: Facts | readonly Facts[], sessionId: string): string =>
-  `spare10 stopped this unattended run at the quota reserve (${modelFacts(f)}). No further model requests were sent. To pick it up later: claude --resume ${sessionId}`
+  `spare10 stopped this unattended run at the quota reserve (${modelFacts(f)}). No further model requests were sent. To pick it up later: ${HOST.resume} ${sessionId}`
 
 /** B12: spare10's template. Without user text there is no User instructions paragraph. A kind at the floor: the floor sentence. */
 export function pauseInstruction(f: Facts | readonly Facts[], pausePrompt: string | null): string {
@@ -410,7 +421,7 @@ export function resumeContext(f: Facts | readonly Facts[]): string {
 /** B10: the reason of a dropped prompt. */
 export function notStarted(f: Facts | readonly Facts[]): string {
   const fs = listOf(f)
-  return `spare10: not started. This session is inside ${yourReserves(fs)} ${untilText(fs)}. Send the prompt again to be asked again, or run /spare10 resume.`
+  return `spare10: not started. This session is inside ${yourReserves(fs)} ${untilText(fs)}. Send the prompt again to be asked again, or run ${HOST.command} resume.`
 }
 
 /** B35: the hidden context of a person prompt that ends a stop with work after the reset, or after the reserve opened. */
@@ -420,9 +431,7 @@ export function resetContext(named: readonly Named[], open: readonly Facts[] = [
   return `spare10: earlier work stopped at the quota reserve. ${cap(eventText(named, open))}, so the stop is over. ${tail}`
 }
 
-const RESUME_TAIL =
-  'Continue the task from the point where it stopped. A subagent whose result says "spare10: work stopped" or "spare10: the user stopped work" did not finish. ' +
-  'Run it again if you still need its result.'
+const RESUME_TAIL = `Continue the task from the point where it stopped. ${HOST.stoppedAgent} Run it again if you still need its result.`
 
 /** B34: the plugin prompt at the reset, or when the reserve opens. The engine frames it, so it has no prefix. */
 export function resumePrompt(named: readonly Named[], open: readonly Facts[] = []): string {
@@ -484,6 +493,9 @@ export const bgEnvWarning = (set: ReadonlyArray<readonly [string, string]>): str
   `this background session has ${set.map(([name, raw]) => `${name}=${JSON.stringify(raw)}`).join(', ')}. ` +
   'A background session gets such values from the claude daemon or a settings file, not from your terminal.'
 
+/** The way back after a stop: a new prompt asks again, or the resume command. */
+const AGAIN = `Type a prompt to be asked again, or run ${HOST.command} resume.`
+
 /** A stop's time: {at}, or {at} and the owner's {lead}, and whether spare10 continues the work then. */
 type AutoAt = { at: string; work: boolean; lead?: string }
 
@@ -503,16 +515,14 @@ export const notice = {
   newWindowFor: (kinds: readonly Kind[]): string => `held work continues on the new ${windowNames(kinds)}.`,
   stopped: (f: Facts | readonly Facts[], auto?: AutoAt): string => {
     const rs = yourReserves(listOf(f))
-    const again = 'Type a prompt to be asked again, or run /spare10 resume.'
-    if (auto === undefined) return `stopped at ${rs}. ${again}`
-    if (!auto.work) return `stopped at ${rs} until ${untilPhrase(auto)}. ${again}`
-    return `stopped at ${rs} until ${untilPhrase(auto)}. Then spare10 continues the work, unless a reserve is still reached. ${again}`
+    if (auto === undefined) return `stopped at ${rs}. ${AGAIN}`
+    if (!auto.work) return `stopped at ${rs} until ${untilPhrase(auto)}. ${AGAIN}`
+    return `stopped at ${rs} until ${untilPhrase(auto)}. Then spare10 continues the work, unless a reserve is still reached. ${AGAIN}`
   },
   holdLimit: (f: Facts | readonly Facts[], auto?: AutoAt): string => {
     const rs = yourReserves(listOf(f))
-    const again = 'Type a prompt to be asked again, or run /spare10 resume.'
-    if (auto === undefined) return `the hold reached its time limit. The work is stopped at ${rs}. ${again}`
-    if (!auto.work) return `the hold reached its time limit. The work is stopped at ${rs} until ${untilPhrase(auto)}. ${again}`
+    if (auto === undefined) return `the hold reached its time limit. The work is stopped at ${rs}. ${AGAIN}`
+    if (!auto.work) return `the hold reached its time limit. The work is stopped at ${rs} until ${untilPhrase(auto)}. ${AGAIN}`
     return `the hold reached its time limit. The work is stopped at ${rs} until ${untilPhrase(auto)}. Then spare10 continues it, unless a reserve is still reached.`
   },
   /** B46: Stop here after the skip start. soon: the next tick continues the work. Else nothing is stopped. */
@@ -613,6 +623,11 @@ export type StatusInput = {
   consentTo?: number // the end point now of the 5-hour consent to the floor, in force or ended
   consentEnded?: boolean // that consent reached its end point (consentUntil is then absent)
   consented?: readonly Facts[] // the consented kinds, `to` set from their covering consents: the phase line {asks}
+  // Host inputs (Codex design 2.1). Claude passes none of them, so its report does not change.
+  absent?: readonly Kind[] // the kinds the host reports no window for (CX17)
+  heldInPlace?: boolean // work of this session is held in place under a stop: the stopped line says so
+  extraRows?: ReadonlyArray<readonly [string, string]> // rows after the claude -p (or unattended) row, as [label, value]
+  extraHelp?: readonly string[] // lines after the two help lines
 }
 
 const GLYPH: Record<Phase, string> = {
@@ -652,7 +667,7 @@ function quietOf(s: StatusInput): string {
 
 function phaseLine(s: StatusInput): string {
   const at = s.at === undefined ? undefined : atText(s.at.ms, s.at.kinds, s.timeZone, s.now)
-  const again = 'Type a prompt to be asked again, or run /spare10 resume.'
+  const again = s.heldInPlace === true ? `Held work waits. Run ${HOST.anytime} resume to continue it now.` : AGAIN
   const open = s.open === undefined ? [] : listOf(s.open)
   const openRs = open.length === 0 ? '' : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`
   const stopped =
@@ -670,13 +685,13 @@ function phaseLine(s: StatusInput): string {
   const openNote = openRs === '' ? '' : ` ${openRs}, so new work goes on.`
   const asking =
     at === undefined || s.autoResume?.on !== true
-      ? `a question is open. Held work waits until you answer.${openNote} If no dialog shows, run /spare10 resume or /spare10 stop.`
-      : `a question is open. Held work waits until you answer, or until ${at}.${openNote} If no dialog shows, run /spare10 resume or /spare10 stop.`
+      ? `a question is open. Held work waits until you answer.${openNote} If no ${HOST.dialog} shows, run ${HOST.anytime} resume or ${HOST.anytime} stop.`
+      : `a question is open. Held work waits until you answer, or until ${at}.${openNote} If no ${HOST.dialog} shows, run ${HOST.anytime} resume or ${HOST.anytime} stop.`
   const detail: Record<Phase, string> = {
     off: 'spare10 only watches in this run.',
-    blind: 'Claude Code reports no 5-hour quota. spare10 lets all work through.',
+    blind: `${HOST.blind} spare10 lets all work through.`,
     waiting: 'no reading yet. spare10 lets all work through.',
-    armed: stepsIn(s.reserve, watchedWeekly(s)?.reserve),
+    armed: stepsIn(s.reserve, absentKind(s, 'seven_day') ? undefined : watchedWeekly(s)?.reserve, absentKind(s, 'five_hour')),
     consented:
       s.consented !== undefined && s.consented.some((f) => f.to !== undefined)
         ? `you chose to continue. ${asksText(s.consented, s.mode)}`
@@ -698,9 +713,14 @@ function phaseLine(s: StatusInput): string {
   return `  ${GLYPH[s.phase]} ${name.padEnd(LABEL_WIDTH)}${detail[s.phase]}`
 }
 
-function readingValue(b: Basis, f: Facts, now: number): string {
+/** The host reports no window of this kind (CX17). */
+const absentKind = (s: Pick<StatusInput, 'absent'>, kind: Kind): boolean => s.absent?.includes(kind) === true
+
+/** The reading row. `absent`: the host reports no window of this kind for this plan (CX17). */
+function readingValue(b: Basis, f: Facts, now: number, absent = false, kind: Kind = 'five_hour'): string {
+  if (absent) return `none: ${HOST.name} reports no ${kind === 'seven_day' ? 'weekly' : '5-hour'} window for this plan`
   if (b.kind === 'none') {
-    if (b.why === 'blind') return 'none: Claude Code reports no quota (blind)'
+    if (b.why === 'blind') return `none: ${HOST.name} reports no quota (blind)`
     return b.why === 'window-reset' ? 'none: the window reset' : 'none: no reading yet'
   }
   const src = b.kind === 'live' ? 'live' : b.kind === 'seed' ? 'seed from another session' : 'test reading'
@@ -711,7 +731,7 @@ function readingValue(b: Basis, f: Facts, now: number): string {
 
 function guardedValue(s: StatusInput): string {
   if (!s.enabled) {
-    return s.enabledFrom === 'SPARE10' ? 'no: SPARE10=off. spare10 only watches.' : 'no: scope opt-in. Start with SPARE10=on to guard a run.'
+    return s.enabledFrom === 'SPARE10' ? 'no: SPARE10=off. spare10 only watches.' : `no: scope opt-in. ${HOST.optIn}`
   }
   if (!s.attended) return 'no: this session is unattended.'
   return s.enabledFrom === 'SPARE10' ? 'yes (SPARE10=on)' : 'yes (scope all)'
@@ -723,8 +743,8 @@ function actionValue(s: StatusInput): string {
 }
 
 const field = (label: string, value: string): string => `  · ${label.padEnd(LABEL_WIDTH)}${value}`
-const fromText = (from: Source, env: string): string => (from === 'env' ? `from ${env}` : 'from /config')
-const spanFrom = (from: SpanSource, env: string): string => (from === 'unread' ? 'spare10 could not read the env' : fromText(from, env))
+const fromText = (from: Source, env: string): string => (from === 'env' ? `from ${env}` : `from ${HOST.config}`)
+const spanFrom = (from: SpanSource, env: string): string => (from === 'unread' ? `spare10 could not read ${HOST.unreadSource}` : fromText(from, env))
 
 /** Skip 2.7: the `reserve opens` row, and the `weekly opens` row while the weekly window is watched. */
 function spanRows(s: StatusInput): string[] {
@@ -762,7 +782,7 @@ function weeklyRows(s: StatusInput): { reserve: string[]; reading: string[]; con
   )
   return {
     reserve: [field('weekly reserve', `${fmtPct(w.reserve)}% of the weekly window (${fromText(w.from, 'SPARE10_WEEKLY_RESERVE')})`)],
-    reading: [field('weekly reading', readingValue(w.basis, f, s.now))],
+    reading: [field('weekly reading', readingValue(w.basis, f, s.now, absentKind(s, 'seven_day'), 'seven_day'))],
     consent: [field('weekly consent', consent)],
   }
 }
@@ -828,21 +848,23 @@ export function statusReport(s: StatusInput): string {
     ...floorRows(s),
     field('at the reserve', actionValue(s)),
     ...atReset,
-    field('reading', readingValue(s.basis, s.facts ?? factsOf(s.basis, s.reserve, s.timeZone), s.now)),
+    field('reading', readingValue(s.basis, s.facts ?? factsOf(s.basis, s.reserve, s.timeZone), s.now, absentKind(s, 'five_hour'))),
     ...weekly.reading,
     field('consent', consent),
     ...weekly.consent,
     field('guarded', guardedValue(s)),
     s.attended
-      ? field('claude -p', `runs started here: ${s.childPolicy}`)
+      ? field(HOST.child, `runs started here: ${s.childPolicy}`)
       : field('unattended', `${s.headless} (${fromText(s.headlessFrom, 'SPARE10_HEADLESS')})`),
+    ...(s.extraRows ?? []).map(([label, value]) => field(label, value)),
     ...(s.tickerStale === true ? [`  ⚠ ${TICKER_WARNING}`] : []),
     ...s.warnings.map((w) => `  ⚠ ${w}`),
     '',
     floorHelp(s)
-      ? '/spare10 resume   continue on the reserve until the floor, or past the floor until the reset'
-      : '/spare10 resume   continue on the reserve until the window resets',
-    '/spare10 stop     stop at the reserve now',
+      ? `${`${HOST.command} resume`.padEnd(18)}continue on the reserve until the floor, or past the floor until the reset`
+      : `${`${HOST.command} resume`.padEnd(18)}continue on the reserve until the window resets`,
+    `${`${HOST.command} stop`.padEnd(18)}stop at the reserve now`,
+    ...(s.extraHelp ?? []),
   ]
   return lines.join('\n')
 }
@@ -864,7 +886,8 @@ const resumedPart = (f: Facts): string => {
 /**
  * B23 ('tripped' is "tripped, not stopped"). 'overdue': a stop past its end that nobody released yet,
  * with the windows that reset and the open ones. 'open': no kind gates and some kind is open (`f`: the
- * open kinds).
+ * open kinds). `absent` (Codex design 2.1): the kinds the host reports no window for. With five_hour in
+ * it, a reply with no figures names no 5-hour reading.
  */
 export function resumeReply(
   c: ReplyCase | 'overdue' | 'open',
@@ -872,7 +895,9 @@ export function resumeReply(
   named?: readonly Named[],
   open?: readonly Facts[],
   mode: Mode = 'hold',
+  absent?: readonly Kind[],
 ): string {
+  const noReading = absent?.includes('five_hour') === true ? 'nothing to resume. There is no reading yet.' : 'nothing to resume. There is no 5-hour reading yet.'
   const fs = f === undefined ? [] : listOf(f)
   const use = fs.length === 0 ? `the reserve ${UNTIL_RESET}` : useText(fs)
   const asks = asksPart(fs, mode)
@@ -894,9 +919,9 @@ export function resumeReply(
       return `already resumed ${fs.length === 0 ? UNTIL_RESET : untilText(fs)}.`
     case 'below':
       if (fs.length > 0) return `nothing to resume. ${personFacts(fs)}.`
-      return 'nothing to resume. There is no 5-hour reading yet.'
+      return noReading
     case 'none':
-      return 'nothing to resume. There is no 5-hour reading yet.'
+      return noReading
     case 'off':
       return 'this run is not guarded. Nothing changed.'
   }
@@ -906,7 +931,8 @@ export function resumeReply(
  * B24 ('tripped' covers consented). `auto`: the time the stop ends, {at} and for a skip owner {lead}.
  * `continues` (default true): autoResume is on, so spare10 continues the stopped work then.
  * `weeklyTrip`: the weekly window is watched. `ended`: the windows of a Stop here after the skip start
- * (B46). 'open' and 'overdue-open' take the open kinds as `f`.
+ * (B46). 'open' and 'overdue-open' take the open kinds as `f`. `absent` (Codex design 2.1): the kinds the
+ * host reports no window for. With five_hour in it, 'below' and 'none' name no 5-hour trip point.
  */
 export function stopReply(
   c:
@@ -922,8 +948,8 @@ export function stopReply(
   auto?: { at: string; lead?: string; continues?: boolean },
   weeklyTrip?: number,
   ended?: Ended,
+  absent?: readonly Kind[],
 ): string {
-  const again = 'Type a prompt to be asked again, or run /spare10 resume.'
   const fs = f === undefined ? [] : listOf(f)
   const ev = cap(eventText(ended?.reset ?? [], ended?.open ?? []))
   switch (c) {
@@ -937,10 +963,10 @@ export function stopReply(
     case 'asking-open':
       return `stopped. Held work is refused. ${ev}, so new work goes on with no question.`
     case 'tripped':
-      if (auto === undefined) return `stopped at the reserve. ${again}`
+      if (auto === undefined) return `stopped at the reserve. ${AGAIN}`
       return auto.continues === false
-        ? `stopped at the reserve until ${untilPhrase(auto)}. ${again}`
-        : `stopped at the reserve until ${untilPhrase(auto)}. Then spare10 continues any stopped work. ${again}`
+        ? `stopped at the reserve until ${untilPhrase(auto)}. ${AGAIN}`
+        : `stopped at the reserve until ${untilPhrase(auto)}. Then spare10 continues any stopped work. ${AGAIN}`
     case 'stopped':
       return auto === undefined ? 'already stopped.' : `already stopped until ${auto.at}.`
     case 'overdue':
@@ -950,9 +976,10 @@ export function stopReply(
     case 'overdue-skip':
       return 'the stop is over. spare10 will not continue the stopped work.'
     case 'open':
-      return `nothing to stop. The reset is near, so ${openText(fs)}. To keep a reserve until the reset, set its Open reserve option to 0 in /config.`
+      return `nothing to stop. The reset is near, so ${openText(fs)}. To keep a reserve until the reset, ${HOST.keepOpen}.`
     case 'below':
     case 'none': {
+      if (absent?.includes('five_hour') === true) return `nothing to stop. ${stepsIn(0, weeklyTrip === undefined ? undefined : 100 - weeklyTrip, true)}`
       const at = fmtPct(trip ?? 100 - ((f === undefined ? undefined : listOf(f)[0])?.reserve ?? 10))
       if (weeklyTrip === undefined) return `nothing to stop. spare10 steps in at ${at}% used.`
       return `nothing to stop. spare10 steps in at ${at}% used, or at ${fmtPct(weeklyTrip)}% used of the weekly window.`
@@ -963,11 +990,11 @@ export function stopReply(
 }
 
 /** B25 */
-export const notPerson = (verb: string): string => `only you can run /spare10 ${verb}. Nothing changed.`
+export const notPerson = (verb: string): string => `only you can run ${HOST.command} ${verb}. Nothing changed.`
 
 /** B25 */
 export const unknownVerb = (verb: string): string =>
-  `unknown command "${verb}". Use /spare10, /spare10 resume or /spare10 stop.`
+  `unknown command "${verb}". Use ${HOST.command}, ${HOST.command} resume or ${HOST.command} stop.`
 
 /**
  * Section 12.1, 2.9. `opens` (skip 2.9), for a test reading at or above the trip point with a span:
@@ -986,7 +1013,7 @@ export function simulateReply(
   if (kind === 'off') return 'test reading cleared. Consent and stop for this window are cleared too.'
   if (kind === 'weekly-off') return 'the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.'
   if (kind === 'bad' || f === undefined) {
-    return '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'
+    return `${HOST.leadSimulate} takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.`
   }
   const weekly = isWeekly(f)
   const of = weekly ? ' of the weekly window' : ''
@@ -1007,8 +1034,8 @@ export function simulateReply(
   const realText = realIn === true ? ` A Resume on the test reading also lets real work use the ${weekly ? 'weekly reserve' : 'reserve'}.` : ''
   const verb = kind === 'raised' ? 'raised' : 'set'
   const stays = kind === 'raised' ? ' Your earlier answers stay.' : ''
-  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run /spare10 simulate off to clear it.`
+  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run ${HOST.command} simulate off to clear it.`
 }
 
 /** A /spare10 that threw. */
-export const commandFailed = (message: string): string => `/spare10 failed: ${message}`
+export const commandFailed = (message: string): string => `${HOST.leadFailed} failed: ${message}`

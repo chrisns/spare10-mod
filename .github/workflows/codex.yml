@@ -1,0 +1,29 @@
+name: "Codex"
+# The Codex adapter checks (Codex design 6.4). This runner has no Claude Code and no Codex,
+# so it runs no Claude check and no end-to-end run. scripts/check.sh runs those locally.
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  codex:
+    name: Codex adapter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: The three versions are equal
+        run: node scripts/versions.mjs
+      - name: codex/dist is fresh
+        run: node scripts/build-codex.mjs --check
+      - name: Types of the adapter, its tests and the core
+        run: node_modules/.bin/tsc -p codex
+      - name: Codex specs
+        run: >-
+          SPARE10_CODEX_TEST=1 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON
+          --import ./codex/test/host-loader.mjs --test codex/test/*.spec.ts
