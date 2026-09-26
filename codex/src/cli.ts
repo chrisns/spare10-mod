@@ -1,7 +1,7 @@
 import { realpathSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { codexText, optionOf } from '../../hooks/core/codex.ts'
+import { codexText, optionOf, shownPath } from '../../hooks/core/codex.ts'
 import type { Command, HostKind } from '../../hooks/core/codex.ts'
 import { VERSION, commandFailed } from '../../hooks/core/text.ts'
 import { createAttendance } from './attend.ts'
@@ -200,7 +200,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
 
   try {
     if (verb === 'help') {
-      print(`spare10: ${codexText.help(paths.bin)}`)
+      print(`spare10: ${codexText.help(paths.bin, paths.home)}`)
       return 0
     }
     const cmd = commandOf(a)
@@ -217,7 +217,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
         } catch {
           phase = 'unknown'
         }
-        rows.push([r.sid, r.cwd ?? '-', phase])
+        rows.push([r.sid, r.cwd === undefined ? '-' : shownPath(r.cwd, paths.home), phase])
       }
       print(codexText.cliNoSession(verb, rows))
       return 2

@@ -496,6 +496,9 @@ export const bgEnvWarning = (set: ReadonlyArray<readonly [string, string]>): str
 /** The way back after a stop: a new prompt asks again, or the resume command. */
 const AGAIN = `Type a prompt to be asked again, or run ${HOST.command} resume.`
 
+/** Work of the session is held in place under a stop (Codex design 4.19, 4.20): it waits, and the resume command continues it now. */
+export const HELD_WAITS = `Held work waits. Run ${HOST.anytime} resume to continue it now.`
+
 /** A stop's time: {at}, or {at} and the owner's {lead}, and whether spare10 continues the work then. */
 type AutoAt = { at: string; work: boolean; lead?: string }
 
@@ -668,7 +671,7 @@ function quietOf(s: StatusInput): string {
 
 function phaseLine(s: StatusInput): string {
   const at = s.at === undefined ? undefined : atText(s.at.ms, s.at.kinds, s.timeZone, s.now)
-  const again = s.heldInPlace === true ? `Held work waits. Run ${HOST.anytime} resume to continue it now.` : AGAIN
+  const again = s.heldInPlace === true ? HELD_WAITS : AGAIN
   const open = s.open === undefined ? [] : listOf(s.open)
   const openRs = open.length === 0 ? '' : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`
   const stopped =

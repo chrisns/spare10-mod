@@ -14,12 +14,12 @@ import {
 import type { Consent } from './decide.ts'
 import { BLIND_AFTER, KINDS, parseSimulate, windowMs } from './reading.ts'
 import type { Anchored, Kind } from './reading.ts'
-import { HEADER, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, fmtDuration, fmtPct, untilText, yourReserves } from './text.ts'
+import { HEADER, HEADLESS_GENERIC, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilText, yourReserves } from './text.ts'
 import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX47, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX48, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -523,7 +523,7 @@ export const defaultText = (name: OptionName): string => optionText(name, DEFAUL
  * config.json as plugin options (5.2). Each known key goes through its file parser. A bad value warns
  * (CX11) and is left out, so fromOptions gives its default. Unknown keys are ignored. A value that is
  * not a JSON object gives no options and the CX12 warning: the caller then keeps each reserve until the
- * reset (spans 0).
+ * reset (spans 0). `path` is the file as the warnings show it (shownPath).
  */
 export function configOptions(path: string, raw: unknown): { options: PluginOptions; warnings: string[] } {
   if (!isObject(raw)) return { options: {}, warnings: [codexText.configUnread(path, 'it is not a JSON object')] }
@@ -637,6 +637,12 @@ export function answerOf(result: unknown, failed: boolean): Answer {
 export type GateSite = 'start' | 'prompt' | 'tool' | 'step' | 'compact' | 'spawn' | 'stop' | 'interrupt'
 export type GateResult = { kind: 'pass'; context?: string } | { kind: 'deny'; text: string } | { kind: 'block'; text: string } | { kind: 'end'; text?: string }
 
+/** Every site of the gate tool (3.3). */
+export const GATE_SITES: readonly GateSite[] = ['start', 'prompt', 'tool', 'step', 'compact', 'spawn', 'stop', 'interrupt']
+
+/** A site of the gate tool. Any other value (also a key such as `__proto__`) is none. */
+export const isGateSite = (v: unknown): v is GateSite => typeof v === 'string' && (GATE_SITES as readonly string[]).includes(v)
+
 const EVENT: Partial<Record<GateSite, string>> = { prompt: 'UserPromptSubmit', tool: 'PreToolUse', step: 'PostToolUse' }
 
 /**
@@ -665,6 +671,27 @@ export function render(site: GateSite, r: GateResult, systemMessage?: string): s
   return withMessage === undefined ? '' : JSON.stringify(withMessage)
 }
 
+/**
+ * 3.4, 4.2: the refusal of a held call that has no decided answer (fail closed), when the gate fails or
+ * the broker shuts down. A prompt is blocked with NOT_STARTED_GENERIC, a tool is denied and a step gets the
+ * text as context with STOP_GENERIC. Unattended, the text is HEADLESS_GENERIC. Stop and PreCompact end the
+ * turn. SessionStart, SubagentStart and Interrupt cannot refuse, so they pass.
+ */
+export function genericRefusal(site: GateSite, attended: boolean): GateResult {
+  switch (site) {
+    case 'prompt':
+      return { kind: 'block', text: attended ? NOT_STARTED_GENERIC : HEADLESS_GENERIC }
+    case 'tool':
+    case 'step':
+      return { kind: 'deny', text: attended ? STOP_GENERIC : HEADLESS_GENERIC }
+    case 'stop':
+    case 'compact':
+      return { kind: 'end' }
+    default:
+      return { kind: 'pass' }
+  }
+}
+
 export type RefuseMode = 'interrupt' | 'hold' | 'deny'
 
 /**
@@ -688,7 +715,42 @@ export const withPrefix = (text: string): string =>
     .map((l) => (l === '' ? l : `spare10: ${l}`))
     .join('\n')
 
-// ---- Texts (CX1 to CX47) and debug lines ----
+// ---- Paths in texts (CX19, CX34 and the rows that show a path) ----
+// No text names the home folder: a person or the model reads them. Under the home folder, a display row
+// shows `~/...`, and a shell command uses `"$HOME/..."`. zsh does not expand a `~` inside double quotes,
+// so the PATH line uses `$HOME`. The caller passes the home folder, so this file stays pure.
+
+/** The part of `p` after the home folder, from its `/` ('' for the home folder itself), else undefined. */
+function afterHome(p: string, home: string | undefined): string | undefined {
+  const h = (home ?? '').replace(/\/+$/, '')
+  if (!h.startsWith('/')) return undefined // no home folder, or the root folder: nothing to hide
+  if (p === h) return ''
+  return p.startsWith(`${h}/`) ? p.slice(h.length) : undefined
+}
+
+/** `s` inside double quotes: each `\`, `"`, `$` and backquote is escaped. */
+const inDoubleQuotes = (s: string): string => s.replace(/[\\"$`]/g, '\\$&')
+
+/** A path as a display row shows it: `~/...` under the home folder, else the path as it is. */
+export function shownPath(p: string, home: string | undefined): string {
+  const rest = afterHome(p, home)
+  return rest === undefined ? p : `~${rest}`
+}
+
+/** A path as one shell word: `"$HOME/..."` under the home folder, else the path, in single quotes when the shell would split or expand it. */
+export function shellPath(p: string, home: string | undefined): string {
+  const rest = afterHome(p, home)
+  if (rest !== undefined) return `"$HOME${inDoubleQuotes(rest)}"`
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(p) ? p : `'${p.replaceAll("'", "'\\''")}'`
+}
+
+/** The PATH line of CX19 and CX34: the folder inside double quotes, as `$HOME/...` under the home folder. */
+const pathLine = (dir: string, home: string | undefined): string => {
+  const rest = afterHome(dir, home)
+  return `export PATH="${rest === undefined ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`
+}
+
+// ---- Texts (CX1 to CX48) and debug lines ----
 
 /** CX5 {Rs} and {quiet}: five_hour first, as the core texts read a list of Facts. */
 const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
@@ -756,15 +818,22 @@ export const codexText = {
   hardStop: 'Codex reports that your included usage is used up. spare10 asks nothing, and continues no work, until Codex allows usage again. Work on Luna Reserve goes through.',
   /** CX15 (P1, report only): a workspace limit. */
   workspaceLimit: (type: string): string => `Codex reports a workspace limit (${type}). spare10 continues no work until Codex allows it.`,
+  /** CX48 (B30 on Codex, report only): the stored consent of a kind ends after its window. `untilMs`: its end. Codex keeps consent in the session state, never in SPARE10_CONSENT. */
+  consentBeyond: (kind: Kind, untilMs: number, now: number, timeZone?: string): string => {
+    const until = clockText(untilMs, 'seven_day', timeZone, now) // with its weekday: it lies after the window
+    return kind === 'seven_day'
+      ? `the weekly consent of this session lasts until ${until}, which is after this weekly window. spare10 ignores it.`
+      : `the consent of this session lasts until ${until}, which is after this 5-hour window. spare10 ignores it.`
+  },
   /** CX16 (report only): a watched kind at 100% or more, and credits are usable. */
   credits: (balance: string): string => `past 100% used, Codex spends your credits. The balance is ${balance}.`,
   /** CX46: appended to the question. */
   creditsQuestion: (balance: string): string => `Past 100% used, Codex spends your credits. The balance is ${balance}.`,
   /** CX18: a held prompt of a broker whose host is gone. */
   promptLost: 'Codex stopped while spare10 held your prompt, so Codex dropped it. Send it again.',
-  /** CX19: once per data dir, how to run a command during a turn. */
-  cliHint: (launcher: string, dir: string): string =>
-    `to run a spare10 command during a turn, type !${launcher} status in the prompt. For the short form !spare10 status, add export PATH="${dir}:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+  /** CX19: once per data dir, how to run a command during a turn. `home`: the home folder, which the text never names. */
+  cliHint: (launcher: string, dir: string, home: string | undefined): string =>
+    `to run a spare10 command during a turn, type !${shellPath(launcher, home)} status in the prompt. For the short form !spare10 status, add ${pathLine(dir, home)} to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
   /** CX20, CX21, CX22: the report row `daemon`. */
   daemonRow: (hosted: boolean, auto: boolean): string =>
     hosted
@@ -803,8 +872,8 @@ export const codexText = {
       ...rows.map(([name, value, source]) => `  · ${name.padEnd(HELP_WIDTH)}${value} (${source})`),
       'Change one with spare10 set <option> <value>, or spare10 set <option> default.',
     ].join('\n'),
-  /** CX34: `spare10 help`. `dir` is the folder of the launcher. */
-  help: (dir: string): string =>
+  /** CX34: `spare10 help`. `dir` is the folder of the launcher. `home`: the home folder, which the text never names. */
+  help: (dir: string, home: string | undefined): string =>
     [
       'commands, typed as the whole prompt:',
       `${'spare10'.padEnd(HELP_WIDTH)}show the status`,
@@ -813,7 +882,7 @@ export const codexText = {
       `${'spare10 simulate'.padEnd(HELP_WIDTH)}set a test reading, such as spare10 simulate 92`,
       `${'spare10 set'.padEnd(HELP_WIDTH)}show or change the options`,
       'During a turn, run them as !spare10 ... in the prompt. This needs the spare10 folder on your PATH:',
-      `add export PATH="${dir}:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+      `add ${pathLine(dir, home)} to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
       'Codex gives the output of a ! command to the model.',
     ].join('\n'),
   /** CX44: the CLI line from `!`. */

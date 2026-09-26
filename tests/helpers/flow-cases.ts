@@ -13,6 +13,7 @@ import {
   commandHolders,
   consentBeyond,
   consentEnd,
+  consentPastWindow,
   consentOfEnd,
   consentedOf,
   dueMargin,
@@ -93,6 +94,7 @@ import type { Bases, FallbackEnds, KindSense, Late, Mems, QuestionCore, Sensed, 
 import { FALLBACK_MS, RESET_MARGIN_MS, TEST_MARGIN_MS, initialMemory } from '../../hooks/core/reading.ts'
 import type { Basis, Kind } from '../../hooks/core/reading.ts'
 import {
+  HELD_WAITS,
   atText,
   clockText,
   consentWarning,
@@ -1033,6 +1035,9 @@ const commandCases: FlowCase[] = [
       const below = sensed({ five: live(40, R), week: live(30, W) })
       eq(resumeReadReply(below), resumeReply('below', factsFrom(below.kinds, NOW)))
       eq(resumeReadReply(s92()), undefined)
+      // Codex design 2.1, CX17: the kinds the host reports no window for reach the reply.
+      eq(resumeReadReply(sensed({ five: NONE }), ['five_hour']), resumeReply('none', undefined, undefined, undefined, 'hold', ['five_hour']))
+      eq(resumeReadReply(below, ['five_hour']), resumeReply('below', factsFrom(below.kinds, NOW), undefined, undefined, 'hold', ['five_hour']))
     },
   },
   {
@@ -1057,6 +1062,9 @@ const commandCases: FlowCase[] = [
       eq(stopCase(sensed({ five: NONE }), cfgOf({}, { weeklyReserve: 0 })), { reply: stopReply('none', undefined, 90, undefined, undefined) })
       const below = sensed({ five: live(40, R) })
       eq(stopCase(below, cfgOf({}, { reserve: 12.5 })), { reply: stopReply('below', factsFrom([kindIn(below, 'five_hour')], NOW), 87.5, undefined, 90) })
+      // Codex design 2.1, CX17: a weekly-only plan names no 5-hour trip.
+      eq(stopCase(sensed({ five: NONE }), cfgOf(), ['five_hour']), { reply: stopReply('none', undefined, 90, undefined, 90, undefined, ['five_hour']) })
+      eq(stopCase(below, cfgOf(), ['five_hour']), { reply: stopReply('below', factsFrom([kindIn(below, 'five_hour')], NOW), 90, undefined, 90, undefined, ['five_hour']) })
       const open = sensed({ five: live(92, R), now: R - 10 * MIN })
       eq(stopCase(open, cfgOf()), { reply: stopReply('open', factsFrom([kindIn(open, 'five_hour')], open.now)) })
       const both = sensed({ five: live(92, R), week: live(93, W), now: R - 10 * MIN })
@@ -1079,6 +1087,8 @@ const commandCases: FlowCase[] = [
       eq(stopKeptReply(stopRec(), f, true, NOW), stopReply('stopped', f, undefined, { at: atText(R, ['five_hour'], undefined, NOW) }))
       eq(stopKeptReply(stopRec(), f, false, NOW), stopReply('stopped', f, undefined, undefined))
       eq(stopKeptReply(stopRec({ auto: false, skip: true }), f, false, NOW), stopReply('stopped', f, undefined, { at: atText(R, ['five_hour'], undefined, NOW) }))
+      // Codex design 4.20: held work that waits under the stop stays there, and the reply says so.
+      eq(stopKeptReply(stopRec(), f, true, NOW, true), `${stopReply('stopped', f, undefined, { at: atText(R, ['five_hour'], undefined, NOW) })} ${HELD_WAITS}`)
       const written = stopRecordOf(undefined, stopWriteOf([k], true, false), 'S1', NOW)
       eq(stopTrippedReply([k], f, written, true, NOW), stopReply('tripped', f, undefined, { ...untilFor(factsFrom([k], NOW, true), SKIP5, ['five_hour'], true, NOW), continues: true }))
       const plain = stopRecordOf(undefined, stopWriteOf([nk], false, false), 'S1', NOW)
@@ -1174,7 +1184,7 @@ function noSpan(f: Facts): Facts {
 
 const toldAt = (windowEnd: number, keys: string[]): Told => ({ ...newTold(), five_hour: { windowEnd, keys: new Set(keys) } })
 
-function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: StoppedRecord; question?: QuestionCore; told?: Told } = {}) {
+function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: StoppedRecord; question?: QuestionCore; told?: Told; present?: Kind[] } = {}) {
   const s = sensed(w)
   const view = seenSplit(s.kinds, o.lists ?? (() => []), s.now)
   return seenOf({
@@ -1189,6 +1199,7 @@ function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: Stop
     question: o.question,
     told: o.told ?? newTold(),
     sessionId: 'S1',
+    ...(o.present === undefined ? {} : { present: o.present }),
   })
 }
 
@@ -1222,6 +1233,11 @@ const reportCases: FlowCase[] = [
       eq([p.phase, p.toldCount], ['told', 2])
       eq(seenFor({ five: live(96, R) }, { told }).toldCount, 1) // at the floor: the floor stage only
       eq(seenFor({ five: live(92, R) }, { told: toldAt(R - HOUR, ['S1:main']) }).toldCount, 0) // another window
+      // Codex design 4.15: with the kinds the host reports, the phase reads their bases, so a weekly-only plan is armed.
+      eq(seenFor({ five: NONE, week: live(40, W) }).phase, 'waiting')
+      eq(seenFor({ five: NONE, week: live(40, W) }, { present: ['seven_day'] }).phase, 'armed')
+      eq(seenFor({ five: NONE, week: NONE }, { present: [] }).phase, 'waiting')
+      eq(seenFor({ five: live(92, R) }, { present: ['five_hour', 'seven_day'] }).phase, 'tripped')
     },
   },
   {
@@ -1249,6 +1265,7 @@ const reportCases: FlowCase[] = [
       eq(consentBeyond(k, 'junk', NOW), undefined)
       eq(consentBeyond(k, at(R + 60_000), NOW), undefined)
       eq(consentBeyond(k, at(R + 61_000), NOW), consentWarning(at(R + 61_000), 'five_hour'))
+      eq([consentPastWindow(k, at(R + 60_000), NOW), consentPastWindow(k, at(R + 61_000), NOW)], [undefined, { until: R + 61_000, sessionId: 'S1' }])
       const blind = kindIn(sensed({ five: NONE }), 'five_hour')
       eq(consentBeyond(blind, at(NOW + 5 * HOUR + 60_000), NOW), undefined)
       eq(consentBeyond(blind, at(NOW + 5 * HOUR + 61_000), NOW), consentWarning(at(NOW + 5 * HOUR + 61_000), 'five_hour'))

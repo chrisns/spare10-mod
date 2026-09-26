@@ -30,7 +30,7 @@ import {
   unknownVerb,
 } from '../../hooks/core/text.ts'
 import type { Facts, Named, StatusInput } from '../../hooks/core/text.ts'
-import { codexDebug, codexText, withPrefix } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, shellPath, shownPath, withPrefix } from '../../hooks/core/codex.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 
 // The texts under the Codex host words (Codex design 2.1, 2.4 to 2.9, 8.2 text.spec). The host loader maps
@@ -428,11 +428,12 @@ test('the Codex report equals the sample of 2.8', () => {
   )
 })
 
-// ---- The texts of CX1 to CX47 ----
+// ---- The texts of CX1 to CX48 ----
 
+const HOME = '/Users/me'
 const L = '/Users/me/.codex/plugins/data/spare10-spare10/bin/spare10'
 const D = '/Users/me/.codex/plugins/data/spare10-spare10/bin'
-const CFG = '/Users/me/.codex/plugins/data/spare10-spare10/config.json'
+const CFG = '~/.codex/plugins/data/spare10-spare10/config.json' // as shownPath gives it
 
 test('the CX texts read as in the design', () => {
   assert.equal(codexText.statusHold, 'spare10 checks the quota reserve. Esc stops a held step.')
@@ -469,8 +470,25 @@ test('the CX texts read as in the design', () => {
     'this session was started by gap7-remote-client, not by the Codex TUI. spare10 treats it as attended. If gap7-remote-client cannot show the spare10 question, spare10 holds the work at the reserve.',
   )
   assert.equal(
-    codexText.cliHint(L, D),
-    `to run a spare10 command during a turn, type !${L} status in the prompt. For the short form !spare10 status, add export PATH="${D}:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+    codexText.cliHint(L, D, HOME),
+    'to run a spare10 command during a turn, type !"$HOME/.codex/plugins/data/spare10-spare10/bin/spare10" status in the prompt. For the short form !spare10 status, add export PATH="$HOME/.codex/plugins/data/spare10-spare10/bin:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.',
+  )
+  // Not under the home folder: the path as one shell word, and escaped inside the double quotes of the PATH line.
+  assert.equal(
+    codexText.cliHint('/a b/spare10', '/a b', HOME),
+    `to run a spare10 command during a turn, type !'/a b/spare10' status in the prompt. For the short form !spare10 status, add export PATH="/a b:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+  )
+  assert.equal(
+    codexText.cliHint('/opt/codex/bin/spare10', '/opt/codex/bin', undefined),
+    'to run a spare10 command during a turn, type !/opt/codex/bin/spare10 status in the prompt. For the short form !spare10 status, add export PATH="/opt/codex/bin:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.',
+  )
+  assert.equal(
+    codexText.consentBeyond('five_hour', Date.UTC(2026, 8, 26, 16), Date.UTC(2026, 8, 26, 10), TZ),
+    'the consent of this session lasts until Sat 16:00, which is after this 5-hour window. spare10 ignores it.',
+  )
+  assert.equal(
+    codexText.consentBeyond('seven_day', Date.UTC(2026, 9, 9, 16), Date.UTC(2026, 8, 26, 10), TZ),
+    'the weekly consent of this session lasts until Fri 9 Oct 16:00, which is after this weekly window. spare10 ignores it.',
   )
   assert.equal(codexText.weeklyOnlyOpen(8), 'Codex reports only a weekly window here. In the last 8 h before the weekly reset, spare10 lets all work through. To keep the weekly reserve until the reset, run spare10 set weeklyLastHours 0.')
   assert.equal(codexText.weeklyOnlyOpen(2.5).includes('In the last 2.5 h before'), true)
@@ -517,7 +535,7 @@ test('the CX texts read as in the design', () => {
     ].join('\n'),
   )
   assert.equal(
-    codexText.help(D),
+    codexText.help(D, HOME),
     [
       'commands, typed as the whole prompt:',
       'spare10           show the status',
@@ -526,7 +544,7 @@ test('the CX texts read as in the design', () => {
       'spare10 simulate  set a test reading, such as spare10 simulate 92',
       'spare10 set       show or change the options',
       'During a turn, run them as !spare10 ... in the prompt. This needs the spare10 folder on your PATH:',
-      `add export PATH="${D}:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+      'add export PATH="$HOME/.codex/plugins/data/spare10-spare10/bin:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.',
       'Codex gives the output of a ! command to the model.',
     ].join('\n'),
   )
@@ -542,6 +560,21 @@ test('the CX texts read as in the design', () => {
   )
   assert.equal(codexText.hooksRow(9, 9), 'all 9 trusted')
   assert.equal(codexText.hooksRow(7, 9), '7 of 9 trusted. Start codex and trust the spare10 hooks, or run /hooks.')
+})
+
+test('paths in texts: ~/... in a row, "$HOME/..." in a shell command, and one shell word for any other path', () => {
+  assert.equal(shownPath(L, HOME), '~/.codex/plugins/data/spare10-spare10/bin/spare10')
+  assert.equal(shownPath(L, `${HOME}/`), '~/.codex/plugins/data/spare10-spare10/bin/spare10')
+  assert.equal(shownPath(HOME, HOME), '~')
+  assert.equal(shownPath('/Users/meg/x', HOME), '/Users/meg/x', 'a folder whose name only starts like the home folder')
+  assert.equal(shownPath(L, '/'), L, 'the root folder is no home folder to hide')
+  assert.equal(shownPath(L, undefined), L)
+  assert.equal(shownPath(L, 'relative'), L)
+  assert.equal(shellPath(L, HOME), '"$HOME/.codex/plugins/data/spare10-spare10/bin/spare10"')
+  assert.equal(shellPath('/Users/me/a "b" $c`d\\e', HOME), '"$HOME/a \\"b\\" \\$c\\`d\\\\e"')
+  assert.equal(shellPath('/opt/codex-1.2/bin/spare10', HOME), '/opt/codex-1.2/bin/spare10')
+  assert.equal(shellPath("/tmp/it's here", HOME), `'/tmp/it'\\''s here'`)
+  assert.equal(shellPath('/tmp/~x/a*b', undefined), `'/tmp/~x/a*b'`)
 })
 
 /** The debug lines of the broker log, with sample values. */
@@ -591,7 +624,9 @@ function codexPrefixed(): string[] {
     codexText.workspaceLimit('workspace_owner_usage_limit_reached'),
     codexText.credits('3'),
     codexText.promptLost,
-    codexText.cliHint(L, D),
+    codexText.cliHint(L, D, HOME),
+    codexText.consentBeyond('five_hour', Date.UTC(2026, 8, 26, 16), Date.UTC(2026, 8, 26, 10), TZ),
+    codexText.consentBeyond('seven_day', Date.UTC(2026, 9, 9, 16), Date.UTC(2026, 8, 26, 10), TZ),
     codexText.setOk('reserve', '15', '10'),
     codexText.setOk('reserve', '15', '10') + codexText.setEnvWins('SPARE10_RESERVE'),
     codexText.setDefault('pausePrompt', 'an empty text'),
@@ -599,7 +634,7 @@ function codexPrefixed(): string[] {
     codexText.setUnknown('foo'),
     codexText.setFailed(CFG, 'EROFS'),
     codexText.setList(CFG, [['reserve', '10', 'default']]),
-    codexText.help(D),
+    codexText.help(D, HOME),
   ]
 }
 

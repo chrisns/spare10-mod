@@ -49,6 +49,7 @@
 @cmdSet = commands|set lists, changes, rejects
 @cmdReport = commands|the report of 2.8 on a weekly-only plan
 @cmdStopQ = commands|spare10 stop on an open loop question settles it
+@cmdBeyond = commands|the report warns of a consent after this window
 @cliRelease = cli|from a terminal the full reply, and a resume releases a held broker
 @cliAgent = cli|the agent cannot run it
 @gateBelow = gate|below the reserve every site answers
@@ -261,7 +262,7 @@
 [command.test.ts]
 /spare10 is registered at session start as an immediate command => @parse ; @gateHelp
 /spare10 reports the phase, reserve, reading, consent and guarded lines => @cmdStatus ; @cmdReport
-/spare10 shows env sources, every start-up warning, and ignores a consent beyond this window => @cmdSet ; @cmdReport ; @fBeyond
+/spare10 shows env sources, every start-up warning, and ignores a consent beyond this window => @cmdSet ; @cmdReport ; @fBeyond ; @cmdBeyond
 /spare10 names no reading and a blind sensor => @cmdStatus ; @cmdBlind
 /spare10 says the window reset once a remembered reading expires => @qtSeed ; @fStatus1
 /spare10 resume while asking withdraws the dialog and releases the loops => @qElsewhere ; @cliRelease ; none:withdraw
@@ -587,7 +588,7 @@ a reading without resetsAt keeps one fallback window end per episode (R11) => @f
 -p stop without resetsAt names an unknown reset time and a stable window end => @fFallback ; @fNamed
 an attended session ignores the prompt policy too: it holds, and nothing is told => @fVerdictTell
 an unattended run shows the consented phase while inherited consent covers the window => @hNested ; @cmdStatus
-/spare10 warns when an inherited SPARE10_CONSENT lies beyond this window (B30, R13) => @fBeyond
+/spare10 warns when an inherited SPARE10_CONSENT lies beyond this window (B30, R13) => @fBeyond ; @cmdBeyond
 in a -p run, /spare10 resume and stop from the run itself are refused as not typed by the person => @cmdHelp ; @cliAgent
 -p prompt: a blank pause prompt leaves out the User instructions, and text is kept verbatim => @fNamed ; core-codex|parseCommand: the pause prompt keeps its text verbatim
 -p prompt: a multi-line pause prompt is passed on verbatim => @fNamed ; core-codex|configOptions: good values pass to fromOptions

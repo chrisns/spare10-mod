@@ -64,7 +64,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
 function world(t: Parameters<typeof tempDir>[0]) {
   const root = tempDir(t)
   const data = join(root, 'data')
-  const paths: Paths = { codexHome: root, data, pluginRoot: root, socket: join(root, 'daemon.sock'), launcher: join(data, 'bin', 'spare10'), bin: join(data, 'bin') }
+  const paths: Paths = { codexHome: root, data, pluginRoot: root, socket: join(root, 'daemon.sock'), launcher: join(data, 'bin', 'spare10'), bin: join(data, 'bin'), home: join(root, 'home') }
   const clock = fakeClock(T0)
   const log = memoryLog()
   const daemon = memoryDaemon(clock)

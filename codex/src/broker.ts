@@ -1,8 +1,8 @@
 import { join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
-import { codexDebug, codexLimits, hostKindOf, isObservation } from '../../hooks/core/codex.ts'
+import { codexDebug, codexLimits, hostKindOf, isGateSite, isObservation } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot } from '../../hooks/core/codex.ts'
-import type { GateSite, HostKind } from '../../hooks/core/codex.ts'
+import type { HostKind } from '../../hooks/core/codex.ts'
 import { BLIND_AFTER } from '../../hooks/core/reading.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 import { VERSION } from '../../hooks/core/text.ts'
@@ -79,7 +79,6 @@ export type Broker = {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
-const SITES: readonly GateSite[] = ['start', 'prompt', 'tool', 'step', 'compact', 'spawn', 'stop', 'interrupt']
 
 /** The part of the broker that exists once the background work has started. */
 type Parts = { gate: Gate; ticker: Ticker; hostKind: HostKind; link: ReturnType<typeof daemonLink>; interrupts: Interrupts }
@@ -232,7 +231,7 @@ export function createBroker(d: BrokerDeps): Broker {
     const p = boot()
     const args = isObject(c.args) ? c.args : {}
     if (session === undefined && typeof args['session'] === 'string' && args['session'] !== '') session = args['session']
-    const site = typeof args['site'] === 'string' && SITES.includes(args['site'] as GateSite) ? (args['site'] as GateSite) : 'spawn'
+    const site = isGateSite(args['site']) ? args['site'] : 'spawn'
     const turn = typeof args['turn'] === 'string' && args['turn'] !== '' ? args['turn'] : undefined
     const ac = new AbortController()
     const call: GateCall = {

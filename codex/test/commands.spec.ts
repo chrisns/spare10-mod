@@ -147,7 +147,7 @@ test('commands: the blind phase after two live reads with no window', async (t) 
 test('commands: help, unknown verb, unknown option, and notPerson in a subagent', async (t) => {
   const w = world(t)
   const b = await w.broker()
-  assert.equal(await typed(b, 'spare10 help'), codexText.help(w.paths.bin))
+  assert.equal(await typed(b, 'spare10 help'), codexText.help(w.paths.bin, w.paths.home))
   assert.equal(await typed(b, 'spare10 pause'), unknownVerb('pause'))
   assert.equal(await typed(b, 'spare10 set foo'), codexText.setUnknown('foo'))
   const child = await w.broker({ thread: CHILD })
@@ -210,6 +210,10 @@ test('commands: `asking` replaces `stopped` while held work waits under a stop, 
   assert.match(report, /Held work waits\. Run !spare10 resume to continue it now\./)
   // The held work continues in place at the stop end (4.4), so the report does not say that nothing can (live check LCX7).
   assert.ok(!report.includes('spare10 cannot check the reset in this session.'), 'no ticker warning while held work waits in place')
+  // A stop over this stop leaves the held call where it is (no daemon, no sweep), and says so, as the report does.
+  assert.equal(await typed(b, 'spare10 stop'), 'already stopped until 11:40. Held work waits. Run !spare10 resume to continue it now.')
+  await w.settle()
+  assert.equal(h.box.done, false, 'the held call still waits')
   // With no held work (Esc ended the turn) and no daemon, nothing continues the stopped work: the report says so.
   b.drop(h.id)
   await b.gate('interrupt', { turn: 'U-held' })
@@ -310,6 +314,46 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
   const { writeFileSync } = await import('node:fs')
   writeFileSync(path, '[1, 2]')
   assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed(path, 'it is not a JSON object'))
+})
+
+test('commands: set names a variable as the winner only when its value parses (A15)', async (t) => {
+  const w = world(t)
+  const b = await w.broker({ env: { SPARE10_RESERVE: 'abc', SPARE10: 'maybe' } })
+  // withEnv keeps the option for a value that does not parse, and the report warns (B27): the reply agrees.
+  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setOk('reserve', '15', '10'))
+  const list = await typed(b, 'spare10 set')
+  assert.match(list, /\n {2}· reserve {11}15 \(config\.json\)\n/)
+  assert.match(list, /\n {2}· scope {13}all \(default\)\n/)
+  assert.equal(await typed(b, 'spare10 set scope opt-in'), codexText.setOk('scope', 'opt-in', 'all'))
+})
+
+test('commands: the report warns of a consent after this window in the Codex words, never SPARE10_CONSENT (CX48)', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  assert.match(await typed(b, 'spare10 resume'), /^you can use the reserve until 95% used\./)
+  assert.equal(w.state().consent, formatConsent(SID, RESET, 95))
+  // A first test reading keeps the real consent, and its own window ends before that consent does.
+  assert.match(await typed(b, 'spare10 simulate 93 in 30m'), /^test reading set to 93% used/)
+  assert.equal(w.state().consent, formatConsent(SID, RESET, 95))
+  const report = await typed(b, 'spare10')
+  assert.ok(report.includes(`\n  ⚠ ${codexText.consentBeyond('five_hour', RESET, T0)}`), report)
+  assert.ok(!report.includes('SPARE10_CONSENT'), 'Codex keeps consent in the session state')
+})
+
+test('commands: the report, help and set never name the home folder: ~/... in a row, "$HOME/..." in a command', async (t) => {
+  const w = world(t, { homeAtRoot: true })
+  const b = await w.broker()
+  const report = await typed(b, 'spare10')
+  assert.match(report, /\n {2}· cli {12}~\/data\/bin\/spare10\n/)
+  const help = await typed(b, 'spare10 help')
+  assert.equal(help, codexText.help(w.paths.bin, w.paths.home))
+  assert.match(help, /add export PATH="\$HOME\/data\/bin:\$PATH" to/)
+  assert.match(await typed(b, 'spare10 set'), /^options, from ~\/data\/config\.json:\n/)
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(join(w.data, 'config.json'), '[1, 2]')
+  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed('~/data/config.json', 'it is not a JSON object'))
+  for (const text of [report, help]) assert.ok(!text.includes(w.root), 'no text names the home folder')
 })
 
 test('commands: the report of 2.8 on a weekly-only plan hosted by the daemon', async (t) => {

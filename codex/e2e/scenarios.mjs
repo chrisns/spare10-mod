@@ -326,7 +326,7 @@ async function askAtPrompt(w, answer) {
   const bin = join(w.data, 'bin')
   assert.deepEqual(
     start[0].run.entries,
-    [{ kind: 'warning', text: withPrefix(`${codexText.noDaemon(true)}\n${codexText.cliHint(join(bin, 'spare10'), bin)}`) }],
+    [{ kind: 'warning', text: withPrefix(`${codexText.noDaemon(true)}\n${codexText.cliHint(join(bin, 'spare10'), bin, w.home)}`) }],
     'SessionStart shows CX6 and CX19',
   )
   assert.ok(s.resolved.includes(s.elicitations[0].id), 'Codex resolved the form')

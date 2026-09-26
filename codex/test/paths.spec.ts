@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, statSync, symlinkSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import {
@@ -17,6 +18,7 @@ import {
   underRealCodexHome,
   writeLauncher,
 } from '../src/paths.ts'
+import { codexText } from '../../hooks/core/codex.ts'
 import { tempDir } from './helpers/tmp.ts'
 
 // Paths, the host process and the launcher (Codex design 3.9), with the test guard of D10. No case here reads
@@ -28,7 +30,7 @@ const REAL = resolve(homedir(), '.codex')
 test('findPaths: CODEX_HOME from the env, and every path below it', (t) => {
   const home = tempDir(t)
   const self = join(home, 'repo', 'codex', 'dist', 'spare10.mjs')
-  const p = findPaths({ ...GUARD, CODEX_HOME: home }, self)
+  const p = findPaths({ ...GUARD, CODEX_HOME: home, HOME: join(home, 'me') }, self)
   const data = join(home, 'plugins', 'data', 'spare10-spare10')
   assert.deepEqual(p, {
     codexHome: home,
@@ -37,8 +39,12 @@ test('findPaths: CODEX_HOME from the env, and every path below it', (t) => {
     socket: join(home, 'app-server-control', 'app-server-control.sock'),
     launcher: join(data, 'bin', 'spare10'),
     bin: join(data, 'bin'),
+    home: join(home, 'me'),
   })
   assert.equal(DATA_NAME, 'spare10-spare10')
+  // The home folder of the texts: HOME, made absolute, else the home of the user.
+  assert.equal(findPaths({ ...GUARD, CODEX_HOME: home, HOME: `${join(home, 'me')}/` }, self).home, join(home, 'me'))
+  assert.equal(findPaths({ ...GUARD, CODEX_HOME: home }, self).home, resolve(homedir()))
 })
 
 test('findPaths: CODEX_HOME from the arg0 folder on PATH, three folders up, also when it is not first', (t) => {
@@ -162,6 +168,28 @@ test('launcher: single quotes around both paths, with each quote escaped', () =>
     launcherText('/opt/node 22/bin/node', "/Users/o'neil/.codex/plugins/cache/spare10/spare10/0.3.0"),
     "#!/bin/sh\nexec '/opt/node 22/bin/node' '/Users/o'\\''neil/.codex/plugins/cache/spare10/spare10/0.3.0/codex/dist/cli.mjs' \"$@\"\n",
   )
+})
+
+test('CX19: its ! command and its PATH line run in sh and zsh, under the home folder and with a space, a quote or a $ in the path', (t) => {
+  const shells = ['/bin/sh', '/bin/zsh'].filter((s) => existsSync(s))
+  for (const at of ['home', 'other'] as const) {
+    const root = tempDir(t)
+    const home = join(root, 'my home')
+    const dir = at === 'home' ? join(home, "it's $x", 'bin') : join(root, "a b'$c", 'bin')
+    mkdirSync(dir, { recursive: true })
+    const launcher = join(dir, 'spare10')
+    writeFileSync(launcher, '#!/bin/sh\necho "ran $1"\n', { mode: 0o755 })
+    const hint = codexText.cliHint(launcher, dir, home)
+    assert.ok(at === 'other' || !hint.includes(home), `${at}: the hint never names the home folder`)
+    const bang = /type !(.+) status in the prompt\./.exec(hint)?.[1] ?? ''
+    const line = /add (export PATH=".+:\$PATH") to/.exec(hint)?.[1] ?? ''
+    const env = { PATH: '/usr/bin:/bin', HOME: home }
+    for (const sh of shells) {
+      const args = sh.endsWith('zsh') ? ['-f', '-c'] : ['-c']
+      assert.equal(execFileSync(sh, [...args, `${bang} status`], { env, encoding: 'utf8' }), 'ran status\n', `${at} ${sh}: the ! command`)
+      assert.equal(execFileSync(sh, [...args, `${line}\nspare10 status`], { env, encoding: 'utf8' }), 'ran status\n', `${at} ${sh}: the PATH line`)
+    }
+  }
 })
 
 test('launcher: written with mode 0755 when its content differs, else left alone', (t) => {

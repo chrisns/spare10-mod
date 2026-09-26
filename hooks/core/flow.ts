@@ -41,6 +41,7 @@ import {
 } from './reading.ts'
 import type { Anchored, Basis, Kind, Memory, TestSpec } from './reading.ts'
 import {
+  HELD_WAITS,
   atText,
   clockText,
   consentWarning,
@@ -930,11 +931,14 @@ export function raiseAtFloor(q: Pick<QuestionCore, 'ends' | 'facts' | 'skip'>, s
   }
 }
 
-/** B23: the reply of resume from the reading alone: no reading, or below every reserve. Undefined: split next. */
-export function resumeReadReply(s: Pick<Sensed, 'kinds' | 'now' | 'tripped'>): string | undefined {
+/**
+ * B23: the reply of resume from the reading alone: no reading, or below every reserve. Undefined: split
+ * next. `absent` (Codex design 2.1, CX17): the kinds the host reports no window for. Claude passes none.
+ */
+export function resumeReadReply(s: Pick<Sensed, 'kinds' | 'now' | 'tripped'>, absent?: readonly Kind[]): string | undefined {
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
-  if (read.length === 0) return resumeReply('none')
-  if (!s.tripped) return resumeReply('below', factsFrom(read, s.now))
+  if (read.length === 0) return resumeReply('none', undefined, undefined, undefined, 'hold', absent)
+  if (!s.tripped) return resumeReply('below', factsFrom(read, s.now), undefined, undefined, 'hold', absent)
   return undefined
 }
 
@@ -1022,17 +1026,20 @@ export function stopAskingIdle(q: Pick<QuestionCore, 'skip' | 'facts' | 'loops' 
  * B24: stop with no open question. A reply when nothing can be stopped: no reading, below every reserve,
  * or every tripped kind open (B44: a stop never holds an open kind). Else `ks`, the kinds that gate after
  * the stop (the stop clears every consent, so each tripped kind that is not open), the facts of every
- * tripped kind, and `real` (TS1: each kind of `ks` whose real reading is in the reserve).
+ * tripped kind, and `real` (TS1: each kind of `ks` whose real reading is in the reserve). `absent` (Codex
+ * design 2.1, CX17): the kinds the host reports no window for, so a weekly-only plan names no 5-hour trip.
+ * Claude passes none.
  */
 export function stopCase(
   s: Pick<Sensed, 'kinds' | 'now' | 'tripped'>,
   cfg: Pick<Effective, 'reserve' | 'weeklyReserve'>,
+  absent?: readonly Kind[],
 ): { reply: string } | { ks: KindSense[]; facts: Facts[]; real: Holder[] } {
   const trip = tripOf(cfg.reserve)
   const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : undefined
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
-  if (read.length === 0) return { reply: stopReply('none', undefined, trip, undefined, weeklyTrip) }
-  if (!s.tripped) return { reply: stopReply('below', factsFrom(read, s.now), trip, undefined, weeklyTrip) }
+  if (read.length === 0) return { reply: stopReply('none', undefined, trip, undefined, weeklyTrip, undefined, absent) }
+  if (!s.tripped) return { reply: stopReply('below', factsFrom(read, s.now), trip, undefined, weeklyTrip, undefined, absent) }
   const trippedKinds = s.kinds.filter((k) => k.tripped)
   const ks = trippedKinds.filter((k) => !k.open)
   if (ks.length === 0) return { reply: stopReply('open', factsFrom(trippedKinds, s.now)) }
@@ -1043,10 +1050,15 @@ export function stopCase(
 export const stopKept = (st: StoppedRecord | undefined, ks: readonly KindSense[]): st is StoppedRecord =>
   st !== undefined && ks.every((k) => (st.kinds ?? ['five_hour']).includes(k.kind))
 
-/** B24: the reply of a stop over a stop that stays. R4: its end shows when spare10 ends it by itself. */
-export function stopKeptReply(st: StoppedRecord, facts: readonly Facts[], autoResume: boolean, now: number): string {
+/**
+ * B24: the reply of a stop over a stop that stays. R4: its end shows when spare10 ends it by itself.
+ * `heldInPlace` (Codex design 4.20): work of the session waits in place under the stop, and the stop
+ * leaves it there, so the reply says so, as the report does. Claude passes none.
+ */
+export function stopKeptReply(st: StoppedRecord, facts: readonly Facts[], autoResume: boolean, now: number, heldInPlace = false): string {
   const shows = st.kinds !== undefined && ((st.auto === true && autoResume) || st.skip === true)
-  return stopReply('stopped', facts, undefined, shows && st.kinds !== undefined ? { at: atText(st.windowEnd, st.kinds, undefined, now) } : undefined)
+  const reply = stopReply('stopped', facts, undefined, shows && st.kinds !== undefined ? { at: atText(st.windowEnd, st.kinds, undefined, now) } : undefined)
+  return heldInPlace ? `${reply} ${HELD_WAITS}` : reply
 }
 
 /** The stop that a stop command writes over `ks`. `work`: the work of a stop it took over (3.2). */
@@ -1217,6 +1229,8 @@ export function seenOf(i: {
   question: (QuestionCore & { silent: boolean }) | undefined
   told: Told
   sessionId: string
+  /** Codex design 4.15: the kinds the host reports. The phase then reads their bases, so a weekly-only plan is armed. Claude passes none. */
+  present?: readonly Kind[]
 }): Seen {
   const { cfg, tripped, split, stop, question } = i
   const prefix = `${i.sessionId}:`
@@ -1239,6 +1253,7 @@ export function seenOf(i: {
     asking: question !== undefined && !question.silent,
     told: tripped && toldKeys.size > 0,
     attended: i.attended,
+    ...(i.present === undefined ? {} : { bases: i.present.map((k) => i.bases[k].basis) }),
   })
   return {
     cfg,
@@ -1292,12 +1307,17 @@ export function untilOf(p: Seen): { until?: string; to?: string } {
   return {}
 }
 
+/** R13: the consent of a value that lies beyond the window of its kind, which spare10 ignores. Else undefined. */
+export function consentPastWindow(k: KindSense, raw: string | undefined, now: number): Consent | undefined {
+  const c = parseConsent(raw)
+  if (c === undefined) return undefined
+  const bound = k.basis.kind === 'none' ? now + windowMs(k.kind) + 60_000 : k.windowEnd + 60_000
+  return c.until > bound ? c : undefined
+}
+
 /** R13, B30: a consent value that lies beyond the window of its kind is ignored, and the report says so. */
 export function consentBeyond(k: KindSense, raw: string | undefined, now: number): string | undefined {
-  const c = parseConsent(raw)
-  if (raw === undefined || c === undefined) return undefined
-  const bound = k.basis.kind === 'none' ? now + windowMs(k.kind) + 60_000 : k.windowEnd + 60_000
-  return c.until > bound ? consentWarning(raw, k.kind) : undefined
+  return raw !== undefined && consentPastWindow(k, raw, now) !== undefined ? consentWarning(raw, k.kind) : undefined
 }
 
 /**

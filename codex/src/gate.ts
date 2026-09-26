@@ -1,6 +1,6 @@
 import { closeSync, openSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, offQuota, parseCommand, render, rootOnly, withPrefix } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, withPrefix } from '../../hooks/core/codex.ts'
 import type { Command, GateResult, GateSite, HostKind, LiveRead } from '../../hooks/core/codex.ts'
 import { childHeadless } from '../../hooks/core/config.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
@@ -8,7 +8,7 @@ import type { Answered } from '../../hooks/core/decide.ts'
 import { factsFrom, modeOf, namedKinds, notStartedFor, refusalText, tellText } from '../../hooks/core/flow.ts'
 import type { Acted, Sensed } from '../../hooks/core/flow.ts'
 import type { Facts } from '../../hooks/core/text.ts'
-import { HEADLESS_GENERIC, NOT_STARTED_GENERIC, STOP_GENERIC, notPerson, resetContext, resumeContext } from '../../hooks/core/text.ts'
+import { notPerson, resetContext, resumeContext } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
 import { nestedParent, noteOriginator } from './attend.ts'
 import type { Commands } from './commands.ts'
@@ -85,8 +85,6 @@ export type GateDeps = Pick<Deps, 'paths' | 'clock' | 'log' | 'owner' | 'pid'> &
   onSensed?: (s: CodexSensed) => void
 }
 
-const SITES: readonly GateSite[] = ['start', 'prompt', 'tool', 'step', 'compact', 'spawn', 'stop', 'interrupt']
-
 /** The Interrupt gate answers within 3 s, so it waits at most this long for the session lock (4.12). */
 export const INTERRUPT_LOCK_MS = 500
 
@@ -108,10 +106,10 @@ export function parseGateInput(args: unknown): GateInput | undefined {
   if (!isObject(args)) return undefined
   const site = args['site']
   const session = args['session']
-  if (typeof site !== 'string' || !SITES.includes(site as GateSite)) return undefined
+  if (!isGateSite(site)) return undefined
   if (typeof session !== 'string' || session === '') return undefined
   const out: GateInput = {
-    site: site as GateSite,
+    site,
     session,
     transcript: typeof args['transcript'] === 'string' && args['transcript'] !== '' ? args['transcript'] : null,
     model: text(args['model']) ?? '',
@@ -123,22 +121,6 @@ export function parseGateInput(args: unknown): GateInput | undefined {
   }
   if (typeof args['active'] === 'boolean') out.active = args['active']
   return out
-}
-
-/** The refusal of a call that holds when the gate fails (4.2): the site's refusal with the generic text. */
-export function genericRefusal(site: GateSite, attended: boolean): GateResult {
-  switch (site) {
-    case 'prompt':
-      return { kind: 'block', text: attended ? NOT_STARTED_GENERIC : HEADLESS_GENERIC }
-    case 'tool':
-    case 'step':
-      return { kind: 'deny', text: attended ? STOP_GENERIC : HEADLESS_GENERIC }
-    case 'stop':
-    case 'compact':
-      return { kind: 'end' }
-    default:
-      return { kind: 'pass' }
-  }
 }
 
 /** The verb of a command, as notPerson names it. */
@@ -248,7 +230,7 @@ export function createGate(d: GateDeps): Gate {
       if ((e as { code?: unknown }).code !== 'EEXIST') d.log.debug(codexDebug.writeFailed(stamp, errText(e)))
       return
     }
-    sx.store.locked((tx) => noticeIn(tx.state, codexText.cliHint(d.paths.launcher, d.paths.bin), now))
+    sx.store.locked((tx) => noticeIn(tx.state, codexText.cliHint(d.paths.launcher, d.paths.bin, d.paths.home), now))
   }
 
   /**

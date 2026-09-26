@@ -411,8 +411,8 @@ function badWarning(name, raw, used) {
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`;
 }
 var floorWarning = (kind, floor, reserve) => kind === "seven_day" ? `the weekly resume floor (${fmtPct(floor)}%) is not below the weekly reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the weekly reserve, or to 0.` : `the resume floor (${fmtPct(floor)}%) is not below the reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the reserve, or to 0.`;
-var consentWarning = (raw, kind = "five_hour") => kind === "seven_day" ? `SPARE10_WEEKLY_CONSENT="${raw}" names a time after this weekly window. spare10 ignores it.` : `SPARE10_CONSENT="${raw}" names a time after this 5-hour window. spare10 ignores it.`;
 var AGAIN = `Type a prompt to be asked again, or run ${HOST.command} resume.`;
+var HELD_WAITS = `Held work waits. Run ${HOST.anytime} resume to continue it now.`;
 var notice = {
   /** Floor 2.4: with an end point on some kind, one part per kind and {asks}. Else the 0.2 text. */
   continuing: (f, mode = "hold") => {
@@ -513,7 +513,7 @@ function quietOf(s) {
 }
 function phaseLine(s) {
   const at = s.at === void 0 ? void 0 : atText(s.at.ms, s.at.kinds, s.timeZone, s.now);
-  const again = s.heldInPlace === true ? `Held work waits. Run ${HOST.anytime} resume to continue it now.` : AGAIN;
+  const again = s.heldInPlace === true ? HELD_WAITS : AGAIN;
   const open = s.open === void 0 ? [] : listOf(s.open);
   const openRs = open.length === 0 ? "" : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`;
   const stopped = at === void 0 ? `you chose Stop here. ${again}` : s.skipStop === true ? s.work === true && s.autoStop === true ? `you chose Stop here. spare10 continues the work at ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}` : s.autoStop !== true ? `you chose Stop here. ${again}` : s.work === true ? `you chose Stop here. spare10 continues the work after ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}`;
@@ -1233,6 +1233,8 @@ function answerOf(result, failed) {
   if (action === "cancel") return "cancel";
   return "decline";
 }
+var GATE_SITES = ["start", "prompt", "tool", "step", "compact", "spawn", "stop", "interrupt"];
+var isGateSite = (v) => typeof v === "string" && GATE_SITES.includes(v);
 var EVENT = { prompt: "UserPromptSubmit", tool: "PreToolUse", step: "PostToolUse" };
 function render(site, r, systemMessage) {
   const out = (() => {
@@ -1253,6 +1255,20 @@ function render(site, r, systemMessage) {
   const withMessage = systemMessage === void 0 || systemMessage === "" ? out : { ...out ?? {}, systemMessage };
   return withMessage === void 0 ? "" : JSON.stringify(withMessage);
 }
+function genericRefusal(site, attended) {
+  switch (site) {
+    case "prompt":
+      return { kind: "block", text: attended ? NOT_STARTED_GENERIC : HEADLESS_GENERIC };
+    case "tool":
+    case "step":
+      return { kind: "deny", text: attended ? STOP_GENERIC : HEADLESS_GENERIC };
+    case "stop":
+    case "compact":
+      return { kind: "end" };
+    default:
+      return { kind: "pass" };
+  }
+}
 function refuseModeOf(i) {
   if (i.noDialog) return "hold";
   if (i.attended && i.hosted) return "interrupt";
@@ -1261,6 +1277,26 @@ function refuseModeOf(i) {
   return "deny";
 }
 var withPrefix = (text3) => text3.split("\n").map((l) => l === "" ? l : `spare10: ${l}`).join("\n");
+function afterHome(p, home) {
+  const h = (home ?? "").replace(/\/+$/, "");
+  if (!h.startsWith("/")) return void 0;
+  if (p === h) return "";
+  return p.startsWith(`${h}/`) ? p.slice(h.length) : void 0;
+}
+var inDoubleQuotes = (s) => s.replace(/[\\"$`]/g, "\\$&");
+function shownPath(p, home) {
+  const rest = afterHome(p, home);
+  return rest === void 0 ? p : `~${rest}`;
+}
+function shellPath(p, home) {
+  const rest = afterHome(p, home);
+  if (rest !== void 0) return `"$HOME${inDoubleQuotes(rest)}"`;
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(p) ? p : `'${p.replaceAll("'", "'\\''")}'`;
+}
+var pathLine = (dir, home) => {
+  const rest = afterHome(dir, home);
+  return `export PATH="${rest === void 0 ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`;
+};
 var byWindow = (f) => (Array.isArray(f) ? [...f] : [f]).sort((a, b) => Number(a.kind === "seven_day") - Number(b.kind === "seven_day"));
 var envList = (set2) => set2.map(([name, raw]) => `${name}=${JSON.stringify(raw)}`).join(", ");
 var HELP_WIDTH = 18;
@@ -1306,14 +1342,19 @@ var codexText = {
   hardStop: "Codex reports that your included usage is used up. spare10 asks nothing, and continues no work, until Codex allows usage again. Work on Luna Reserve goes through.",
   /** CX15 (P1, report only): a workspace limit. */
   workspaceLimit: (type) => `Codex reports a workspace limit (${type}). spare10 continues no work until Codex allows it.`,
+  /** CX48 (B30 on Codex, report only): the stored consent of a kind ends after its window. `untilMs`: its end. Codex keeps consent in the session state, never in SPARE10_CONSENT. */
+  consentBeyond: (kind, untilMs, now, timeZone) => {
+    const until = clockText(untilMs, "seven_day", timeZone, now);
+    return kind === "seven_day" ? `the weekly consent of this session lasts until ${until}, which is after this weekly window. spare10 ignores it.` : `the consent of this session lasts until ${until}, which is after this 5-hour window. spare10 ignores it.`;
+  },
   /** CX16 (report only): a watched kind at 100% or more, and credits are usable. */
   credits: (balance) => `past 100% used, Codex spends your credits. The balance is ${balance}.`,
   /** CX46: appended to the question. */
   creditsQuestion: (balance) => `Past 100% used, Codex spends your credits. The balance is ${balance}.`,
   /** CX18: a held prompt of a broker whose host is gone. */
   promptLost: "Codex stopped while spare10 held your prompt, so Codex dropped it. Send it again.",
-  /** CX19: once per data dir, how to run a command during a turn. */
-  cliHint: (launcher, dir) => `to run a spare10 command during a turn, type !${launcher} status in the prompt. For the short form !spare10 status, add export PATH="${dir}:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+  /** CX19: once per data dir, how to run a command during a turn. `home`: the home folder, which the text never names. */
+  cliHint: (launcher, dir, home) => `to run a spare10 command during a turn, type !${shellPath(launcher, home)} status in the prompt. For the short form !spare10 status, add ${pathLine(dir, home)} to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
   /** CX20, CX21, CX22: the report row `daemon`. */
   daemonRow: (hosted, auto) => hosted ? "yes. spare10 can end a turn and start one." : auto ? "no. After Stop here, spare10 holds the work in place." : "no. After Stop here, each running loop gets one more model request.",
   /** CX45: the CLI row `daemon` with no session. */
@@ -1344,8 +1385,8 @@ var codexText = {
     ...rows.map(([name, value, source]) => `  · ${name.padEnd(HELP_WIDTH)}${value} (${source})`),
     "Change one with spare10 set <option> <value>, or spare10 set <option> default."
   ].join("\n"),
-  /** CX34: `spare10 help`. `dir` is the folder of the launcher. */
-  help: (dir) => [
+  /** CX34: `spare10 help`. `dir` is the folder of the launcher. `home`: the home folder, which the text never names. */
+  help: (dir, home) => [
     "commands, typed as the whole prompt:",
     `${"spare10".padEnd(HELP_WIDTH)}show the status`,
     `${"spare10 resume".padEnd(HELP_WIDTH)}continue on the reserve`,
@@ -1353,7 +1394,7 @@ var codexText = {
     `${"spare10 simulate".padEnd(HELP_WIDTH)}set a test reading, such as spare10 simulate 92`,
     `${"spare10 set".padEnd(HELP_WIDTH)}show or change the options`,
     "During a turn, run them as !spare10 ... in the prompt. This needs the spare10 folder on your PATH:",
-    `add export PATH="${dir}:$PATH" to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
+    `add ${pathLine(dir, home)} to ~/.zshrc or ~/.bashrc, then start a new Codex session.`,
     "Codex gives the output of a ! command to the model."
   ].join("\n"),
   /** CX44: the CLI line from `!`. */
@@ -2709,6 +2750,12 @@ function raiseAtFloor(q, sNow) {
     q.facts = byKind([...q.facts.filter((f) => (f.kind ?? "five_hour") !== k.kind), ...factsFrom([k], sNow.now, q.skip)]);
   }
 }
+function resumeReadReply(s, absent2) {
+  const read = s.kinds.filter((k) => k.basis.kind !== "none");
+  if (read.length === 0) return resumeReply("none", void 0, void 0, void 0, "hold", absent2);
+  if (!s.tripped) return resumeReply("below", factsFrom(read, s.now), void 0, void 0, "hold", absent2);
+  return void 0;
+}
 function resumeCase(s, split, mode) {
   const gating = split.gating;
   if (gating.length === 0 && split.open.length > 0) return { reply: resumeReply("open", factsFrom(split.open, s.now)) };
@@ -2760,21 +2807,22 @@ function stopAskingIdle(q, auto, now) {
     auto && q !== void 0 && q.loops > 0 ? { at: atText(q.holdEnd, q.kinds, void 0, now), ...lead === void 0 ? {} : { lead } } : void 0
   );
 }
-function stopCase(s, cfg) {
+function stopCase(s, cfg, absent2) {
   const trip = tripOf(cfg.reserve);
   const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : void 0;
   const read = s.kinds.filter((k) => k.basis.kind !== "none");
-  if (read.length === 0) return { reply: stopReply("none", void 0, trip, void 0, weeklyTrip) };
-  if (!s.tripped) return { reply: stopReply("below", factsFrom(read, s.now), trip, void 0, weeklyTrip) };
+  if (read.length === 0) return { reply: stopReply("none", void 0, trip, void 0, weeklyTrip, void 0, absent2) };
+  if (!s.tripped) return { reply: stopReply("below", factsFrom(read, s.now), trip, void 0, weeklyTrip, void 0, absent2) };
   const trippedKinds = s.kinds.filter((k) => k.tripped);
   const ks = trippedKinds.filter((k) => !k.open);
   if (ks.length === 0) return { reply: stopReply("open", factsFrom(trippedKinds, s.now)) };
   return { ks, facts: factsFrom(trippedKinds, s.now), real: ks.filter((k) => k.realIn).map(realHolder) };
 }
 var stopKept = (st, ks) => st !== void 0 && ks.every((k) => (st.kinds ?? ["five_hour"]).includes(k.kind));
-function stopKeptReply(st, facts, autoResume, now) {
+function stopKeptReply(st, facts, autoResume, now, heldInPlace = false) {
   const shows = st.kinds !== void 0 && (st.auto === true && autoResume || st.skip === true);
-  return stopReply("stopped", facts, void 0, shows && st.kinds !== void 0 ? { at: atText(st.windowEnd, st.kinds, void 0, now) } : void 0);
+  const reply = stopReply("stopped", facts, void 0, shows && st.kinds !== void 0 ? { at: atText(st.windowEnd, st.kinds, void 0, now) } : void 0);
+  return heldInPlace ? `${reply} ${HELD_WAITS}` : reply;
 }
 function stopWriteOf(ks, auto, work) {
   const until = auto ? Math.max(...ks.map((k) => k.holdEnd)) : Math.max(...ks.map((k) => k.stopEnd));
@@ -2879,7 +2927,8 @@ function seenOf(i) {
     stopped: stop !== void 0,
     asking: question !== void 0 && !question.silent,
     told: tripped && toldKeys.size > 0,
-    attended: i.attended
+    attended: i.attended,
+    ...i.present === void 0 ? {} : { bases: i.present.map((k) => i.bases[k].basis) }
   });
   return {
     cfg,
@@ -2898,11 +2947,11 @@ function seenOf(i) {
     phase
   };
 }
-function consentBeyond(k, raw, now) {
+function consentPastWindow(k, raw, now) {
   const c = parseConsent(raw);
-  if (raw === void 0 || c === void 0) return void 0;
+  if (c === void 0) return void 0;
   const bound = k.basis.kind === "none" ? now + windowMs(k.kind) + 6e4 : k.windowEnd + 6e4;
-  return c.until > bound ? consentWarning(raw, k.kind) : void 0;
+  return c.until > bound ? c : void 0;
 }
 function statusInput(p, i) {
   const five = p.bases.five_hour;
@@ -3877,6 +3926,7 @@ function markOf(path) {
 }
 function createSettings(d) {
   const path = configPath(d.paths);
+  const shown = shownPath(path, d.paths.home);
   const base = envReadsOf(d.env);
   if (base.simulate !== void 0 && !ownsSimulate(d.hostKind)) {
     delete base.simulate;
@@ -3896,12 +3946,12 @@ function createSettings(d) {
     const env = base.headless === void 0 && child !== void 0 ? { ...base, headless: child } : { ...base };
     const read = readConfig(path);
     if ("raw" in read && isObject4(read.raw)) {
-      const { options, warnings } = configOptions(path, read.raw);
+      const { options, warnings } = configOptions(shown, read.raw);
       const eff2 = withEnv(fromOptions(options), env, { simulateKind });
       eff2.warnings = [...warnings, ...eff2.warnings];
       return eff2;
     }
-    const cx12 = "error" in read ? codexText.configUnread(path, read.error) : configOptions(path, read.raw).warnings[0];
+    const cx12 = "error" in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0];
     const eff = withEnv(DEFAULTS, env, { simulateKind });
     if (eff.from.lastMinutes !== "env") {
       eff.lastMinutes = 0;
@@ -4024,14 +4074,16 @@ function envWins(eff, name) {
 }
 function createCommands(d) {
   const attendedOf = (sx) => d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
-  const heldLive = (sx) => {
+  const heldThreads = (sx) => {
     try {
-      for (const tid of threadIds(sx.store)) {
-        if (readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true) return true;
-      }
+      return threadIds(sx.store).filter((tid) => readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true);
     } catch {
-      return false;
+      return [];
     }
+  };
+  const heldLive = (sx) => heldThreads(sx).length > 0;
+  const anyHosted = async (tids) => {
+    for (const tid of tids) if (await d.daemon.hosted(tid).catch(() => false)) return true;
     return false;
   };
   const absentOf = (s) => watchedKinds(s.cfg).filter((k) => !s.present.includes(k));
@@ -4054,7 +4106,7 @@ function createCommands(d) {
     const holders = guarded ? d.sense.holders(sx, s, split.gating) : [];
     const stop = guarded ? stoppedNow(sx, s.now, split.gating, holders) : void 0;
     const question = d.questions.openQuestion(sx);
-    const p0 = seenOf({
+    const p = seenOf({
       cfg: s.cfg,
       now: s.now,
       bases: s.bases,
@@ -4065,21 +4117,11 @@ function createCommands(d) {
       stop,
       question,
       told: toldOf(state),
-      sessionId: sx.sid
+      sessionId: sx.sid,
+      present: s.present
+      // 4.15: the phase reads the bases of the kinds the host reports, so a weekly-only plan is armed
     });
-    const phase = phaseOf({
-      enabled: s.cfg.enabled,
-      basis: p0.bases.five_hour,
-      tripped: p0.tripped,
-      consented: s.cfg.enabled && p0.tripped && p0.gating.length === 0 && p0.open.length === 0,
-      open: s.cfg.enabled && p0.tripped && p0.gating.length === 0 && p0.open.length > 0,
-      stopped: p0.stop !== void 0,
-      asking: question !== void 0 && !question.silent,
-      told: p0.tripped && p0.toldCount > 0,
-      attended: p0.attended,
-      bases: s.present.map((k) => p0.bases[k])
-    });
-    return { p: { ...p0, phase }, s, state };
+    return { p, s, state };
   };
   const statusText = async (sx0, o) => {
     await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS);
@@ -4090,8 +4132,8 @@ function createCommands(d) {
     const hosted = sx0 === void 0 ? false : await d.daemon.hosted(sx.sid).catch(() => false);
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)];
     for (const k of p.kinds) {
-      const w = consentBeyond(k, state[consentField(k.kind)], now);
-      if (w !== void 0) warnings.push(w);
+      const c = consentPastWindow(k, state[consentField(k.kind)], now);
+      if (c !== void 0) warnings.push(codexText.consentBeyond(k.kind, c.until, now));
     }
     const st = p.stop;
     const tickerStale = sx0 !== void 0 && st?.work === true && st.auto === true && cfg.autoResume && !hosted && !heldLive(sx);
@@ -4122,7 +4164,7 @@ function createCommands(d) {
         rows.push(["broker", codexText.brokerRow(th !== void 0 && th.brokerPid > 0 && d.pidAlive(th.brokerPid))]);
       }
     }
-    rows.push(["daemon", daemonRow], ["live read", liveRow], ["cli", d.paths.launcher]);
+    rows.push(["daemon", daemonRow], ["live read", liveRow], ["cli", shownPath(d.paths.launcher, d.paths.home)]);
     const absent2 = absentOf(s);
     return statusReport({
       ...input,
@@ -4138,7 +4180,6 @@ function createCommands(d) {
     if (!cfg.enabled || !attendedOf(sx)) return resumeReply("off");
     const sNow = await d.sense.sense(sx).catch(() => void 0);
     const now = sNow?.now ?? d.clock.now();
-    const absent2 = sNow === void 0 ? void 0 : absentOf(sNow);
     const overdue = await takeOverdueStop(sx, { cfg, now, attended: true, ...takeoverSense(sNow) });
     if (overdue !== void 0) return resumeReply("overdue", void 0, overdue.reset, overdue.open);
     const open = d.questions.openQuestion(sx);
@@ -4149,9 +4190,9 @@ function createCommands(d) {
     }
     const s = sNow ?? await d.sense.sense(sx);
     const mode = modeOf(cfg);
-    const read = s.kinds.filter((k) => k.basis.kind !== "none");
-    if (read.length === 0) return resumeReply("none", void 0, void 0, void 0, "hold", absent2);
-    if (!s.tripped) return resumeReply("below", factsFrom(read, s.now), void 0, void 0, "hold", absent2);
+    const absent2 = absentOf(s);
+    const early = resumeReadReply(s, absent2);
+    if (early !== void 0) return early;
     const c = resumeCase(s, d.sense.split(sx, s), mode);
     if ("reply" in c) return c.reply;
     const wasStopped = stoppedNow(sx, s.now, c.gating, commandHolders(s.kinds)) !== void 0;
@@ -4191,21 +4232,16 @@ function createCommands(d) {
       return stopAskingReply(late2) ?? stopAskingIdle(late2.q ?? open, cfg.autoResume, now);
     }
     const s = sNow ?? await d.sense.sense(sx);
-    const absent2 = absentOf(s);
-    const read = s.kinds.filter((k) => k.basis.kind !== "none");
-    if (read.length === 0 || !s.tripped) {
-      const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : void 0;
-      const facts = read.length === 0 ? void 0 : factsFrom(read, s.now);
-      return stopReply(read.length === 0 ? "none" : "below", facts, tripOf(cfg.reserve), void 0, weeklyTrip, void 0, absent2);
-    }
-    const c = stopCase(s, cfg);
+    const c = stopCase(s, cfg, absentOf(s));
     if ("reply" in c) return c.reply;
     const raw = sx.store.read().stopped;
     const st = stoppedNow(sx, s.now, c.ks, commandHolders(s.kinds));
     if (stopKept(st, c.ks)) {
+      const held = heldThreads(sx);
       const wasHeld = keepStop(sx, raw, c.real, s.now);
+      const refused = wasHeld && await anyHosted(held);
       if (wasHeld) await d.sweep.sweep(sx);
-      return heldLive(sx) ? stopReply("asking") : stopKeptReply(st, c.facts, cfg.autoResume, s.now);
+      return refused ? stopReply("asking") : stopKeptReply(st, c.facts, cfg.autoResume, s.now, held.length > 0);
     }
     const written = sx.store.locked((tx) => {
       clearConsent(tx.state);
@@ -4260,7 +4296,7 @@ function createCommands(d) {
         const source = envWins(eff, o.name) ? `${o.env} wins` : inFile ? "config.json" : "default";
         return [o.name, optionText(o.name, valueOf(eff, o.name)), source];
       });
-      return codexText.setList(path, rows);
+      return codexText.setList(shownPath(path, d.paths.home), rows);
     }
     const option = OPTIONS.find((o) => o.name === words[0]);
     if (option === void 0) return codexText.setUnknown(words[0] ?? "");
@@ -4276,9 +4312,9 @@ function createCommands(d) {
     try {
       old = setOption(d.paths, d.owner, name, value).old;
     } catch (e) {
-      return codexText.setFailed(path, errText3(e));
+      return codexText.setFailed(shownPath(path, d.paths.home), errText3(e));
     }
-    const wins = d.env[option.env] !== void 0 ? codexText.setEnvWins(option.env) : "";
+    const wins = envWins(eff, name) && d.env[option.env] !== void 0 ? codexText.setEnvWins(option.env) : "";
     if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}`;
     const was = old === void 0 ? void 0 : option.parse(old);
     const oldText = was === void 0 ? defaultText(name) : optionText(name, was);
@@ -4289,7 +4325,7 @@ function createCommands(d) {
       case "status":
         return statusText(sx, { cli: o.cli, full: true });
       case "help":
-        return codexText.help(d.paths.bin);
+        return codexText.help(d.paths.bin, d.paths.home);
       case "resume":
         return resumeCommand(sx);
       case "stop":
@@ -4401,6 +4437,7 @@ function guardTestPath(env, what, p) {
 var homeOfEnv = (raw, env, pluginRoot) => isAbsolute(raw) ? resolve(raw) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? resolve(raw);
 function findPaths(env, selfFile) {
   const pluginRoot = pluginRootOf(selfFile);
+  const home = resolve(set(env.HOME) ? env.HOME : homedir());
   let codexHome;
   let data;
   if (set(env.SPARE10_CODEX_DATA)) {
@@ -4408,7 +4445,7 @@ function findPaths(env, selfFile) {
     codexHome = homeOfEnv(env.CODEX_HOME, env, pluginRoot);
     data = resolve(env.SPARE10_CODEX_DATA);
   } else {
-    codexHome = set(env.CODEX_HOME) ? homeOfEnv(env.CODEX_HOME, env, pluginRoot) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? resolve(set(env.HOME) ? env.HOME : homedir(), ".codex");
+    codexHome = set(env.CODEX_HOME) ? homeOfEnv(env.CODEX_HOME, env, pluginRoot) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join7(home, ".codex");
     data = join7(codexHome, "plugins", "data", DATA_NAME);
   }
   const socket = join7(codexHome, "app-server-control", "app-server-control.sock");
@@ -4416,7 +4453,7 @@ function findPaths(env, selfFile) {
   guardTestPath(env, "data dir", data);
   guardTestPath(env, "daemon socket", socket);
   const bin = join7(data, "bin");
-  return { codexHome, data, pluginRoot, socket, launcher: join7(bin, "spare10"), bin };
+  return { codexHome, data, pluginRoot, socket, launcher: join7(bin, "spare10"), bin, home };
 }
 function parentArgs(ppid) {
   if (!Number.isSafeInteger(ppid) || ppid <= 0) return "";
@@ -4892,7 +4929,6 @@ function daemonLink(make, clock, o = {}) {
 // codex/src/gate.ts
 import { closeSync as closeSync2, openSync as openSync2 } from "node:fs";
 import { join as join8 } from "node:path";
-var SITES = ["start", "prompt", "tool", "step", "compact", "spawn", "stop", "interrupt"];
 var INTERRUPT_LOCK_MS = 500;
 var PROMPT_TURNS_KEPT = 8;
 var QUESTION_TOOL = "request_user_input";
@@ -4903,7 +4939,7 @@ function parseGateInput(args) {
   if (!isObject6(args)) return void 0;
   const site = args["site"];
   const session = args["session"];
-  if (typeof site !== "string" || !SITES.includes(site)) return void 0;
+  if (!isGateSite(site)) return void 0;
   if (typeof session !== "string" || session === "") return void 0;
   const out = {
     site,
@@ -4918,20 +4954,6 @@ function parseGateInput(args) {
   }
   if (typeof args["active"] === "boolean") out.active = args["active"];
   return out;
-}
-function genericRefusal(site, attended) {
-  switch (site) {
-    case "prompt":
-      return { kind: "block", text: attended ? NOT_STARTED_GENERIC : HEADLESS_GENERIC };
-    case "tool":
-    case "step":
-      return { kind: "deny", text: attended ? STOP_GENERIC : HEADLESS_GENERIC };
-    case "stop":
-    case "compact":
-      return { kind: "end" };
-    default:
-      return { kind: "pass" };
-  }
 }
 var verbOf2 = (c) => c.verb === "unknown" || c.verb === "unknownOption" ? "set" : c.verb;
 var PASS2 = { r: { kind: "pass" } };
@@ -5016,7 +5038,7 @@ function createGate(d) {
       if (e.code !== "EEXIST") d.log.debug(codexDebug.writeFailed(stamp, errText5(e)));
       return;
     }
-    sx.store.locked((tx) => noticeIn(tx.state, codexText.cliHint(d.paths.launcher, d.paths.bin), now));
+    sx.store.locked((tx) => noticeIn(tx.state, codexText.cliHint(d.paths.launcher, d.paths.bin, d.paths.home), now));
   };
   const firstRootGate = async (sx, input) => {
     started.add(sx.sid);
@@ -5406,18 +5428,7 @@ var isObject7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var isId = (v) => typeof v === "string" || typeof v === "number" && Number.isFinite(v);
 var keyOf = (id) => `${typeof id}:${String(id)}`;
 function heldRefusal(site, attended) {
-  switch (site) {
-    case "prompt":
-      return render("prompt", { kind: "block", text: attended ? NOT_STARTED_GENERIC : HEADLESS_GENERIC });
-    case "tool":
-    case "step":
-      return render(site, { kind: "deny", text: attended ? STOP_GENERIC : HEADLESS_GENERIC });
-    case "stop":
-    case "compact":
-      return render(site, { kind: "end" });
-    default:
-      return "";
-  }
+  return isGateSite(site) ? render(site, genericRefusal(site, attended)) : "";
 }
 function formCapable(caps) {
   if (!isObject7(caps)) return false;
@@ -6785,7 +6796,6 @@ function fsWake(clock, log, o = {}) {
 // codex/src/broker.ts
 var isObject10 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var errText10 = (e) => e instanceof Error ? e.message : String(e);
-var SITES2 = ["start", "prompt", "tool", "step", "compact", "spawn", "stop", "interrupt"];
 function createBroker(d) {
   const version = d.nodeVersion ?? process.versions.node;
   const major = Number(version.split(".")[0]);
@@ -6912,7 +6922,7 @@ function createBroker(d) {
     const p = boot();
     const args = isObject10(c.args) ? c.args : {};
     if (session === void 0 && typeof args["session"] === "string" && args["session"] !== "") session = args["session"];
-    const site = typeof args["site"] === "string" && SITES2.includes(args["site"]) ? args["site"] : "spawn";
+    const site = isGateSite(args["site"]) ? args["site"] : "spawn";
     const turn = typeof args["turn"] === "string" && args["turn"] !== "" ? args["turn"] : void 0;
     const ac = new AbortController();
     const call = {
