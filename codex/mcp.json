@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "spare10": {
+      "command": "/bin/sh",
+      "args": ["./codex/bin/broker.sh"],
+      "cwd": ".",
+      "required": true,
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 691200,
+      "env_vars": [
+        "CODEX_HOME", "CODEX_SESSION_ID",
+        "SPARE10", "SPARE10_RESERVE", "SPARE10_WEEKLY_RESERVE", "SPARE10_LAST_MINUTES", "SPARE10_WEEKLY_LAST_HOURS",
+        "SPARE10_RESUME_FLOOR", "SPARE10_WEEKLY_RESUME_FLOOR", "SPARE10_PAUSE_PROMPT", "SPARE10_AUTO_RESUME",
+        "SPARE10_HEADLESS", "SPARE10_SIMULATE", "SPARE10_CODEX_DEBUG", "SPARE10_CODEX_TEST"
+      ]
+    }
+  }
+}

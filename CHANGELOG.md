@@ -6,6 +6,23 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Codex.** spare10 now also runs in the OpenAI Codex CLI 0.157.0. It uses the same repo and marketplace. Install it with `codex plugin marketplace add chrisns/spare10-mod` and `codex plugin add spare10@spare10`. Then trust its hooks in the TUI. It has the same reserves, questions, floor, open reserve, stops and unattended policies.
+- **Codex question.** At the reserve, spare10 holds the work and asks one question in a Codex form. The choices are **Stop here** and **Resume**. A subagent's question shows on the main screen.
+- **Codex stop.** On the Codex daemon, **Stop here** ends the turns of the session with no model request. spare10 starts a new turn when the reserve opens or after the reset. Without the daemon, spare10 holds the work in place until the stop ends.
+- **Codex commands.** Type `spare10`, `spare10 resume`, `spare10 stop`, `spare10 simulate ...`, `spare10 set ...` or `spare10 help` as a prompt. spare10 answers with no model request. During a turn, run them as `!spare10 ...`. This needs the `PATH` line from the README.
+- **Codex options.** `spare10 set` changes the options in `config.json` in the Codex plugin data folder. The `SPARE10_*` variables still win.
+- **Codex warnings.** spare10 warns when a session runs without the Codex daemon or with approval `never`. It also warns about an unknown app on the daemon, and about opt-in scope on the daemon.
+- **Weekly-only plans.** On a plan with only a weekly window, spare10 watches that window. The report says that the plan has no 5-hour window.
+- **Luna Reserve.** spare10 lets work on Codex's Luna Reserve model through while Codex uses it.
+- **Reset credits.** After a Codex reset credit, an earlier **Resume** does not cover the new window.
+
+### Changed
+
+- **Texts.** The texts take their host words, such as `/spare10` and `Claude Code`, from one place. The Claude Code texts do not change.
+- **Marketplace.** The marketplace descriptions name both Claude Code and Codex.
+
 ## [0.3.0] - 2026-09-25
 
 ### Added

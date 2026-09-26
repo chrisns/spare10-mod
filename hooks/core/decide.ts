@@ -535,17 +535,21 @@ export type PhaseInput = {
   asking: boolean
   told: boolean
   attended: boolean
+  bases?: readonly Basis[] // Codex design 2.1: the bases of the kinds the host reports. Absent: [basis]
 }
 
 /**
  * The breaker phase, first match: off, asking, blind, waiting, armed, consented, open, stopped, told,
  * reserve, tripped. `basis` is the five_hour basis, `tripped` is any watched kind (3.5). A stop never
- * holds an open kind (B44), so open outranks stopped.
+ * holds an open kind (B44), so open outranks stopped. With `bases` (a host that can lack a window, such
+ * as a weekly-only plan), the reading rule reads every basis: blind when all are blind, waiting when
+ * all are none, else armed. Claude passes no `bases`, so its rule does not change.
  */
 export function phaseOf(i: PhaseInput): Phase {
   if (!i.enabled) return 'off'
   if (i.asking) return 'asking' // an open question outranks any reading (B6)
-  if (i.basis.kind === 'none' && !i.tripped) return i.basis.why === 'blind' ? 'blind' : 'waiting'
+  const bs = i.bases ?? [i.basis]
+  if (!i.tripped && bs.every((b) => b.kind === 'none')) return bs.length > 0 && bs.every((b) => b.kind === 'none' && b.why === 'blind') ? 'blind' : 'waiting'
   if (!i.tripped) return 'armed'
   if (i.consented) return 'consented'
   if (i.open === true) return 'open'

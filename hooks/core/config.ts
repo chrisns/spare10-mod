@@ -1,5 +1,5 @@
 import type { PluginOptions, Settings as HostSettings } from 'claude-code'
-import { parseSimulateEnv } from './reading.ts'
+import { KINDS, parseSimulateEnv } from './reading.ts'
 import type { Kind } from './reading.ts'
 import { badWarning, floorWarning, fmtPct } from './text.ts'
 
@@ -173,9 +173,12 @@ export function fromOptions(options: PluginOptions): Settings {
   }
 }
 
-/** The kinds spare10 acts on, five_hour first: the weekly window only while its reserve is above 0. */
-export const watchedKinds = (s: Pick<Settings, 'weeklyReserve'>): Kind[] =>
-  s.weeklyReserve > 0 ? ['five_hour', 'seven_day'] : ['five_hour']
+/**
+ * The kinds spare10 acts on, five_hour first: the weekly window only while its reserve is above 0.
+ * `present` (Codex design 4.15): the kinds the host reports a window for. Claude passes none: both.
+ */
+export const watchedKinds = (s: Pick<Settings, 'weeklyReserve'>, present: readonly Kind[] = KINDS): Kind[] =>
+  KINDS.filter((k) => present.includes(k) && (k === 'five_hour' || s.weeklyReserve > 0))
 
 export const reserveOf = (s: Pick<Settings, 'reserve' | 'weeklyReserve'>, kind: Kind): number =>
   kind === 'seven_day' ? s.weeklyReserve : s.reserve
@@ -184,8 +187,12 @@ export const reserveOf = (s: Pick<Settings, 'reserve' | 'weeklyReserve'>, kind: 
 export const childHeadless = (headless: Headless, envSet: boolean): 'stop' | undefined =>
   !envSet && (headless === 'off' || headless === 'wait') ? 'stop' : undefined
 
-/** The per-run env over the options. A bad value is ignored with a B27 warning, never fatal. */
-export function withEnv(base: Settings, env: EnvReads): Effective {
+/**
+ * The per-run env over the options. A bad value is ignored with a B27 warning, never fatal.
+ * `o.simulateKind` (Codex design 4.15): the kind of a SPARE10_SIMULATE with no kind word, the weekly
+ * window on a host that reports no 5-hour window. Claude passes none: the 5-hour window.
+ */
+export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind } = {}): Effective {
   const warnings: string[] = []
   const out: Effective = {
     ...base,
@@ -281,7 +288,7 @@ export function withEnv(base: Settings, env: EnvReads): Effective {
       out.from.enabled = 'SPARE10'
     }
   }
-  const spec = parseSimulateEnv(env.simulate)
+  const spec = parseSimulateEnv(env.simulate, o.simulateKind)
   if (spec !== undefined) {
     out.testPct = spec.pct
     if (spec.kind !== 'five_hour') out.testKind = spec.kind

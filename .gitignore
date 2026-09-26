@@ -1,3 +1,5 @@
 # Written by `claude -p "/plugin-types"`; regenerate, never commit.
 .claude/types/
 node_modules/
+codex/e2e/.work/
+node_modules/.spare10-lock-hash

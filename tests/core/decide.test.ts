@@ -884,3 +884,28 @@ test('stageKey and keyStage round-trip the floor stage', () => {
   expect(keyStage('S1:a1:floor')).toEqual({ base: 'S1:a1', atFloor: true })
   for (const key of ['S1:main', 'S2:a7']) for (const f of [true, false]) expect(keyStage(stageKey(key, f))).toEqual({ base: key, atFloor: f })
 })
+
+// Codex design 2.1, 4.15: `bases` reads the bases of the kinds the host reports. Without it, the old rule.
+test('phaseOf with bases: a weekly-only plan is armed, all none waits, all blind is blind, tripped wins', () => {
+  const blind: Basis = { kind: 'none', why: 'blind' }
+  const none: Basis = { kind: 'none', why: 'no-reading' }
+  const weekly: Basis = { kind: 'live', pct: 61, resetsAtMs: R }
+  const idle = { tripped: false, consented: false, stopped: false, asking: false, told: false }
+  // The 5-hour basis is none (no 5-hour window), the weekly one has a reading: armed, not waiting.
+  expect(phase({ ...idle, basis: none, bases: [weekly] })).toBe('armed')
+  expect(phase({ ...idle, basis: none, bases: [none, weekly] })).toBe('armed')
+  expect(phase({ ...idle, basis: blind, bases: [blind, weekly] })).toBe('armed')
+  expect(phase({ ...idle, basis: none, bases: [none, none] })).toBe('waiting')
+  expect(phase({ ...idle, basis: blind, bases: [blind, blind] })).toBe('blind')
+  expect(phase({ ...idle, basis: blind, bases: [blind] })).toBe('blind')
+  expect(phase({ ...idle, basis: blind, bases: [blind, none] })).toBe('waiting')
+  expect(phase({ ...idle, basis: none, bases: [] })).toBe('waiting')
+  // Tripped wins over any none basis.
+  expect(phase({ basis: none, bases: [none, blind], tripped: true })).toBe('tripped')
+  expect(phase({ basis: blind, bases: [blind], tripped: true })).toBe('tripped')
+  // Without bases: the old table.
+  expect(phase({ ...idle, basis: none })).toBe('waiting')
+  expect(phase({ ...idle, basis: blind })).toBe('blind')
+  expect(phase({ ...idle, basis: BELOW })).toBe('armed')
+  expect(phase({ ...idle, basis: none, bases: undefined })).toBe('waiting')
+})
