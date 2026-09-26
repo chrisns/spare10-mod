@@ -70,9 +70,11 @@ test('scripts: check.sh runs npm ci when tsc is missing or a dependency file cha
     ].join('\n'),
   )
   chmodSync(join(bin, 'npm'), 0o755)
-  const script = `set -eu\n${shellFunction('scripts/check.sh', 'deps')}\ndeps\necho after`
+  // The script goes in a file, so the shell reads it and no command line is built from its text.
+  const script = join(dir, 'deps.sh')
+  writeFileSync(script, `set -eu\n${shellFunction('scripts/check.sh', 'deps')}\ndeps\necho after\n`)
   const deps = (fail = false): Promise<Ran> =>
-    ran('/bin/sh', ['-c', script], { cwd: repo, env: { PATH: `${bin}:/usr/bin:/bin`, NPM_LOG: log, ...(fail ? { NPM_FAIL: '1' } : {}) } })
+    ran('/bin/sh', [script], { cwd: repo, env: { PATH: `${bin}:/usr/bin:/bin`, NPM_LOG: log, ...(fail ? { NPM_FAIL: '1' } : {}) } })
   const calls = (): number => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter((l) => l !== '').length : 0)
   const hashFile = join(repo, 'node_modules', '.spare10-lock-hash')
 
@@ -218,7 +220,9 @@ test('scripts: the cleanup of run.sh stops the broker of its work folder, which 
   const args = execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(mine.pid)], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).trim()
   assert.ok(args.endsWith(` ${join(work, 'plugin', 'codex', 'dist', 'spare10.mjs')}`), args)
 
-  const r = await ran('/bin/sh', ['-c', `${shellFunction('codex/e2e/run.sh', 'stop_under')}\nstop_under "$1"`, 'sh', work], { cwd: dir, env: { PATH: '/usr/bin:/bin' } })
+  const script = join(dir, 'stop.sh')
+  writeFileSync(script, `${shellFunction('codex/e2e/run.sh', 'stop_under')}\nstop_under "$1"\n`)
+  const r = await ran('/bin/sh', [script, work], { cwd: dir, env: { PATH: '/usr/bin:/bin' } })
   assert.equal(r.code, 0, r.stderr)
   assert.deepEqual(await mine.exited, { code: null, signal: 'SIGTERM' }, 'the broker under the work folder got SIGTERM')
   assert.ok(alive(theirs.pid), 'the broker of the other folder still runs')
