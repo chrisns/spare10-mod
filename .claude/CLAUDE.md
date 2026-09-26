@@ -22,7 +22,7 @@ It targets Claude Code 2.1.281 and later (tested on 2.1.282), where function hoo
 - Tests: `tests/core` (pure), `tests/kit` (through the engine), helpers in `tests/helpers` (never `*.test.ts`).
 - Check: `scripts/check.sh` (validate twice, `claude plugin test .`, tsc from package-lock.json, then the Codex checks: `scripts/versions.mjs`, `build-codex.mjs --check`, `tsc -p codex`, `node --test codex/test/*.spec.ts`). It must pass before a commit.
 - Once per Claude Code version, run `claude -p "/plugin-types"` first. It is local and makes no model request.
-- Static rules the engine enforces at load: README.md, "Rules the engine enforces". Obey them all.
+- Static rules the engine enforces at load: docs/develop.md, "Rules the engine enforces". Obey them all.
 - No `setTimeout`, `console` or `$.state`, in `hooks/` or `tests/`. Use `$.clock`, `$.ui.log` and `w.clock.settle()`.
 - Live checks for a person or a tmux-driven agent: `docs/live-checks.md`. Record each result there.
 - Write all prose (README, docs, CHANGELOG) in ASD-STE100: one idea per sentence, 20 words at most, active voice.

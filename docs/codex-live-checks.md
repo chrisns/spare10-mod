@@ -421,7 +421,7 @@ Their steps can change when those features ship.
 | LCX14 | managed daemon, optional | Hold at a tool call. Then run `codex app-server daemon restart`. | After the TUI connects again, the form shows again. |
 | LCX15 | daemon | Hold for 5 hours with no question, such as `SPARE10_HEADLESS=wait` on an unattended client, or a held stop. | After 5 hours the hook call is still open. It answers at the release. Codex shows no hook error. |
 | LCX16 | terminal | Run `codex exec` with each `SPARE10_HEADLESS` policy. | The texts and exit codes of the unattended policies are correct. |
-| LCX18 | embedded | Hold at a tool call. Then change `/permissions`. In a second run, change the folder. In a third run, update the plugin to a new version. | Record whether the held hook call stays, lets the work through, or refuses the work. Update the README when a case lets the work through. |
+| LCX18 | embedded | Hold at a tool call. Then change `/permissions`. In a second run, change the folder. In a third run, update the plugin to a new version. | Record whether the held hook call stays, lets the work through, or refuses the work. Update docs/codex.md when a case lets the work through. |
 | LCX19 | desktop app or IDE, optional | Start a thread from a host whose `PATH` has no `node`, with Node.js in `/opt/homebrew/bin` or in nvm. | `codex/bin/broker.sh` finds Node.js, and the thread starts. With no Node.js at all, the thread fails with the error line of `broker.sh`. |
 
 ## Clean up

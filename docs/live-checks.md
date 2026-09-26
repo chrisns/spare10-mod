@@ -1369,7 +1369,7 @@ This check settles it.
 
 - Record whether the lead gets a request.
 - Record whether the lead can answer it.
-- Until this check passes, the README says that pane teammates stop at the reserve.
+- Until this check passes, docs/how-it-works.md says that pane teammates stop at the reserve.
 
 **Settles:** what a pane teammate does at the reserve.
 

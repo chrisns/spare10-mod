@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs every static and kit check. Needs .claude/types/claude-code.d.ts (see README, Develop).
+# Runs every static and kit check. Needs .claude/types/claude-code.d.ts (see docs/develop.md).
 set -eu
 cd "$(dirname "$0")/.."
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
