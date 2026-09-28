@@ -10,6 +10,8 @@ export type Spare10Hold = {
   auto: () => Promise<boolean>
   /** The spans in force: noun calls route to the newest copy of spare10. */
   spans: () => Promise<{ lastMinutes: number; weeklyLastHours: number }>
+  /** The pause at the quota limit in force (limitPause): noun calls route to the newest copy of spare10. */
+  limit: () => Promise<boolean>
 }
 
 declare module 'claude-code' {

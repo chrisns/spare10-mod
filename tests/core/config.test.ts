@@ -10,6 +10,7 @@ import {
   parseBadge,
   parseHeadless,
   parseLastMinutes,
+  parseLimitPause,
   parsePausePrompt,
   parseReserve,
   parseResumeFloor,
@@ -82,6 +83,7 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyResumeFloor: 5,
     pausePrompt: null,
     autoResume: true,
+    limitPause: true,
     headless: 'off',
     scope: 'all',
     badge: true,
@@ -97,6 +99,7 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyResumeFloor: 5,
     pausePrompt: 'Wrap up.',
     autoResume: true,
+    limitPause: true,
     headless: 'stop',
     scope: 'opt-in',
     badge: false,
@@ -221,6 +224,7 @@ test('fromOptions fills weeklyReserve 10 and autoResume true', () => {
     'badge',
     'headless',
     'lastMinutes',
+    'limitPause',
     'pausePrompt',
     'reserve',
     'resumeFloor',
@@ -249,6 +253,7 @@ test('withEnv: SPARE10_WEEKLY_RESERVE and SPARE10_AUTO_RESUME override, bad valu
     weeklyResumeFloor: 'option',
     pausePrompt: 'option',
     autoResume: 'option',
+    limitPause: 'option',
     headless: 'option',
     enabled: 'scope',
   })
@@ -377,7 +382,7 @@ test('parseWeeklyLastHours takes 0 to 167 with one decimal', () => {
 
 test('fromOptions fills lastMinutes 20 and weeklyLastHours 8', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(11)
+  expect(Object.keys(d)).toHaveLength(12)
   expect(d.lastMinutes).toBe(20)
   expect(d.weeklyLastHours).toBe(8)
   expect(fromOptions({ lastMinutes: 0, weeklyLastHours: 0 })).toEqual({ ...DEFAULTS, lastMinutes: 0, weeklyLastHours: 0 })
@@ -456,7 +461,7 @@ test('parseResumeFloor takes 0 to 99 with one decimal', () => {
 
 test('fromOptions fills resumeFloor 5 and weeklyResumeFloor 5', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(11)
+  expect(Object.keys(d)).toHaveLength(12)
   expect(d.resumeFloor).toBe(5)
   expect(d.weeklyResumeFloor).toBe(5)
   expect(fromOptions({ resumeFloor: 0, weeklyResumeFloor: 2.54 })).toEqual({ ...DEFAULTS, resumeFloor: 0, weeklyResumeFloor: 2.5 })
@@ -561,4 +566,32 @@ test('withEnv with simulateKind: SPARE10_SIMULATE with no kind word takes that k
   expect(withEnv(DEFAULTS, { simulate: '92' }).testKind).toBeUndefined()
   expect(withEnv(DEFAULTS, { simulate: '92' }, {}).testKind).toBeUndefined()
   expect(withEnv(DEFAULTS, {}, { simulateKind: 'seven_day' }).testPct).toBeUndefined()
+})
+
+// ---- The pause at the quota limit (limit design 4) ----
+
+test('limitPause: on by default, only an explicit false turns the option off, and the report source is the option', () => {
+  expect(DEFAULTS.limitPause).toBe(true)
+  expect(parseLimitPause(undefined)).toBe(true)
+  expect(parseLimitPause('')).toBe(true) // a boolean with no default arrives as ""
+  expect(parseLimitPause('false')).toBe(true)
+  expect(parseLimitPause(false)).toBe(false)
+  expect(fromOptions({}).limitPause).toBe(true)
+  expect(fromOptions({ limitPause: false })).toEqual({ ...DEFAULTS, limitPause: false })
+  const plain = withEnv(DEFAULTS, {})
+  expect([plain.limitPause, plain.from.limitPause, plain.warnings]).toEqual([true, 'option', []])
+})
+
+test('withEnv: SPARE10_LIMIT_PAUSE on and off win over the option, and a bad value warns and keeps the option (B27)', () => {
+  const off = withEnv(DEFAULTS, { limitPause: ' Off ' })
+  expect([off.limitPause, off.from.limitPause, off.warnings]).toEqual([false, 'env', []])
+  const on = withEnv({ ...DEFAULTS, limitPause: false }, { limitPause: 'ON' })
+  expect([on.limitPause, on.from.limitPause]).toEqual([true, 'env'])
+  const bad = withEnv({ ...DEFAULTS, limitPause: false }, { limitPause: 'yes' })
+  expect([bad.limitPause, bad.from.limitPause]).toEqual([false, 'option'])
+  expect(bad.warnings).toEqual(['SPARE10_LIMIT_PAUSE="yes" is not on or off. spare10 uses off.'])
+  expect(withEnv(DEFAULTS, { limitPause: '1' }).warnings).toEqual(['SPARE10_LIMIT_PAUSE="1" is not on or off. spare10 uses on.'])
+  // A failed env read keeps the option: for the limit, the guarded side is the pause in force.
+  expect(unreadEnv({ ...DEFAULTS, limitPause: false }).limitPause).toBe(false)
+  expect(unreadEnv(DEFAULTS).limitPause).toBe(true)
 })

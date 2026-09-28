@@ -20,6 +20,7 @@ import {
   isCodexBucket,
   isObservation,
   kindOfMinutes,
+  limitAnswerOf,
   liveOf,
   nearTrip,
   nextPresence,
@@ -597,7 +598,7 @@ test('parseAutoResumeOption takes a boolean, on or off', () => {
   assert.equal(parseAutoResumeOption(null), undefined)
 })
 
-test('OPTIONS names the ten options of 5.1 with their variables and ranges', () => {
+test('OPTIONS names the eleven options of 5.1 with their variables and ranges', () => {
   assert.deepEqual(
     OPTIONS.map((o) => [o.name, o.env, o.range]),
     [
@@ -609,6 +610,7 @@ test('OPTIONS names the ten options of 5.1 with their variables and ranges', () 
       ['weeklyResumeFloor', 'SPARE10_WEEKLY_RESUME_FLOOR', '0 to 99'],
       ['pausePrompt', 'SPARE10_PAUSE_PROMPT', 'any text'],
       ['autoResume', 'SPARE10_AUTO_RESUME', 'on or off'],
+      ['limitPause', 'SPARE10_LIMIT_PAUSE', 'on or off'],
       ['headless', 'SPARE10_HEADLESS', 'off, prompt, stop or wait'],
       ['scope', 'SPARE10', 'all or opt-in'],
     ],
@@ -620,7 +622,7 @@ test('OPTIONS names the ten options of 5.1 with their variables and ranges', () 
 const PATH = '/h/.codex/plugins/data/spare10-spare10/config.json'
 
 test('configOptions: good values pass to fromOptions', () => {
-  const raw = { reserve: 15, weeklyReserve: 5, lastMinutes: 30, weeklyLastHours: 0, resumeFloor: 3, weeklyResumeFloor: 2.5, pausePrompt: 'Commit, then stop.', autoResume: false, headless: 'wait', scope: 'opt-in' }
+  const raw = { reserve: 15, weeklyReserve: 5, lastMinutes: 30, weeklyLastHours: 0, resumeFloor: 3, weeklyResumeFloor: 2.5, pausePrompt: 'Commit, then stop.', autoResume: false, limitPause: false, headless: 'wait', scope: 'opt-in' }
   const { options, warnings } = configOptions(PATH, raw)
   assert.deepEqual(warnings, [])
   assert.deepEqual(options, raw)
@@ -633,6 +635,7 @@ test('configOptions: good values pass to fromOptions', () => {
     weeklyResumeFloor: 2.5,
     pausePrompt: 'Commit, then stop.',
     autoResume: false,
+    limitPause: false,
     headless: 'wait',
     scope: 'opt-in',
     badge: true,
@@ -716,6 +719,8 @@ test('optionText shows a value as the texts do', () => {
   assert.equal(optionText('weeklyResumeFloor', 2.5), '2.5')
   assert.equal(optionText('autoResume', false), 'off')
   assert.equal(optionText('autoResume', true), 'on')
+  assert.equal(optionText('limitPause', false), 'off')
+  assert.equal(optionText('limitPause', true), 'on')
   assert.equal(optionText('pausePrompt', null), 'an empty text')
   assert.equal(optionText('pausePrompt', 'Commit, then stop.'), '"Commit, then stop."')
   assert.equal(optionText('headless', 'wait'), 'wait')
@@ -852,6 +857,41 @@ test('answerOf maps each row of 2.2', () => {
   assert.equal(answerOf(undefined, true), 'decline') // no elicitation capability
   assert.equal(answerOf({ action: 'later' }, false), 'decline')
   assert.equal(answerOf('accept', false), 'decline')
+})
+
+test('elicitParams of the limit question: Continue at the reset first and the default, and never the credits line', () => {
+  const msg = 'The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold.'
+  const LIMIT_SCHEMA = {
+    type: 'object',
+    required: ['choice'],
+    properties: {
+      choice: {
+        type: 'string',
+        title: 'spare10',
+        oneOf: [
+          { const: 'continue', title: 'Continue at the reset' },
+          { const: 'stop', title: 'Stop here' },
+        ],
+        default: 'continue',
+      },
+    },
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(elicitParams(msg, undefined, true))), { message: msg, requestedSchema: LIMIT_SCHEMA })
+  assert.deepEqual(JSON.parse(JSON.stringify(elicitParams(msg, '497', true))), { message: msg, requestedSchema: LIMIT_SCHEMA })
+})
+
+test('limitAnswerOf: only an accepted stop stops, cancel is for the caller, and everything else continues at the reset', () => {
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'stop' } }, false), 'stop')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'continue' } }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'Stop here' } }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'resume' } }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept' }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'cancel' }, false), 'cancel')
+  assert.equal(limitAnswerOf({ action: 'decline' }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'stop' } }, true), 'continue') // a JSON-RPC error
+  assert.equal(limitAnswerOf(undefined, true), 'continue')
+  assert.equal(limitAnswerOf({ action: 'later' }, false), 'continue')
+  assert.equal(limitAnswerOf('accept', false), 'continue')
 })
 
 // ---- The gate answer (3.3, 4.4) ----

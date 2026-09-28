@@ -89,6 +89,8 @@ import type {
 // `newerCopy` (prepend) answers $.spare10.spans() with the spans in w.env NEWER_COPY_SPANS: it acts out
 // a newer copy of spare10 with other options (B47). The engine forbids one engine.create step to replace
 // a noun that another step added, so it hooks the noun's event, as the world hooks spare10.park.
+// `newerLimit` (prepend) does the same for $.spare10.limit() with NEWER_COPY_LIMIT (`on` or `off`).
+// `noDialog` (prepend) refuses every AskUserQuestion at once, so no spare10 dialog can show.
 //
 // Timing idiom: start a gated call without awaiting it, then `await w.clock.settle()`, then answer,
 // release, cap or advance. Lessons from the kit:
@@ -666,6 +668,31 @@ export const newerCopy: Plugin = {
       const [m, h] = raw.split(' ').map(Number)
       return { value: { lastMinutes: m ?? 0, weeklyLastHours: h ?? 0 } }
     })
+  },
+}
+
+/**
+ * A prepend plugin that acts out a newer copy of spare10 with another limitPause: while the world env has
+ * NEWER_COPY_LIMIT (`on` or `off`), it answers $.spare10.limit() with it. Without it, spare10 answers. As
+ * newerCopy, the test steers it through the env.
+ */
+export const newerLimit: Plugin = {
+  name: 'newer-limit',
+  tier: 'prepend',
+  register: (on) => {
+    on('spare10.limit', async ($, e, next) => {
+      const raw = await $.env.get('NEWER_COPY_LIMIT')
+      return raw === undefined ? next(e) : { value: raw === 'on' }
+    })
+  },
+}
+
+/** A prepend plugin that refuses every AskUserQuestion at once, as a permission rule that allows no dialog does. */
+export const noDialog: Plugin = {
+  name: 'no-dialog',
+  tier: 'prepend',
+  register: (on) => {
+    on('tool.call', { tool: /^AskUserQuestion$/ }, () => ({ deny: 'AskUserQuestion is not allowed here' }))
   },
 }
 

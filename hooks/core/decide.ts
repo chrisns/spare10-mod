@@ -29,6 +29,7 @@ export type Snapshot = {
   stopped: boolean
   mainTold: boolean
   seedOnly?: boolean // every gating kind rests on a seed (row 6a)
+  limit?: boolean // a gating kind is at the quota limit (row 7b)
 }
 // consented (row 3): tripped, and no kind gates. A kind gates when it is tripped, not consented and
 // not open (B41), so a kind in its skip window passes here too.
@@ -59,6 +60,11 @@ export function decide(s: Snapshot): Verdict {
     if (s.site === 'step') return { kind: 'refuse', text: 'paused' }
     return s.person ? { kind: 'hold' } : THROUGH
   }
+  if (s.limit === true) {
+    // row 7b: at the quota limit every loop holds, in either mode. A stop still wins (row 7).
+    if (s.site === 'prompt') return s.person ? { kind: 'hold' } : THROUGH
+    return { kind: 'hold' }
+  }
   if (s.mode === 'tell') {
     // row 8
     if (s.site === 'tool') return { kind: 'tell' }
@@ -71,6 +77,9 @@ export function decide(s: Snapshot): Verdict {
 
 /** Only the exact yes label resumes. Everything else is Stop here. */
 export const askVerdict = (answer: string, yes: string): Outcome => (answer === yes ? 'resume' : 'stop')
+
+/** The limit question: only the exact Stop here label stops. Every other answer continues at the reset. */
+export const limitVerdict = (answer: string, stop: string): 'stop' | 'continue' => (answer === stop ? 'stop' : 'continue')
 
 /** What a .catch does: let a failure after next stand, refuse while holding, pass while deciding. */
 export function afterFailure(called: boolean, holding: boolean): 'replay' | 'refuse' | 'pass' {
@@ -183,8 +192,11 @@ export function bury(tombs: readonly Tomb[] | undefined, t: Tomb, now: number): 
  */
 export const unbury = (tombs: readonly Tomb[] | undefined, c: Consent): Tomb[] => (tombs ?? []).filter((t) => !buried([t], c))
 
-/** B50: a kind as the gate sees it now. `end`: its consent bound, the identity of its window. None: no reset time is known. */
-export type Viewed = { kind: Kind; pct: number; test: boolean; end?: number }
+/**
+ * B50: a kind as the gate sees it now. `end`: its consent bound, the identity of its window. None: no reset
+ * time is known. `limit`: the kind is at the quota limit, so no Resume answers it.
+ */
+export type Viewed = { kind: Kind; pct: number; test: boolean; end?: number; limit?: boolean }
 
 /** B50: what a settled Resume answered for one kind: its basis, its end point, and the consent bound of the question. */
 export type Answered = { kind: Kind; test: boolean; to?: number; end?: number }
@@ -200,10 +212,11 @@ const answerWindow = (a: Answered, k: Viewed, jitter: number): boolean =>
 /**
  * B50: a Resume answers a kind on the same basis and in the same window (`answerWindow`) while its reading
  * is below the Resume's end point for it. A window that reset after the question asks again, also past
- * its floor. An unknown end (no reset time, or an older answer) matches, as in TS1.
+ * its floor. An unknown end (no reset time, or an older answer) matches, as in TS1. A Resume never answers
+ * a kind at the quota limit: the limit question asks it.
  */
 export const answers = (named: readonly Answered[], k: Viewed, jitter = 0): boolean =>
-  named.some((a) => a.kind === k.kind && a.test === k.test && answerWindow(a, k, jitter) && (a.to === undefined || k.pct < a.to))
+  k.limit !== true && named.some((a) => a.kind === k.kind && a.test === k.test && answerWindow(a, k, jitter) && (a.to === undefined || k.pct < a.to))
 
 /**
  * B50: joinable with the floor and the basis. A loop joins an open question, or one settled as Stop
@@ -548,7 +561,7 @@ export function joinable(outcome: 'resume' | 'stop' | 'again' | undefined, named
 /** Attended: every refused main step ends its turn. Unattended: only a repeat in the same turn. */
 export const shouldAbortTurn = (attended: boolean, refusedBefore: boolean): boolean => attended || refusedBefore
 
-export type Phase = 'off' | 'blind' | 'waiting' | 'armed' | 'consented' | 'open' | 'stopped' | 'asking' | 'told' | 'reserve' | 'tripped'
+export type Phase = 'off' | 'blind' | 'waiting' | 'armed' | 'limit' | 'consented' | 'open' | 'stopped' | 'asking' | 'told' | 'reserve' | 'tripped'
 
 export type PhaseInput = {
   enabled: boolean
@@ -561,11 +574,12 @@ export type PhaseInput = {
   told: boolean
   attended: boolean
   bases?: readonly Basis[] // Codex design 2.1: the bases of the kinds the host reports. Absent: [basis]
+  limit?: boolean // a kind that gates is at the quota limit
 }
 
 /**
- * The breaker phase, first match: off, asking, blind, waiting, armed, consented, open, stopped, told,
- * reserve, tripped. `basis` is the five_hour basis, `tripped` is any watched kind (3.5). A stop never
+ * The breaker phase, first match: off, asking, blind, waiting, armed, limit, consented, open, stopped,
+ * told, reserve, tripped. The limit phase: attended, a kind at the quota limit gates, and no stop applies. `basis` is the five_hour basis, `tripped` is any watched kind (3.5). A stop never
  * holds an open kind (B44), so open outranks stopped. With `bases` (a host that can lack a window, such
  * as a weekly-only plan), the reading rule reads every basis: blind when all are blind, waiting when
  * all are none, else armed. Claude passes no `bases`, so its rule does not change.
@@ -576,6 +590,7 @@ export function phaseOf(i: PhaseInput): Phase {
   const bs = i.bases ?? [i.basis]
   if (!i.tripped && bs.every((b) => b.kind === 'none')) return bs.length > 0 && bs.every((b) => b.kind === 'none' && b.why === 'blind') ? 'blind' : 'waiting'
   if (!i.tripped) return 'armed'
+  if (i.limit === true && i.attended && !i.stopped) return 'limit'
   if (i.consented) return 'consented'
   if (i.open === true) return 'open'
   if (i.stopped && i.attended) return 'stopped'

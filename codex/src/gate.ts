@@ -549,9 +549,11 @@ export function createGate(d: GateDeps): Gate {
       const s = await d.sense.sense(sx)
       noteSensed(sx, s)
       if (!s.tripped) return { kind: 'pass' }
-      const v = (await d.sense.act(sx, s, { site: 'step' })).verdict
+      const a = await d.sense.act(sx, s, { site: 'step' })
+      const v = a.verdict
       if (v.kind === 'refuse') return { kind: 'end', text: codexText.turnEnds }
-      if (v.kind === 'hold') return s.attended ? { kind: 'end', text: codexText.turnEndsHold } : { kind: 'end' }
+      // CX55 at the quota limit, else CX41.
+      if (v.kind === 'hold') return s.attended ? { kind: 'end', text: a.gating.some((k) => k.limit) ? codexText.turnEndsLimit : codexText.turnEndsHold } : { kind: 'end' }
       return { kind: 'pass' }
     } catch (e) {
       d.log.debug(codexDebug.readFailed('the quota at the end of the turn', errText(e)))

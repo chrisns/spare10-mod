@@ -113,3 +113,11 @@ test('consented shows resumed until the end point, and the 0.2 row without one',
   // Only the consented row names it.
   expect(view('armed', { to: '95' }).text).toBe('● spare10')
 })
+
+test('the limit row: the reset at which held work continues, the warning colour, no pulse, and the test label', () => {
+  expect(view('limit', { until: '15:00' })).toEqual({ text: '‖ spare10: at the limit until 15:00', color: 'warning', pulse: false })
+  expect(view('limit', { until: '15:00', blink: false })).toEqual({ text: '‖ spare10: at the limit until 15:00', color: 'warning', pulse: false })
+  expect(view('limit', { until: 'Mon 09:00', test: true }).text).toBe('‖ spare10 (test): at the limit until Mon 09:00')
+  expect(view('limit', { reserve: 40 }).text).toBe('‖ spare10 (40%): at the limit')
+  expect(view('limit').text).not.toBe(view('told').text) // its own glyph, not the told mark
+})

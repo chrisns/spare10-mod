@@ -223,7 +223,8 @@ export function createSense(d: SenseDeps): SenseApi {
     }
     const present = KINDS.filter((k) => view.present.includes(k) || inForce(k))
     const spans = spansOf(cfg, bases, view.creditsUsable)
-    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present))
+    // A23: credits that pay past 100% make no kind a limit kind.
+    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable })
     const tripped = kinds.some((k) => k.tripped)
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
     return {

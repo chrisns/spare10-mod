@@ -13,12 +13,12 @@ import {
 } from './config.ts'
 import { BLIND_AFTER, KINDS, RESET_JITTER_MS, parseSimulate, windowMs } from './reading.ts'
 import type { Anchored, Kind } from './reading.ts'
-import { HEADER, HEADLESS_GENERIC, HELD_WAITS, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilPhrase, untilText, yourReserves } from './text.ts'
+import { HEADER, HEADLESS_GENERIC, HELD_WAITS, LIMIT_OPTIONS, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilPhrase, untilText, yourReserves } from './text.ts'
 import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX54, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX55, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -477,6 +477,7 @@ export type OptionName =
   | 'weeklyResumeFloor'
   | 'pausePrompt'
   | 'autoResume'
+  | 'limitPause'
   | 'headless'
   | 'scope'
 
@@ -490,7 +491,7 @@ export function parseAutoResumeOption(raw: unknown): boolean | undefined {
 /** 5.1: any text. A blank text is no pause prompt (null). A value that is not text is bad. */
 const parsePauseOption = (raw: unknown): string | null | undefined => (typeof raw === 'string' ? parsePausePrompt(raw) : undefined)
 
-/** The ten options of config.json (5.1): the variable that wins over each, its range text and its file parser. */
+/** The eleven options of config.json (5.1): the variable that wins over each, its range text and its file parser. */
 export const OPTIONS: ReadonlyArray<{
   name: OptionName
   env: string
@@ -505,6 +506,7 @@ export const OPTIONS: ReadonlyArray<{
   { name: 'weeklyResumeFloor', env: 'SPARE10_WEEKLY_RESUME_FLOOR', range: '0 to 99', parse: parseResumeFloor },
   { name: 'pausePrompt', env: 'SPARE10_PAUSE_PROMPT', range: 'any text', parse: parsePauseOption },
   { name: 'autoResume', env: 'SPARE10_AUTO_RESUME', range: 'on or off', parse: parseAutoResumeOption },
+  { name: 'limitPause', env: 'SPARE10_LIMIT_PAUSE', range: 'on or off', parse: parseAutoResumeOption },
   { name: 'headless', env: 'SPARE10_HEADLESS', range: 'off, prompt, stop or wait', parse: parseHeadless },
   { name: 'scope', env: 'SPARE10', range: 'all or opt-in', parse: parseScope },
 ]
@@ -514,7 +516,7 @@ export const optionOf = (name: string): (typeof OPTIONS)[number] | undefined => 
 
 /** An option value as the texts show it: 15, on, wait, an empty text, or a quoted pause prompt. */
 export function optionText(name: OptionName, value: string | number | boolean | null | undefined): string {
-  if (name === 'autoResume') return value === false ? 'off' : 'on'
+  if (name === 'autoResume' || name === 'limitPause') return value === false ? 'off' : 'on'
   if (name === 'pausePrompt') return typeof value === 'string' && value.trim() !== '' ? JSON.stringify(value) : 'an empty text'
   if (typeof value === 'number') return fmtPct(value)
   return String(value ?? '')
@@ -602,23 +604,34 @@ export const rootOnly = (c: Command): boolean =>
 
 // ---- The question (2.2) ----
 
-/** The elicitation form of 2.2: one enum field, Stop here first and the default. CX46 names the credit balance. */
-export function elicitParams(message: string, credits?: string): { message: string; requestedSchema: object } {
+/**
+ * The elicitation form of 2.2: one enum field, Stop here first and the default. CX46 names the credit
+ * balance. `limit`: the limit question, with Continue at the reset first and the default, and no credits
+ * line (no kind is at the limit while credits pay).
+ */
+export function elicitParams(message: string, credits?: string, limit = false): { message: string; requestedSchema: object } {
+  const choice = limit
+    ? {
+        oneOf: [
+          { const: 'continue', title: LIMIT_OPTIONS[0] },
+          { const: 'stop', title: LIMIT_OPTIONS[1] },
+        ],
+        default: 'continue',
+      }
+    : {
+        oneOf: [
+          { const: 'stop', title: QUESTION_OPTIONS[0] },
+          { const: 'resume', title: QUESTION_OPTIONS[1] },
+        ],
+        default: 'stop',
+      }
   return {
-    message: credits === undefined ? message : `${message} ${codexText.creditsQuestion(credits)}`,
+    message: credits === undefined || limit ? message : `${message} ${codexText.creditsQuestion(credits)}`,
     requestedSchema: {
       type: 'object',
       required: ['choice'],
       properties: {
-        choice: {
-          type: 'string',
-          title: HEADER,
-          oneOf: [
-            { const: 'stop', title: QUESTION_OPTIONS[0] },
-            { const: 'resume', title: QUESTION_OPTIONS[1] },
-          ],
-          default: 'stop',
-        },
+        choice: { type: 'string', title: HEADER, ...choice },
       },
     },
   }
@@ -637,6 +650,19 @@ export function answerOf(result: unknown, failed: boolean): Answer {
   if (action === 'accept') return isObject(result['content']) && result['content']['choice'] === 'resume' ? 'resume' : 'stop'
   if (action === 'cancel') return 'cancel'
   return 'decline'
+}
+
+/**
+ * The limit form: `accept` with `stop` is Stop here, and any other accept is Continue at the reset.
+ * `cancel` is for the caller to read (Esc, or the step went away). A decline, an error (`failed`) or a
+ * reply of any other shape: no question could show, so the work continues at the reset.
+ */
+export function limitAnswerOf(result: unknown, failed: boolean): 'continue' | 'stop' | 'cancel' {
+  if (failed || !isObject(result)) return 'continue'
+  const action = result['action']
+  if (action === 'accept') return isObject(result['content']) && result['content']['choice'] === 'stop' ? 'stop' : 'continue'
+  if (action === 'cancel') return 'cancel'
+  return 'continue'
 }
 
 // ---- The gate answer (3.3, 4.4) ----
@@ -757,7 +783,7 @@ const pathLine = (dir: string, home: string | undefined): string => {
   return `export PATH="${rest === undefined ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`
 }
 
-// ---- Texts (CX1 to CX54) and debug lines ----
+// ---- Texts (CX1 to CX55) and debug lines ----
 
 /** CX5 {Rs} and {quiet}: five_hour first, as the core texts read a list of Facts. */
 const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
@@ -772,7 +798,7 @@ const CONFIG_FIX = 'Correct the file, or remove it to use the defaults.'
 
 /**
  * The Codex-only texts. Transcript lines, warnings and command replies have no prefix: the broker adds
- * it (withPrefix). CX3, CX4, CX5, CX35, CX36, CX39, CX41 and CX44 keep their own `spare10: `. CX1 and
+ * it (withPrefix). CX3, CX4, CX5, CX35, CX36, CX39, CX41, CX44 and CX55 keep their own `spare10: `. CX1 and
  * CX2 are the static hook status messages of codex/hooks.json.
  */
 export const codexText = {
@@ -784,6 +810,8 @@ export const codexText = {
   turnEnds: 'spare10: the turn ends here, because work stopped at the quota reserve.',
   /** CX41: the stopReason of a Stop gate at a hold verdict. */
   turnEndsHold: 'spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.',
+  /** CX55: the stopReason of a Stop gate at a hold verdict at the quota limit. */
+  turnEndsLimit: 'spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.',
   /** CX4: the context of a steered command that spare10 lets through. */
   steerNote: 'spare10: the last user line was a command for the spare10 plugin, and spare10 handled it. Ignore that line.',
   /** CX39: before B34, B9 or B35 when spare10 interrupted a turn of the stop. */
@@ -824,8 +852,8 @@ export const codexText = {
   /** CX43: an unknown app started this session on the daemon. */
   originator: (name: string): string =>
     `this session was started by ${name}, not by the Codex TUI. spare10 treats it as attended. If ${name} cannot show the spare10 question, spare10 holds the work at the reserve.`,
-  /** CX14 (P1, report only): a hard stop. */
-  hardStop: 'Codex reports that your included usage is used up. spare10 asks nothing, and continues no work, until Codex allows usage again. Work on Luna Reserve goes through.',
+  /** CX14 (report only): a watched kind is past 100% used, no credits pay, and limitPause is off. */
+  hardStop: 'past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.',
   /** CX15 (P1, report only): a workspace limit. */
   workspaceLimit: (type: string): string => `Codex reports a workspace limit (${type}). spare10 continues no work until Codex allows it.`,
   /** CX48 (B30 on Codex, report only): the stored consent of a kind ends after its window. `untilMs`: its end. Codex keeps consent in the session state, never in SPARE10_CONSENT. */
@@ -879,7 +907,7 @@ export const codexText = {
   setBlankPause: 'pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.',
   /** CX31 */
   setUnknown: (name: string): string =>
-    `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.`,
+    `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, limitPause, headless and scope.`,
   /** CX49: a typed `spare10 <word>` that is no command. */
   unknown: (word: string): string => `unknown command "${word}". Nothing changed. Run spare10 help to list the commands.`,
   /**

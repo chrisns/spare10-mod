@@ -4,6 +4,7 @@ import {
   BLIND_AFTER,
   FALLBACK_MS,
   KINDS,
+  LIMIT_PCT,
   RESET_JITTER_MS,
   RESET_MARGIN_MS,
   TEST_MARGIN_MS,
@@ -12,6 +13,7 @@ import {
   WINDOW_MS,
   anchoredOf,
   asAnchored,
+  atLimit,
   basis,
   fiveHour,
   holdEndOf,
@@ -539,4 +541,18 @@ test('withoutVoided drops each slot that an early reset voided, and keeps all wi
   const later = R + 3 * HOUR
   expect(withoutVoided({ full: later, floor: { until: R, to: 95 } }, later)).toEqual({ full: later })
   expect(withoutVoided({ full: R, floor: { until: later, to: 95 } }, later)).toEqual({ floor: { until: later, to: 95 } })
+})
+
+// ---- The quota limit (limit design 1.1) ----
+
+test('atLimit: 100% or more with a known reset, on any basis, and never without a reset time or a reading', () => {
+  expect(LIMIT_PCT).toBe(100)
+  const R = Date.parse('2026-09-24T15:00:00.000Z')
+  expect(atLimit({ kind: 'live', pct: 100, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'live', pct: 103, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'live', pct: 99.9, resetsAtMs: R })).toBe(false)
+  expect(atLimit({ kind: 'live', pct: 100, resetsAtMs: null })).toBe(false)
+  expect(atLimit({ kind: 'seed', pct: 100, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'test', pct: 100, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'none', why: 'window-reset' })).toBe(false)
 })

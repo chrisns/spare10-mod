@@ -11,6 +11,7 @@ import {
   gatesAfter,
   modeOf,
   raisesInPlace,
+  resumeAtLimit,
   resumeCase,
   resumeReadReply,
   seenOf,
@@ -30,7 +31,7 @@ import {
   withRealEntries,
 } from '../../hooks/core/flow.ts'
 import type { Seen } from '../../hooks/core/flow.ts'
-import { parseSimulate, pctOf } from '../../hooks/core/reading.ts'
+import { atLimit, parseSimulate, pctOf } from '../../hooks/core/reading.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 import { commandFailed, resumeReply, simulateReply, statusReport, stopReply } from '../../hooks/core/text.ts'
 import type { StatusInput } from '../../hooks/core/text.ts'
@@ -68,7 +69,7 @@ export type CommandDeps = Pick<Deps, 'paths' | 'clock' | 'log' | 'owner'> & {
   /** The report reads the daemon first, so its reading and its `live read` row are fresh (2.8, 9.3). */
   quota?: Pick<Quota, 'live'>
   sense: SenseApi
-  questions: Pick<Questions, 'settle' | 'openQuestion'>
+  questions: Pick<Questions, 'settle' | 'openQuestion' | 'choose'>
   sweep: Pick<Sweep, 'sweep'>
   daemon: Pick<DaemonLink, 'get' | 'hosted'>
   attendance: AttendanceSource
@@ -149,6 +150,10 @@ function codexWarnings(state: SessionState, s: CodexSensed, originator: string |
   // CX16: a watched kind at 100% or more, and credits can pay.
   const balance = s.credits?.balance
   if (s.creditsUsable && typeof balance === 'string' && s.kinds.some((k) => (pctOf(k.basis) ?? 0) >= 100)) out.push(codexText.credits(balance))
+  // CX14: a watched kind is past 100% with its reset ahead, no credits pay, and spare10 does not pause there.
+  if (!s.cfg.limitPause && !s.creditsUsable && s.kinds.some((k) => atLimit(k.basis) && k.basis.kind !== 'none' && (k.basis.resetsAtMs ?? 0) > s.now)) {
+    out.push(codexText.hardStop)
+  }
   return out
 }
 
@@ -171,6 +176,8 @@ function valueOf(eff: Effective, name: OptionName): string | number | boolean | 
       return eff.pausePrompt
     case 'autoResume':
       return eff.autoResume
+    case 'limitPause':
+      return eff.limitPause
     case 'headless':
       return eff.headless
     case 'scope':
@@ -356,6 +363,13 @@ export function createCommands(d: CommandDeps): Commands {
     if (!cfg.enabled || !attendedOf(sx)) return resumeReply('off')
     const sNow = await d.sense.sense(sx).catch(() => undefined) // skip 4.6: the takeover names what opened
     const now = sNow?.now ?? d.clock.now()
+    // At the quota limit resume chooses Continue at the reset on the limit question, or changes nothing.
+    const openNow = d.questions.openQuestion(sx)
+    const atLimitNow = resumeAtLimit(sNow, openNow)
+    if (atLimitNow !== undefined) {
+      if (atLimitNow.choose && openNow !== undefined) d.questions.choose(sx, openNow.key, 'command')
+      return atLimitNow.reply
+    }
     const overdue = await takeOverdueStop(sx, { cfg, now, attended: true, ...takeoverSense(sNow) })
     if (overdue !== undefined) return resumeReply('overdue', undefined, overdue.reset, overdue.open)
     const open = d.questions.openQuestion(sx)
@@ -484,7 +498,7 @@ export function createCommands(d: CommandDeps): Commands {
         clearStopped(tx.state)
       }
     })
-    return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now })
+    return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now, paid: s?.creditsUsable === true })
   }
 
   /** 4.20 setCommand: the option list, or one key of config.json under config.lock. */

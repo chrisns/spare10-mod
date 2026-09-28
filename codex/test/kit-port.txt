@@ -37,6 +37,7 @@
 ! seedRead = The Claude module reads its $.store seed once per activation, and each Codex sense reads seed.json (3.6).
 ! seedWrite = On Codex each view writes seed.json from its own readings (3.6), and consent never goes there.
 ! startStep = On Codex no start step can fail alone (4.22). The env is a snapshot, and the session id comes with the hook input. One store transaction writes the child policy and the warnings.
+! limitNoun = Codex has no $.spare10 noun and no older copy in a session: each gate reads config.json, so spare10 set limitPause applies at the next step (5.2).
 
 # Codex cases that many lines name.
 @parse = core-codex|parseCommand: every form of 2.8
@@ -189,7 +190,7 @@
 @setKept = settings|the result is kept until config.json changes
 @setSimHost = settings|SPARE10_SIMULATE is ignored with a debug line on the daemon
 @setNested = settings|a nested run takes the child policy of its parent
-@setEnvReads = settings|envReadsOf takes the eleven names
+@setEnvReads = settings|envReadsOf takes the twelve names
 @wiring = wiring|a trip, Stop here, turn/interrupt on the socket
 @fSenses = flow|sensesOf: a 5-hour reading in the reserve with its skip start
 @fOpen = flow|sensesOf: in the last span a tripped kind is open
@@ -251,7 +252,7 @@
 @fGatesAfter = flow|gatesAfter, takeoverSense and withRealEntries
 @fRaises = flow|raisesInPlace
 @fSimOpens = flow|simulateOpens:
-@fSimText = flow|simulateText:
+@fSimText = flow|simulateText: the reply of a test reading
 @fSeenSplit = flow|seenSplit:
 @fSeenOf = flow|seenOf:
 @fUntil = flow|untilOf:
@@ -547,6 +548,38 @@ session.end other stops the ticker, and logout keeps it => none:sessionEnd
 -p wait shows the reserve phase, never asking => @cmdStatus ; @fSeenOf
 a guarded session with headless wait sets SPARE10_HEADLESS=stop for children => @gateChild
 -p wait holds a step when a live reading gates beside a seed, and releases it at the reset => @hWait ; @fVerdictTell
+
+[limit.test.ts]
+at 100% in the open reserve a held call asks the limit question, and with no answer it runs after the reset => limit|asks the limit form, and with no answer
+Continue at the reset closes the dialog, a held step joins with no second dialog, and both go on after the reset => limit|keeps the call held with no second form ; none:withdraw
+Stop here at the limit refuses the held work, writes a stop with no auto, and sends nothing after the reset => limit|writes a stop with no auto, and the ticker
+a full consent after a second Resume does not let work past the limit => flow|a limit kind gates also with a full consent
+a Resume on the floor question that comes at 100% leads to the limit question, and no request goes out => flow|a full Resume never answers a limit kind
+a question at the reserve gives way to the limit question at the next step => limit|gives way to the limit form at the next step
+another copy's consent never answers the limit question, and the held call stays held => limit|a consent in the state never answers the limit question ; none:env
+an auto stop at the reserve that is due at the limit lasts until the reset, and then continues => limit|an auto stop at the reserve that is due at the limit
+a question at the reserve gives way to the limit question at the next check => flow|a reserve question gives way to the limit
+tell mode holds at the limit and asks the limit question => flow|verdictOf: at the limit every loop holds
+both windows at the limit: the question names both, and the work waits for the weekly reset => limit|both windows wait for the later reset
+the 5-hour limit with the weekly window in its reserve: after the 5-hour reset the weekly question asks => limit|asks the weekly question after the 5-hour reset
+/spare10 simulate 100 in 2m holds in the open test window, and the work goes on 60 s after it ends => flow|simulateText: 100 is the quota limit ; flow|a test reading at 100% over a real reading
+/spare10 resume on the limit question chooses Continue at the reset and writes no consent => limit|spare10 resume chooses Continue
+/spare10 resume at the limit with an auto stop keeps the stop and changes nothing => flow|an open limit question is chosen, and else nothing is written
+/spare10 stop at the limit writes a stop with no auto, and replies with the limit text => limit|spare10 stop writes a stop with no auto
+a person prompt at the limit waits after Continue at the reset, and goes in after the reset => limit|a typed prompt at the limit waits
+Stop here on a prompt question at the limit drops the prompt, puts the text back, and names the limit => flow|refusalText and notStartedFor: the limit texts ; none:fill
+Esc on the limit dialog counts as Continue at the reset => limit|Esc and a decline
+a dialog that cannot show continues at the reset => limit|approval never session holds at the limit
+autoResume off: with no answer the held work waits past the reset with one note, and Continue at the reset then lets it go => flow|a chosen limit question releases by time
+unattended wait holds at the limit in the open reserve until the reset => limit|unattended wait holds and stop refuses
+unattended stop refuses at the limit in the open reserve with the limit text => limit|unattended wait holds and stop refuses
+unattended off lets the work through at the limit => flow|verdictOf: at the limit every loop holds
+SPARE10_LIMIT_PAUSE=off lets the open reserve through at 100%, and the report shows the limit row => limit|limitPause off lets the open reserve through
+SPARE10_LIMIT_PAUSE with a bad value warns at the start and keeps the option => settings|SPARE10_LIMIT_PAUSE wins over config.json
+a Stop here at the limit survives a reload: a new copy refuses work until the reset => limit|writes a stop with no auto, and the ticker ; none:env
+the badge shows the limit row while held work waits for the reset => none:badge ; limit|the report shows the limit phase line
+a reading at 100% without a reset time keeps the rules of today => flow|a kind at 100% in its last span is a limit kind
+$.spare10.limit answers the option of the newest copy => none:limitNoun
 
 [headless.test.ts]
 -p default off: inside the reserve everything runs, nothing asks, the seed is still written => @hOff ; @qtSeedWrite

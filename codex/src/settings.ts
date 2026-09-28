@@ -9,7 +9,7 @@ import { readJson, readOwnJson, withLock, writeJson } from './files.ts'
 import type { Log } from './log.ts'
 import type { Env, Paths } from './paths.ts'
 
-// The settings of a broker and of the CLI (Codex design 5.1, 5.2). The ten Claude options live in
+// The settings of a broker and of the CLI (Codex design 5.1, 5.2). The eleven Claude options live in
 // <data dir>/config.json, which `spare10 set` writes under config.lock. Precedence, highest first (A15): a
 // SPARE10_* variable of the broker env, then config.json, then the default. The core parsers and withEnv
 // do all the work: this file only reads the file and the env.
@@ -24,12 +24,13 @@ export const ENV_NAMES: ReadonlyArray<readonly [keyof EnvReads, string]> = [
   ['weeklyResumeFloor', 'SPARE10_WEEKLY_RESUME_FLOOR'],
   ['pausePrompt', 'SPARE10_PAUSE_PROMPT'],
   ['autoResume', 'SPARE10_AUTO_RESUME'],
+  ['limitPause', 'SPARE10_LIMIT_PAUSE'],
   ['headless', 'SPARE10_HEADLESS'],
   ['onOff', 'SPARE10'],
   ['simulate', 'SPARE10_SIMULATE'],
 ]
 
-/** The EnvReads of the eleven names in `env`. A set but empty value counts, as on Claude. */
+/** The EnvReads of the twelve names in `env`. A set but empty value counts, as on Claude. */
 export function envReadsOf(env: Env): EnvReads {
   const out: EnvReads = {}
   for (const [field, name] of ENV_NAMES) {

@@ -97,6 +97,18 @@ test('settings: a bad value in config.json warns with CX11 and uses the default,
   ])
 })
 
+test('settings: SPARE10_LIMIT_PAUSE wins over config.json, and a bad value warns and keeps the option', (t) => {
+  assert.deepEqual([setup(t).settings.get().limitPause, setup(t).settings.get().from.limitPause], [true, 'option'])
+  const file = setup(t, { config: JSON.stringify({ limitPause: false }) }).settings.get()
+  assert.deepEqual([file.limitPause, file.from.limitPause], [false, 'option'])
+  const wins = setup(t, { config: JSON.stringify({ limitPause: false }), env: { SPARE10_LIMIT_PAUSE: 'on' } }).settings.get()
+  assert.deepEqual([wins.limitPause, wins.from.limitPause], [true, 'env'])
+  const bad = setup(t, { config: JSON.stringify({ limitPause: false }), env: { SPARE10_LIMIT_PAUSE: 'yes' } }).settings.get()
+  assert.deepEqual([bad.limitPause, bad.from.limitPause, bad.warnings], [false, 'option', [badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'off')]])
+  const { settings, path } = setup(t, { config: JSON.stringify({ limitPause: 'maybe' }) })
+  assert.deepEqual([settings.get().limitPause, settings.get().warnings], [true, [`${path} sets limitPause to "maybe", which is not on or off. spare10 uses on.`]])
+})
+
 test('settings: a config.json that does not parse keeps the variables, and zeroes only the spans that no variable sets (CX12)', (t) => {
   const { settings, path } = setup(t, { config: '{"reserve": 15,', env: { SPARE10_RESERVE: '20', SPARE10_LAST_MINUTES: '25' } })
   const eff = settings.get()
@@ -232,10 +244,10 @@ test('settings: a parent state that cannot be read is logged and ignored', (t) =
   assert.deepEqual(log.lines, [codexDebug.readFailed('the parent session', 'bad JSON')])
 })
 
-test('settings: envReadsOf takes the eleven names, empty values included', () => {
-  assert.equal(ENV_NAMES.length, 11)
+test('settings: envReadsOf takes the twelve names, empty values included', () => {
+  assert.equal(ENV_NAMES.length, 12)
   assert.deepEqual(
-    envReadsOf({ SPARE10: 'on', SPARE10_PAUSE_PROMPT: '', SPARE10_RESERVE: '15', SPARE10_SIMULATE: '92', OTHER: 'x', SPARE10_CONSENT: 'S 2026' }),
-    { onOff: 'on', pausePrompt: '', reserve: '15', simulate: '92' },
+    envReadsOf({ SPARE10: 'on', SPARE10_PAUSE_PROMPT: '', SPARE10_RESERVE: '15', SPARE10_SIMULATE: '92', SPARE10_LIMIT_PAUSE: 'off', OTHER: 'x', SPARE10_CONSENT: 'S 2026' }),
+    { onOff: 'on', pausePrompt: '', reserve: '15', simulate: '92', limitPause: 'off' },
   )
 })

@@ -77,6 +77,12 @@
       "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
       "default": true
     },
+    "limitPause": {
+      "type": "boolean",
+      "title": "Pause at the limit",
+      "description": "On: at 100% used, spare10 holds all work, also in an open reserve or after a Resume. It asks you once, and continues the work after the reset. Off: work runs into the limit, and Claude Code refuses it. Switch it off when you pay for extra usage. SPARE10_LIMIT_PAUSE overrides it for one run.",
+      "default": true
+    },
     "headless": {
       "type": "string",
       "title": "Unattended runs (-p, SDK)",

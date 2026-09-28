@@ -175,6 +175,12 @@ const tripAt = (reserve: number): number => pointOf(reserve)
 /** The first point of the reserve trips: reserve 10 trips at 90.0 and passes at 89.9. */
 export const isTripped = (b: Basis, reserve: number): boolean => b.kind !== 'none' && b.pct >= tripAt(reserve)
 
+/** The quota limit: 100% used. Past it the host refuses each model request until the reset. */
+export const LIMIT_PCT = 100
+
+/** A basis at or past the quota limit, with a known reset. A reading without a reset time never counts. */
+export const atLimit = (b: Basis): boolean => b.kind !== 'none' && b.resetsAtMs !== null && b.pct >= LIMIT_PCT
+
 /** B48: a basis at or past a floor point. None with no point, and never for a none basis. */
 export const atPoint = (b: Basis, point: number | null): boolean => point !== null && b.kind !== 'none' && b.pct >= point
 

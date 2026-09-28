@@ -362,6 +362,7 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
       '  · weeklyResumeFloor 5 (default)',
       '  · pausePrompt       an empty text (default)',
       '  · autoResume        on (default)',
+      '  · limitPause        on (default)',
       '  · headless          off (default)',
       '  · scope             all (default)',
       'Change one with spare10 set <option> <value>, or spare10 set <option> default.',
@@ -387,6 +388,25 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
   // A config.json that is not an object is never overwritten.
   writeFileSync(path, '[1, 2]')
   assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed(path, 'it is not a JSON object', true))
+})
+
+test('commands: spare10 set limitPause off, default, and the list row', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const path = join(w.data, 'config.json')
+  assert.equal(await typed(b, 'spare10 set limitPause off'), codexText.setOk('limitPause', 'off', 'on'))
+  assert.equal(readJson<Record<string, unknown>>(path)?.['limitPause'], false)
+  assert.match(await typed(b, 'spare10 set'), /\n {2}· limitPause {8}off \(config\.json\)\n/)
+  assert.match(await typed(b, 'spare10'), /\n {2}· at the limit {3}off\. spare10 does not pause at the limit \(from spare10 set\)\n/)
+  assert.equal(await typed(b, 'spare10 set limitPause maybe'), codexText.setBad('limitPause', 'on or off'))
+  assert.equal(await typed(b, 'spare10 set limitPause default'), codexText.setDefault('limitPause', 'on'))
+  assert.equal(readJson<Record<string, unknown>>(path)?.['limitPause'], undefined)
+  assert.match(await typed(b, 'spare10 set'), /\n {2}· limitPause {8}on \(default\)\n/)
+  assert.equal((await typed(b, 'spare10')).includes('at the limit'), false)
+  // A variable wins over the option, and the reply says so.
+  const v = world(t)
+  const c = await v.broker({ env: { SPARE10_LIMIT_PAUSE: 'on' } })
+  assert.equal(await typed(c, 'spare10 set limitPause off'), `${codexText.setOk('limitPause', 'off', 'on')}${codexText.setEnvWins('SPARE10_LIMIT_PAUSE')}`)
 })
 
 test('commands: set names a variable as the winner only when its value parses (A15)', async (t) => {

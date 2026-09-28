@@ -42,6 +42,7 @@ function kind(pct: number, o: Partial<KindSense> = {}): KindSense {
     point: 95,
     atFloor: pct >= 95,
     realPct: pct,
+    limit: false,
     ...o,
   }
 }
