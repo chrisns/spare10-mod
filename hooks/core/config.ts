@@ -1,7 +1,7 @@
 import type { PluginOptions, Settings as HostSettings } from 'claude-code'
-import { KINDS, parseSimulateEnv } from './reading.ts'
+import { KINDS, parseSimulate, simulateWords } from './reading.ts'
 import type { Kind } from './reading.ts'
-import { badWarning, floorWarning, fmtPct } from './text.ts'
+import { badWarning, floorWarning, fmtPct, simulateWarning } from './text.ts'
 
 // Options, per-run env overrides, scope and the start-up checks (design section 8). No $ here.
 // Precedence, highest first: SPARE10_* in the process env, pluginConfigs (managed, then --settings,
@@ -288,8 +288,14 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
       out.from.enabled = 'SPARE10'
     }
   }
-  const spec = parseSimulateEnv(env.simulate, o.simulateKind)
+  // SPARE10_SIMULATE: a blank value or `off` is no test reading and no warning. Junk is B27. A weekly test
+  // reading while the weekly reserve is 0 changes nothing, so it is B27 too. It stays set, as before.
+  const words = simulateWords(env.simulate)
+  const parsed = parseSimulate(words, o.simulateKind)
+  if (parsed === undefined && words.length > 0) warnings.push(simulateWarning(env.simulate ?? ''))
+  const spec = parsed === 'off' ? undefined : parsed
   if (spec !== undefined) {
+    if (spec.kind === 'seven_day' && out.weeklyReserve <= 0) warnings.push(simulateWarning(env.simulate ?? '', true))
     out.testPct = spec.pct
     if (spec.kind !== 'five_hour') out.testKind = spec.kind
     if (spec.inMs !== undefined) out.testInMs = spec.inMs

@@ -40,6 +40,7 @@ import {
   resumePrompt,
   resumeReply,
   simulateReply,
+  simulateWarning,
   soonText,
   spanText,
   statusReport,
@@ -245,7 +246,7 @@ test('the notices, warnings and replies are the section 2 texts, without the pre
   expect(simulateReply('set', { ...F, used: 95, left: 5 })).toBe(
     'test reading set to 95% used, resets 15:00. It can only raise the real reading. Run /spare10 simulate off to clear it.',
   )
-  expect(simulateReply('off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
+  expect(simulateReply('off')).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
   expect(simulateReply('bad')).toBe(
     '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
   )
@@ -758,6 +759,7 @@ test('the resume prompt has no spare10 prefix, the model notes keep theirs', () 
     debugLine.budget(10, 5000),
     debugLine.checkFailed('Error: gone'),
     debugLine.settleFailed('Error: gone'),
+    debugLine.startFailed('Error: gone'),
   ]
   for (const t of kept) expect(t.startsWith('spare10: ')).toBe(true)
   expect(headlessText(BOTH, 'S1').startsWith('spare10 stopped this unattended run')).toBe(true)
@@ -769,6 +771,7 @@ test('the resume prompt has no spare10 prefix, the model notes keep theirs', () 
   expect(debugLine.budget(10, 5000)).toBe('spare10: held 10 min. Budget left 5000 ms.')
   expect(debugLine.checkFailed('Error: gone')).toBe('spare10: the reset check did not run: Error: gone')
   expect(debugLine.settleFailed('Error: gone')).toBe('spare10: could not write the answer: Error: gone')
+  expect(debugLine.startFailed('Error: gone')).toBe('spare10: a step of the session start failed: Error: gone')
 })
 
 // The 0.2 transcript lines, warnings and command replies: the engine prefixes each one.
@@ -776,6 +779,8 @@ function newEnginePrefixed(): string[] {
   const out: string[] = [
     badWarning('SPARE10_WEEKLY_RESERVE', '0.5', '10'),
     badWarning('SPARE10_AUTO_RESUME', 'yes', 'on'),
+    simulateWarning('95 in 2 m'),
+    simulateWarning('95 weekly', true),
     timeoutWarning('askUserQuestionTimeout', true),
     timeoutWarning('CLAUDE_AFK_TIMEOUT_MS', true),
     consentWarning('2026-10-06T00:00:00.000Z', 'seven_day'),
@@ -849,6 +854,10 @@ test('every new notice and reply starts without the engine prefix', () => {
   expect(notice.resumeFailed('dropped')).toBe('could not continue the stopped work: dropped. Type a prompt to continue.')
   expect(badWarning('SPARE10_WEEKLY_RESERVE', '0.5', '10')).toBe('SPARE10_WEEKLY_RESERVE="0.5" is not 0 or 1 to 99. spare10 uses 10.')
   expect(badWarning('SPARE10_AUTO_RESUME', 'yes', 'on')).toBe('SPARE10_AUTO_RESUME="yes" is not on or off. spare10 uses on.')
+  expect(simulateWarning('95 in 2 m')).toBe('SPARE10_SIMULATE="95 in 2 m" is not a test reading. spare10 uses none.')
+  expect(simulateWarning('95 weekly', true)).toBe(
+    'SPARE10_SIMULATE="95 weekly" is a weekly test reading, and the weekly reserve is 0. spare10 uses none.',
+  )
   expect(timeoutWarning('askUserQuestionTimeout', true)).toBe(
     'questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the time that the question names.',
   )
@@ -1016,7 +1025,7 @@ test('the simulate replies name the weekly window and the new grammar', () => {
   expect(simulateReply('bad')).toBe(
     '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
   )
-  expect(simulateReply('off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
+  expect(simulateReply('off')).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
 })
 
 // Every 0.2 text, both kinds, autoResume on and off, for the STE guard.
@@ -1030,6 +1039,7 @@ function newTexts(): string[] {
     debugLine.budget(0, 1999),
     debugLine.checkFailed('Error: gone'),
     debugLine.settleFailed('Error: gone'),
+    debugLine.startFailed('Error: gone'),
     stepsIn(10, 10),
     stepsIn(12.5, 0),
     clockText(NEXT_THU, 'seven_day', TZ, T0),

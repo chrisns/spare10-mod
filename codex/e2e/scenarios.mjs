@@ -376,7 +376,7 @@ async function e5(w) {
   const set = blockedWith((await w.turn(s, th, 'spare10 set reserve 15')).hooks)
   assert.equal(set, `spare10: ${codexText.setOk('reserve', '15', '10')}`)
   const off = blockedWith((await w.turn(s, th, 'spare10 simulate off')).hooks)
-  assert.equal(off, 'spare10: test reading cleared. Consent and stop for this window are cleared too.')
+  assert.equal(off, 'spare10: test readings cleared. Your consents for both windows and any stop are cleared too.')
   assert.equal(w.requests().length, 0, 'the three commands send no model request')
   assert.equal(w.readData('config.json')?.reserve, 15, 'config.json has reserve 15')
   const plain = await w.turn(s, th, 'Spare10 is slow today')

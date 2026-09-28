@@ -44,6 +44,7 @@
 @cmdBlind = commands|the blind phase after two live reads
 @cmdHelp = commands|help, unknown verb, unknown option
 @cmdResumeStop = commands|resume and stop replies below the reserve
+@cmdStopConsent = floor|a stop after a Resume clears both consents
 @cmdAsking = commands|`asking` replaces `stopped`
 @cmdSim = commands|simulate sets, rejects and clears
 @cmdSet = commands|set lists, changes, rejects
@@ -147,6 +148,7 @@
 @flFirst = floor|a Resume at the reserve asks again at the floor
 @flCmd = floor|spare10 resume before the floor consents
 @flSeam = floor|a test reading raised in place
+@flNewTest = floor|the same value, a lower value or in starts a new test
 @flTombs = floor|a consent to the floor that ended at its point never comes back
 @skLast = skip|in the last 20 min before the reset every step passes
 @skStart = skip|a question whose skip start passes continues the held work
@@ -284,14 +286,14 @@ an unattended run is not guarded: resume and stop change nothing and the report 
 in a stopped session an open prompt question takes the open-question row of stop and resume => @fStopOverdue ; @cmdAsking
 without resetsAt the replies say for one hour, and the fallback window end holds for the episode => @fFallback ; @fResumeCase
 an unattended run with the default policy reports off from /config => @cmdStatus ; @set1
-a SPARE10_CONSENT set for this window at launch reads as consented until a stop clears it => @sConsent ; @consClear
+a SPARE10_CONSENT set for this window at launch reads as consented until a stop clears it => @sConsent ; @consClear ; @cmdStopConsent
 after /clear the old stop no longer counts, and a stop names the new session => @stopNow ; none:clear
 a /clear while a question is open: /spare10 stop stamps the new session id => none:clear
 /spare10 resume after the window end releases the held work and writes no consent => @consEnded ; @fResumeCase
 SPARE10_SIMULATE at launch trips an unattended run the same way => @sSimEnv ; @setSimHost
 /spare10 stop settles a question that a crossing opened during its writes => @qStopNewer
 /spare10 stop during an in-flight consent read denies that call => none:env
-a Resume on a test reading stays in this copy: the env keeps no consent, and a lower test reading asks again => @consTest ; @sTestHost
+a Resume on a test reading stays in this copy: the env keeps no consent, and a lower test reading asks again => @consTest ; @sTestHost ; @flNewTest
 a Resume on a test reading does not cover a real reading that climbs past it => @consTestIn ; @fHolders
 /spare10 resume on a test reading also stays in this copy => @consTest
 /spare10 stop with Continue at the reset off and no reset time stops for the one-hour fallback (0.1) => @fStopWrite ; @fFallback
@@ -302,6 +304,7 @@ weekly: a Resume at 91% runs to 94.9%, and at 95% the weekly second question ask
 two windows at their floors at once: one second question names both, and one Resume makes both full => @qResume ; @fResumeTo
 floors per window: a weekly floor of 3 ends the weekly consent at 97% and leaves the 5-hour consent to 95% => @fFloorPts ; @consEndFloors
 two windows at different stages: the reserve until 95% used and the last 4% of the weekly window => @fFacts ; @fResumeTo
+after a reset credit, a consent of the old window is void: the new window asks again at its reserve (A22) => floor|after a reset credit, a consent of the old window is void ; @consDead
 a reading that jumps from 89% to 96% asks only the second question, and its Resume lasts until the reset => @flFirst ; @fResumeTo
 after a Resume at the reserve, a jump past the floor asks the second question with what is left now => @flFirst ; @sFloor
 a reading that passes the floor while the first question waits: its Resume runs nothing, and the second question follows => @fUnanswered ; @qFloor
@@ -409,7 +412,7 @@ with ${c.name} /spare10 resume consents until the reset, as in 0.2 => @fResumeCa
 a 5-hour floor never changes the weekly value: a weekly Resume with the 5-hour floor off still ends at its point => @fFloorPts
 /spare10 stop clears a consent to the floor, and a prompt while stopped asks the first question, whose Resume writes the point and the note => @consClear ; @pResume
 /spare10 stop past the floor: its reply says at the reserve, the stop names the floor, and a prompt asks the second question => @fStopCase ; @fStopWrite
-/spare10 stop clears the consents of both windows, a consent to the floor and a full one => @consClear
+/spare10 stop clears the consents of both windows, a consent to the floor and a full one => @consClear ; @cmdStopConsent
 /spare10 stop clears a test consent to the floor => @consClear
 /spare10 shows the floor rows after the open rows, and the floor help line => @cmdReport
 /spare10 walks the consent row: until the point, ended at the point, none once a gate ends it, then until the reset => @fSeenSplit ; @fUntil ; @fStatus2
@@ -427,7 +430,7 @@ the test seam: simulate 91, Resume, simulate 96 raises in place and asks the sec
 a raise below the floor keeps the consent to the floor, and no question comes => @fRaises ; @flSeam
 a first test reading past the floor says so and asks the second question at once => @fSimText ; @flSeam
 the floor sentence starts at the point: 95 has it, 94.9 does not => @fSimText
-the same value, a lower value or a value with in starts a new test and clears the consent => @fRaises ; @cmdSim
+the same value, a lower value or a value with in starts a new test and clears the consent => @fRaises ; @flNewTest
 a raise keeps a stop on the test reading => @fRaises
 with the floors off a raise keeps a full test consent, and the reply has no floor sentence => @fRaises ; @fSimText
 a floor at or above the reserve gives no floor sentence => @fSimText
@@ -477,7 +480,7 @@ the prompt question at the floor: Stop here gives the prompt back with the floor
 a Resume on a prompt question at the floor in a stopped session carries the floor note => @pResume ; @fResumeNotice
 a Resume on a prompt question at the reserve in a stopped session carries the note with the end point => @pResume ; @fResumeNotice
 the test seam: simulate 91, Resume, simulate 96 asks the second question => @flSeam
-simulate raises in place only upward and without in: the same value, a lower value or in starts a new test => @fRaises ; @flSeam
+simulate raises in place only upward and without in: the same value, a lower value or in starts a new test => @fRaises ; @flSeam ; @flNewTest
 /spare10 resume before the floor consents to the floor, past the floor until the reset => @flCmd
 /spare10 resume on an open first question whose reading passed the floor consents until the reset => @qRaise ; @fRaiseFloor
 /spare10 resume on an open first question below the floor replies with the end point => @fResumeCase ; @cliRelease
@@ -764,6 +767,8 @@ B29 names askUserQuestionTimeout first when both limits are set => none:flag
 no B29 without a positive time limit => none:flag
 a guarded session sets SPARE10_HEADLESS=stop for children when unset, and leaves a set value alone => @gateChild
 a guarded session leaves a set SPARE10_HEADLESS=${set} alone => @gateChild ; @setNested
+a failed read for a start warning still gives children SPARE10_HEADLESS=stop => @gateChild
+a failed child policy write at the start keeps the start warnings, and the debug log names the step => gate|a failed thread/loaded/list at the first root gate ; none:flag
 an unattended run sets no SPARE10_HEADLESS for children => @gateChild
 a run switched off by SPARE10=off sets no SPARE10_HEADLESS for children => @gateChild
 a fresh module honours SPARE10_CONSENT for this window, not an earlier or a far-future one => @sConsent ; @fSplitFail
@@ -800,6 +805,7 @@ an attended session ignores a consent stamped with another session's id => @sOth
 a consent stamped with this session id counts in a fresh module, as after a reload => @sConsent
 a --bg session asks despite a bare consent from the daemon, and its own Resume counts => none:bg
 a --bg session warns about SPARE10 switches that it got from the daemon, also when they switch spare10 off => none:bg
+a --bg session names a SPARE10_SIMULATE that it got from the daemon => none:bg
 no background warning outside a --bg session => none:bg
 no background warning in a --bg session without SPARE10 switches => none:bg
 /clear keeps consent at once, and then moves its stamp to the new session id => none:clear
@@ -1023,6 +1029,6 @@ both windows tripped: Stop here stops until the later reset and names both => @f
 /spare10 stop with a weekly question open refuses the held work until the weekly reset => @cmdStopQ
 /spare10 resume and stop below both reserves name both readings => @fResumeRead ; @cmdResumeStop
 autoResume off: a weekly question waits past its reset, says so once, and a late Resume continues on the new weekly window => @qSkipOff ; @fResumeNotice
-/spare10 stop after a weekly Resume clears the weekly consent, and the next call is refused => @consClear ; @cmdResumeStop
+/spare10 stop after a weekly Resume clears the weekly consent, and the next call is refused => @consClear ; @cmdStopConsent
 /spare10 simulate off clears a real weekly consent too => @cmdSim
 a question that names both windows is not settled by another copy's consent for one of them => @fAnswers

@@ -62,8 +62,8 @@ import type {
 //                defaults apply (5 and 5), as they ship
 //
 // The world records: asked (each dialog), ran, requests, prompts, fills, aborts, logs, invalidations,
-// renders, commands (names), commandSpecs (whole) and parkCalls. submitted holds the texts of the prompts
-// that reach core with no origin or a plugin origin: spare10's resume prompt at the reset (the kit does
+// renders, commands (names), commandSpecs (whole), parkCalls and usageReads (session.usage calls).
+// submitted holds the texts of the prompts that reach core with no origin or a plugin origin: spare10's resume prompt at the reset (the kit does
 // not stamp a plugin prompt, and no spare10 hook is in its path). They are in prompts too, unless
 // dropped. w.release(label?) ends every hung dialog with that label, or as gone without one. w.cap() rejects every pending $.spare10.park call, as the host does at 10 s.
 // A dialog whose dispatch aborts records the reason in w.dialogAborted ('no' until then).
@@ -246,6 +246,7 @@ export type World = {
   commands: string[] // $.command.register names
   commandSpecs: CommandSpec[] // $.command.register inputs, whole
   parkCalls: number
+  usageReads: number // session.usage calls, answered or denied
 }
 
 type AskInput = { questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string }> }> }
@@ -321,6 +322,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     commands: [],
     commandSpecs: [],
     parkCalls: 0,
+    usageReads: 0,
   }
 
   const entry = (kind: 'five_hour' | 'seven_day', pct: number | undefined, resetsAt: string | null): SessionRateLimit[] =>
@@ -344,6 +346,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
 
   // Session and reading.
   const usage = () => {
+    w.usageReads += 1
     if (w.usageFailsAfter !== undefined && w.usageFailsAfter <= 0) return { deny: 'usage unavailable' }
     if (w.usageFailsAfter !== undefined) w.usageFailsAfter -= 1
     return w.usageFails ? { deny: 'usage unavailable' } : { value: { startedAt: T0, context: { window: 200_000 }, rateLimits: limits() } }
