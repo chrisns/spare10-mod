@@ -5,17 +5,18 @@ import { join } from 'node:path'
 import { OPTIONS, codexText } from '../../hooks/core/codex.ts'
 import { formatConsent } from '../../hooks/core/decide.ts'
 import { VERSION, simulateReply, stopReply } from '../../hooks/core/text.ts'
-import { parseArgs } from '../src/cli.ts'
-import { brokerEnvOf, withBrokerEnv } from '../src/store.ts'
+import { main as cliMain, parseArgs } from '../src/cli.ts'
+import type { Env } from '../src/paths.ts'
+import { brokerEnvOf, sessionStore, withBrokerEnv } from '../src/store.ts'
 import { fakeRollout } from './helpers/rollout.ts'
 import { tempDir } from './helpers/tmp.ts'
 import { HOST_PID, HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
 
 // The CLI (Codex design 2.9, 4.20, 8.2 cli.spec): the agent check, a session that must be named, the usage,
-// the short line from `!` with the full reply queued, the reply of a command from `!` that changes nothing,
-// the full reply from a terminal with the session, broker and daemon rows, and its queued copy, a resume
-// that releases a held broker, a stop over a held stop, the path flags, the attendance and the SPARE10_*
-// values of the root broker.
+// the short line from `!` with the full reply queued, the reply of a command that changes nothing, the full
+// reply from a terminal with the session, broker and daemon rows, and the queued copy of a change, a resume
+// that releases a held broker, a stop over a held stop, the path flags, the attendance, the host fields that
+// follow a live root broker, and the SPARE10_* values of the root broker.
 //
 // The kit port (8.2). Claude has no CLI: /spare10 is a slash command. No kit case maps here.
 
@@ -144,11 +145,13 @@ test('cli: stop over a held stop with no daemon clears noDialog, and the reply s
   await w.settle()
   assert.equal(w.state().stopMeta?.noDialog, true, 'a held stop')
   assert.equal(h.box.done, false)
+  const had = w.notices().length
   const r = await w.cli(['stop', '--session', SID])
   assert.equal(r.code, 0)
   assert.equal(w.state().stopMeta, undefined)
   // No interrupt can reach a thread that no daemon hosts: the call holds on under the plain stop.
   assert.match(r.out, /^spare10: already stopped( until \d\d:\d\d)?\. Held work waits\. Run !spare10 resume to continue it now\.$/)
+  assert.deepEqual(w.notices().slice(had), [r.out.replace(/^spare10: /, '')], 'the held stop became a plain stop: the transcript shows it')
   await w.settle()
   assert.equal(h.box.done, false, 'the held call still waits')
   assert.match((await w.cli(['status', '--session', SID])).out, /Held work waits\. Run !spare10 resume to continue it now\./)
@@ -313,4 +316,117 @@ test('cli: brokerEnvOf keeps the SPARE10_* values but SPARE10_SIMULATE, and with
   assert.equal(e['SPARE10'], undefined, 'an entry that is not a text counts as unset')
   assert.equal(e['SPARE10_SIMULATE'], undefined)
   assert.equal(e['HOME'], '/h')
+})
+
+test('cli: the host fields follow a live root broker: a daemon session ends with its broker, an attended newcomer takes them, and an unattended host keeps none', async (t) => {
+  const w = world(t)
+  w.alive.add(HOST_PID)
+  const host = (): unknown[] => [w.state().attended, w.state().hostKind, w.state().hostPid]
+  const tui = await w.broker({ hostKind: 'daemon' })
+  assert.deepEqual(host(), [true, 'daemon', HOST_PID])
+  assert.equal(w.state().rootBrokerPid, tui.pid)
+  // A codex exec resume while the TUI broker runs keeps off.
+  await w.broker({ hostKind: 'exec', hostPid: 5000, env: { SPARE10_RESERVE: '30' } })
+  assert.deepEqual(host(), [true, 'daemon', HOST_PID])
+  assert.deepEqual(w.state().brokerEnv, {})
+  // The TUI session ends. The daemon runs on, so its pid tells nothing: the exec takes the fields.
+  await tui.end()
+  w.alive.delete(tui.pid)
+  const exec = await w.broker({ hostKind: 'exec', hostPid: 6000, env: { SPARE10_RESERVE: '30' } })
+  assert.deepEqual(host(), [false, 'exec', 6000])
+  assert.deepEqual(w.state().brokerEnv, { SPARE10_RESERVE: '30' })
+  assert.equal(w.state().rootBrokerPid, exec.pid)
+  w.reading(SID, 92, { reset: RESET })
+  assert.deepEqual(await w.cli(['stop', '--session', SID]), { code: 0, out: `spare10: ${stopReply('off')}` })
+  assert.equal(w.state().notices, undefined, 'a refusal queues nothing')
+  // An unattended host that lives keeps nothing from the next host.
+  w.alive.add(6000)
+  await w.broker({ hostKind: 'exec', hostPid: 7000 })
+  assert.deepEqual(host(), [false, 'exec', 7000])
+  // A second attended TUI takes the fields while the first lives.
+  w.alive.add(8000)
+  await w.broker({ hostPid: 8000 })
+  assert.deepEqual(host(), [true, 'tui', 8000])
+  await w.broker({ hostPid: 8100 })
+  assert.deepEqual(host(), [true, 'tui', 8100])
+})
+
+test('cli: from ! each change prints CX44 and queues its reply: a test reading, a stop, and a question that only its answer settles', async (t) => {
+  const bang = { CODEX_THREAD_ID: SID, CODEX_SESSION_ID: SID }
+  // A test reading.
+  const w = world(t)
+  await w.broker()
+  w.reading(SID, 40, { reset: RESET })
+  assert.deepEqual(await w.cli(['simulate', '95'], bang), { code: 0, out: codexText.cliDone('simulate') })
+  assert.equal(w.state().test?.kinds.five_hour?.pct, 95)
+  assert.match(w.notices()[0] ?? '', /^test reading set to 95% used/)
+  // A stop at the reserve with no held call.
+  const v = world(t)
+  await v.broker()
+  v.reading(SID, 92, { reset: RESET })
+  assert.deepEqual(await v.cli(['stop'], bang), { code: 0, out: codexText.cliDone('stop') })
+  assert.ok(v.state().stopped !== undefined)
+  assert.match(v.notices()[0] ?? '', /^stopped/)
+  // A question whose consent is in the state already: the Resume writes only its answer.
+  const u = world(t)
+  const b = await u.broker()
+  u.reading(SID, 92, { reset: RESET })
+  const h = b.call('tool')
+  await u.settle()
+  assert.ok(existsSync(u.file('question.json')), 'the question is open')
+  const quiet = { watch: () => () => {}, fire() {} }
+  sessionStore({ data: u.data }, SID, 'test', quiet, { clock: u.clock, hostPid: HOST_PID }).locked((tx) => {
+    tx.state.consent = formatConsent(SID, RESET)
+  })
+  assert.equal(h.box.done, false, 'no wake: the call still holds')
+  assert.deepEqual(await u.cli(['resume'], bang), { code: 0, out: codexText.cliDone('resume') })
+  assert.equal(u.state().consent, formatConsent(SID, RESET), 'the consent is as it was')
+  await u.settle()
+  assert.equal(h.box.done, true, 'the held tool runs')
+  assert.match(parsed(h.box.text)['systemMessage'] as string, /^spare10: resumed\./, 'the transcript shows the resume')
+})
+
+test('cli: from a terminal a command that changes nothing queues nothing, and a session id that never ran gets no folder', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false)
+  assert.deepEqual(await w.cli(['simulate', '9x', '--session', SID]), { code: 0, out: `spare10: ${simulateReply('bad')}` })
+  assert.equal(w.state().notices, undefined, 'no line waits for the end of the hold')
+  const typo = 'deadbeef-typo'
+  assert.deepEqual(await w.cli(['stop', '--session', typo]), { code: 0, out: `spare10: ${stopReply('off')}` })
+  assert.equal(existsSync(join(w.data, 'sessions', typo)), false)
+  const list = await w.cli(['resume'])
+  assert.doesNotMatch(list.out, new RegExp(typo))
+})
+
+test('cli: a transcript line that cannot be queued still leaves the reply of a change, and exit 0', async (t) => {
+  const w = world(t)
+  await w.broker()
+  const fails = {
+    watch: () => () => {},
+    fire(): void {
+      throw new Error('the wake failed')
+    },
+  }
+  const run = async (value: string, env: Env = {}): Promise<{ code: number; out: string }> => {
+    let out = ''
+    const code = await cliMain(['set', 'reserve', value, '--session', SID], {
+      env: { ...w.env, ...env },
+      stdout: { write: (s: string) => (out += s) },
+      clock: w.clock,
+      selfFile: join(w.root, 'plugin', 'codex', 'dist', 'cli.mjs'),
+      daemon: () => undefined,
+      pidAlive: (p) => w.alive.has(p),
+      pid: 90_000,
+      log: w.log,
+      wake: fails,
+    })
+    return { code, out: out.replace(/\n$/, '') }
+  }
+  assert.deepEqual(await run('20'), { code: 0, out: `spare10: ${codexText.setOk('reserve', '20', '10')}` })
+  // From !, the model reads the reply itself: no CX44 line promises a transcript line.
+  assert.deepEqual(await run('25', { CODEX_THREAD_ID: SID }), { code: 0, out: `spare10: ${codexText.setOk('reserve', '25', '20')}` })
 })

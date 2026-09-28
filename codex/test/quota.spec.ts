@@ -660,3 +660,36 @@ test('quota: a live.json whose blind history is no list counts as none, and the 
   assert.ok(Array.isArray(readJson<LiveFile>(w.file('live.json'))?.recent))
   assert.equal(q.view(w.sx(null), T0).readings.five_hour?.pct, 93)
 })
+
+test('quota: times ahead of the clock: a rollout observation ends no blindness, a failed read is not newer, and the report keeps the time of live.json', async (t) => {
+  const w = world(t)
+  w.daemon.script.rateLimits = reply({})
+  const q = w.quota()
+  await q.live(30_000)
+  await w.clock.advance(31 * SEC)
+  await q.live(30_000)
+  const now = w.clock.now()
+  // Two good reads with no window make the login blind. An observation from before a step back of the clock is not newer.
+  const r = w.rollout().tokenCount({ at: now + HOUR, primary: five(20) })
+  assert.equal(q.view(w.sx(r.path), now).blind, true)
+  // A failed read from before the step back is not newer than the good read.
+  writeJson(w.file('live-error.json'), { v: 1, by: VERSION, at: now + HOUR, route: 'daemon', error: 'network' } satisfies LiveErrorFile)
+  assert.equal(q.view(w.sx(null), now).liveError, undefined)
+  // The report shows live.json with the time that it holds.
+  writeJson(w.file('live.json'), { ...(liveRead(reply({ five: 40 }), now + HOUR) as object), v: 1, by: VERSION, recent: [] })
+  assert.equal(q.view(w.sx(null), now).live?.at, now + HOUR)
+})
+
+test('quota: credits ahead of the clock lose to credits of a known time, and an observation ahead counts no absent kind', async (t) => {
+  const w = world(t)
+  w.daemon.script.rateLimits = reply({ five: 50, credits: { hasCredits: true, unlimited: false, balance: '5' } })
+  const q = w.quota()
+  await q.live(30_000)
+  const r = w.rollout().tokenCount({ at: AHEAD, primary: week(96), credits: { has_credits: false, unlimited: false, balance: '0' } })
+  const v = q.view(w.sx(r.path), T0)
+  assert.deepEqual(v.credits, { hasCredits: true, unlimited: false, balance: '5' })
+  // The live read has both kinds. The rollout observation with no 5-hour window has no known time: it counts no absence.
+  const st = w.store().read()
+  assert.equal(st.absentCount?.five_hour ?? 0, 0)
+  assert.ok(st.absentAt === undefined || st.absentAt <= T0)
+})

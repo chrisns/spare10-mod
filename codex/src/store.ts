@@ -46,6 +46,7 @@ export type SessionState = Stamp & {
   sessionId: string
   hostPid?: number // the Codex process of the root thread (the broker's ppid)
   hostKind?: HostKind // 3.9
+  rootBrokerPid?: number // the root broker that wrote the host fields: a daemon outlives its sessions, so this tells a live host
   transcript?: string | null // the root rollout
   attended?: boolean // 3.10, for the report and the CLI only: each broker decides for itself
   brokerEnv?: Record<string, string> // 5.2: the SPARE10_* values of the root broker env, for the CLI only

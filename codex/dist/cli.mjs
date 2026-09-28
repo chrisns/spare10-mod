@@ -5641,7 +5641,7 @@ async function main(argv, d) {
     const sx = p.sx ?? { sid: "none", thread: "none", root: true, transcript: null, hostPid: 0, store: scratchStore(paths.data) };
     const target = changes ? p.sx : void 0;
     const markOf2 = () => {
-      if (target === void 0 || !fromBang) return void 0;
+      if (target === void 0) return void 0;
       try {
         const st = target.store.read();
         const file = (path) => {
@@ -5659,16 +5659,18 @@ async function main(argv, d) {
     };
     const before = markOf2();
     const reply = await p.cmds.exec(sx, cmd, { cli: true });
-    if (target !== void 0) {
-      if (fromBang) {
-        const after = markOf2();
-        if (before === void 0 || after === void 0 || before !== after) {
-          target.store.queueNotice(reply);
-          print(codexText.cliDone(verb));
-          return 0;
-        }
-      } else {
+    const after = markOf2();
+    if (target !== void 0 && (before === void 0 || after === void 0 || before !== after)) {
+      let queued = false;
+      try {
         target.store.queueNotice(reply);
+        queued = true;
+      } catch (e) {
+        log.debug(codexDebug.writeFailed("the transcript line of the command", errText7(e)));
+      }
+      if (fromBang && queued) {
+        print(codexText.cliDone(verb));
+        return 0;
       }
     }
     print(`spare10: ${reply}`);
