@@ -80,6 +80,7 @@ import {
   toldHas,
   toldMainOf,
   toldNotice,
+  toldWindow,
   tripOf,
   unansweredGating,
   unansweredHolders,
@@ -346,8 +347,9 @@ const senseCases: FlowCase[] = [
     run: (eq) => {
       eq(modeOf(cfgOf()), 'hold')
       eq(modeOf(cfgOf({ pausePrompt: 'Finish, then stop.' })), 'tell')
-      eq(viewedOf(k92()), { kind: 'five_hour', pct: 92, test: false })
+      eq(viewedOf(k92()), { kind: 'five_hour', pct: 92, test: false, end: R })
       eq(viewedOf(kindIn(sensed({ five: NONE }), 'five_hour')), { kind: 'five_hour', pct: 0, test: false })
+      eq(viewedOf(kindIn(sensed({ five: live(92, null) }), 'five_hour')), { kind: 'five_hour', pct: 92, test: false }) // a fallback end is no window
     },
   },
 ]
@@ -406,8 +408,8 @@ const textCases: FlowCase[] = [
         { kind: 'seven_day', test: false },
       ])
       eq(answeredOf(q), [
-        { kind: 'five_hour', test: true, to: 95 },
-        { kind: 'seven_day', test: false },
+        { kind: 'five_hour', test: true, to: 95, end: R },
+        { kind: 'seven_day', test: false, end: W },
       ])
       eq(answeredOf(undefined), [])
       eq(namedStop(stopRec({ kinds: ['seven_day'], test: true })), [{ kind: 'seven_day', test: true }])
@@ -574,12 +576,24 @@ const verdictCases: FlowCase[] = [
       const k = kindIn(s, 'five_hour')
       const h: Holder[] = [{ kind: 'five_hour', resetsAtMs: R }]
       const answered = (a: Answered[]): [number, number] => [unansweredGating(a, [k]).length, unansweredHolders(s, a, h).length]
+      const answered5 = (end: number): Answered[] => [{ kind: 'five_hour', test: false, end }]
       eq(answered([]), [1, 1])
       eq(answered([{ kind: 'five_hour', test: false }]), [0, 0])
       eq(answered([{ kind: 'five_hour', test: false, to: 95 }]), [0, 0]) // 92 is below 95
       eq(answered([{ kind: 'five_hour', test: false, to: 91 }]), [1, 1]) // past the end point: asks again
       eq(answered([{ kind: 'five_hour', test: true }]), [1, 1]) // another basis
       eq(answered([{ kind: 'seven_day', test: false }]), [1, 1])
+      // A Resume answers a kind only in the window it was asked in. A later window asks again, also past its floor.
+      const q96 = question(sensed({ five: live(96, R) })) // asked at the floor: a full Resume
+      const moved = kindIn(sensed({ five: live(99, R + 30_000) }), 'five_hour') // the same window, its reset 30 s later
+      const nextWindow = (pct: number) => kindIn(sensed({ five: live(pct, R + 5 * HOUR), now: R + HOUR }), 'five_hour')
+      eq(unansweredGating(answeredOf(q96), [moved]).length, 0)
+      eq(unansweredGating(answeredOf(q96), [nextWindow(99)]).length, 1)
+      eq(unansweredHolders(sensed({ five: live(99, R + 5 * HOUR), now: R + HOUR }), answeredOf(q96), [{ kind: 'five_hour', resetsAtMs: R + 5 * HOUR }]).length, 1)
+      eq(unansweredGating(answeredOf(question(s)), [nextWindow(92)]).length, 1) // at the reserve, below its end point
+      eq(unansweredGating(answered5(R + 5 * HOUR), [k]).length, 1) // an earlier window than the Resume's
+      eq(unansweredGating([{ kind: 'five_hour', test: false }], [nextWindow(99)]).length, 0) // no end: an older answer matches
+      eq(unansweredGating(answeredOf(q96), [kindIn(sensed({ five: live(99, null) }), 'five_hour')]).length, 0) // no reset time: unknown
       // A holder of a kind the sense does not list reads as 0% on the real basis.
       eq(unansweredHolders({ kinds: [] }, [{ kind: 'seven_day', test: false }], [{ kind: 'seven_day', resetsAtMs: W }]), [])
       eq(unansweredHolders({ kinds: [] }, [{ kind: 'seven_day', test: false, to: 95 }], [{ kind: 'seven_day', resetsAtMs: W }]), [])
@@ -612,6 +626,33 @@ const verdictCases: FlowCase[] = [
       const next = { ...k, windowEnd: R + 5 * HOUR } // a new window starts a new set
       eq(claimTold(told, [next], 'S1:main'), true)
       eq([told.five_hour.windowEnd, [...told.five_hour.keys]], [R + 5 * HOUR, ['S1:main']])
+    },
+  },
+  {
+    name: 'toldWindow: a told loop, its told line and its debug line stay told while a real reset moves within the jitter (Codex 3.6)',
+    run: (eq) => {
+      const J = 10 * MIN
+      const k = k92()
+      const moved = { ...k, windowEnd: R - 30_000 }
+      eq([toldWindow(R, moved, J), toldWindow(R, moved), toldWindow(R, { ...k, windowEnd: R + J + 1 }, J), toldWindow(R, { ...moved, test: true }, J)], [true, false, false, false])
+      const told: Told = newTold()
+      eq(claimTold(told, [k], 'S1:main', J), true)
+      eq([claimTold(told, [moved], 'S1:main', J), toldMainOf(told, [moved], 'S1', J), told.five_hour.windowEnd], [false, true, R]) // the stored end stays
+      eq([toldHas(told, moved, 'S1:main'), toldMainOf(told, [{ ...k, windowEnd: R + J + 1 }], 'S1', J)], [false, false]) // Claude: exact
+      eq(claimTold(told, [{ ...k, windowEnd: R + 5 * HOUR }], 'S1:main', J), true) // a new window still starts a new set
+      const s = s92()
+      const marks: Record<Kind, string> = { five_hour: `${R}:reserve`, seven_day: '' }
+      eq(toldNotice(s, { gating: [moved] }, marks, J), undefined)
+      eq(marks.five_hour, `${R}:reserve`)
+      eq(toldNotice(s, { gating: [moved] }, { ...marks }), notice.told(factsFrom([moved], NOW))) // Claude: exact
+      const floor = { ...kindIn(sensed({ five: live(96, R) }), 'five_hour'), windowEnd: R - 30_000 }
+      eq(toldNotice(s, { gating: [floor] }, marks, J), notice.told(factsFrom([floor], NOW))) // another stage
+      eq(marks.five_hour, `${R - 30_000}:floor`)
+      const junk = { five_hour: 7, seven_day: '' } as unknown as Record<Kind, string>
+      eq(toldNotice(s, { gating: [k] }, junk, J), notice.told(factsFrom([k], NOW))) // a mark that is not text: shown now
+      const um = { reserve: { five_hour: R, seven_day: 0 }, open: { five_hour: 0, seven_day: 0 } }
+      eq(unattendedLines({ ...s, kinds: [moved] }, um, J), [])
+      eq(unattendedLines({ ...s, kinds: [moved] }, um).length, 1) // Claude: exact
     },
   },
   {
@@ -1065,6 +1106,9 @@ const commandCases: FlowCase[] = [
       // Codex design 2.1, CX17: a weekly-only plan names no 5-hour trip.
       eq(stopCase(sensed({ five: NONE }), cfgOf(), ['five_hour']), { reply: stopReply('none', undefined, 90, undefined, 90, undefined, ['five_hour']) })
       eq(stopCase(below, cfgOf(), ['five_hour']), { reply: stopReply('below', factsFrom([kindIn(below, 'five_hour')], NOW), 90, undefined, 90, undefined, ['five_hour']) })
+      // A plan with no weekly window names no weekly trip, as the report does.
+      eq(stopCase(below, cfgOf(), ['seven_day']), { reply: stopReply('below', factsFrom([kindIn(below, 'five_hour')], NOW), 90, undefined, undefined, undefined, ['seven_day']) })
+      eq(stopCase(sensed({ five: NONE }), cfgOf(), ['seven_day']), { reply: stopReply('none', undefined, 90, undefined, undefined, undefined, ['seven_day']) })
       const open = sensed({ five: live(92, R), now: R - 10 * MIN })
       eq(stopCase(open, cfgOf()), { reply: stopReply('open', factsFrom([kindIn(open, 'five_hour')], open.now)) })
       const both = sensed({ five: live(92, R), week: live(93, W), now: R - 10 * MIN })
@@ -1184,7 +1228,7 @@ function noSpan(f: Facts): Facts {
 
 const toldAt = (windowEnd: number, keys: string[]): Told => ({ ...newTold(), five_hour: { windowEnd, keys: new Set(keys) } })
 
-function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: StoppedRecord; question?: QuestionCore; told?: Told; present?: Kind[] } = {}) {
+function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: StoppedRecord; question?: QuestionCore; told?: Told; present?: Kind[]; jitter?: number } = {}) {
   const s = sensed(w)
   const view = seenSplit(s.kinds, o.lists ?? (() => []), s.now)
   return seenOf({
@@ -1200,6 +1244,7 @@ function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: Stop
     told: o.told ?? newTold(),
     sessionId: 'S1',
     ...(o.present === undefined ? {} : { present: o.present }),
+    ...(o.jitter === undefined ? {} : { jitter: o.jitter }),
   })
 }
 
@@ -1233,6 +1278,9 @@ const reportCases: FlowCase[] = [
       eq([p.phase, p.toldCount], ['told', 2])
       eq(seenFor({ five: live(96, R) }, { told }).toldCount, 1) // at the floor: the floor stage only
       eq(seenFor({ five: live(92, R) }, { told: toldAt(R - HOUR, ['S1:main']) }).toldCount, 0) // another window
+      eq(seenFor({ five: live(92, R) }, { told: toldAt(R - 30_000, ['S1:main']) }).toldCount, 0) // Claude: the ends must be equal
+      eq(seenFor({ five: live(92, R) }, { told: toldAt(R - 30_000, ['S1:main']), jitter: 10 * MIN }).toldCount, 1) // Codex 3.6: a reset that moved a little
+      eq(seenFor({ five: live(92, R) }, { told: toldAt(R - HOUR, ['S1:main']), jitter: 10 * MIN }).toldCount, 0)
       // Codex design 4.15: with the kinds the host reports, the phase reads their bases, so a weekly-only plan is armed.
       eq(seenFor({ five: NONE, week: live(40, W) }).phase, 'waiting')
       eq(seenFor({ five: NONE, week: live(40, W) }, { present: ['seven_day'] }).phase, 'armed')

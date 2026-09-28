@@ -1429,7 +1429,9 @@ function bury(tombs, t, now) {
   return [...live.filter((x) => !(x.until === t.until && x.to <= t.to)), t];
 }
 var unbury = (tombs, c) => (tombs ?? []).filter((t) => !buried([t], c));
-var answers = (named, k) => named.some((a) => a.kind === k.kind && a.test === k.test && (a.to === void 0 || k.pct < a.to));
+var answers = (named, k) => named.some(
+  (a) => a.kind === k.kind && a.test === k.test && sameWindow(k.kind, a.end ?? null, k.end ?? null) && (a.to === void 0 || k.pct < a.to)
+);
 function joinableAt(outcome, named, gating) {
   if (outcome === void 0 || outcome === "stop") return true;
   return outcome === "resume" && gating.every((k) => answers(named, k));
@@ -1489,10 +1491,12 @@ function perKind(entries, kinds = KINDS) {
   }
   return out;
 }
+var DATE_MAX_MS = 864e13;
 function parseStopped(raw) {
   const m = /^(\S+) (\d+) (\d+)(?: (\S+))?$/.exec(raw ?? "");
   if (m === null) return void 0;
   const rec = { sessionId: m[1] ?? "", windowEnd: Number(m[2]), at: Number(m[3]) };
+  if (rec.windowEnd > DATE_MAX_MS || rec.at > DATE_MAX_MS) return void 0;
   if (m[4] === void 0) return rec;
   const tags = m[4].split(",");
   if (tags.some((t) => !TAGS.has(t) && realOf(t) === void 0)) return void 0;
@@ -2402,7 +2406,12 @@ var resumeTo = (k) => k.tripped && !k.open && !k.atFloor && k.point !== null ? k
 var consentOfEnd = (end) => ({ until: end.end, ...end.to === void 0 ? {} : { to: end.to } });
 var realHolder = (k) => ({ kind: k.kind, resetsAtMs: k.realReset });
 var commandHolders = (kinds) => kinds.filter((k) => k.realIn).map(realHolder);
-var viewedOf = (k) => ({ kind: k.kind, pct: pctOf(k.basis) ?? 0, test: k.test });
+var viewedOf = (k) => ({
+  kind: k.kind,
+  pct: pctOf(k.basis) ?? 0,
+  test: k.test,
+  ...k.basis.kind === "none" || k.basis.resetsAtMs === null ? {} : { end: k.windowEnd }
+});
 var realBound = (k, now) => k.test ? k.realReset ?? now + FALLBACK_MS : k.windowEnd;
 var modeOf = (cfg) => cfg.pausePrompt === null ? "hold" : "tell";
 function testReading(pct, kind, live, now, inMs) {
@@ -2435,7 +2444,7 @@ var namedKinds = (s, a) => a.gating.length > 0 ? a.gating : s.kinds.filter((k) =
 var namedOf = (q) => q.kinds.map((kind) => ({ kind, test: q.ends[kind]?.test === true }));
 var answeredOf = (q) => q === void 0 ? [] : q.kinds.map((kind) => {
   const end = q.ends[kind];
-  return { kind, test: end?.test === true, ...end?.to === void 0 ? {} : { to: end.to } };
+  return { kind, test: end?.test === true, ...end?.to === void 0 ? {} : { to: end.to }, ...end === void 0 ? {} : { end: end.end } };
 });
 var namedStop = (r) => (r.kinds ?? ["five_hour"]).map((kind) => ({ kind, test: r.test === true }));
 var byKind = (fs) => [...fs].sort((a, b) => KINDS.indexOf(a.kind ?? "five_hour") - KINDS.indexOf(b.kind ?? "five_hour"));
@@ -2513,11 +2522,12 @@ function unansweredHolders(s, resumed, holders) {
 var consentedOf = (s, gating) => s.cfg.enabled && s.tripped && gating.length === 0;
 var checksStop = (s, gating) => s.cfg.enabled && s.attended && !consentedOf(s, gating);
 var newTold = () => ({ five_hour: { windowEnd: 0, keys: /* @__PURE__ */ new Set() }, seven_day: { windowEnd: 0, keys: /* @__PURE__ */ new Set() } });
-function toldHas(told, k, key) {
+var toldWindow = (end, k, jitter = 0) => end === k.windowEnd || jitter > 0 && !k.test && Math.abs(end - k.windowEnd) <= jitter;
+function toldHas(told, k, key, jitter = 0) {
   const t = told[k.kind];
-  return t.windowEnd === k.windowEnd && t.keys.has(stageKey(key, k.atFloor));
+  return toldWindow(t.windowEnd, k, jitter) && t.keys.has(stageKey(key, k.atFloor));
 }
-var toldMainOf = (told, gating, sessionId) => gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`));
+var toldMainOf = (told, gating, sessionId, jitter = 0) => gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`, jitter));
 function verdictOf(i) {
   const { s, gating } = i;
   const verdict = decide({
@@ -2535,10 +2545,10 @@ function verdictOf(i) {
   });
   return { verdict, stopped: i.stopped, gating, holders: i.holders };
 }
-function claimTold(told, gating, key) {
+function claimTold(told, gating, key, jitter = 0) {
   let fresh = false;
   for (const k of gating) {
-    if (told[k.kind].windowEnd !== k.windowEnd) told[k.kind] = { windowEnd: k.windowEnd, keys: /* @__PURE__ */ new Set() };
+    if (!toldWindow(told[k.kind].windowEnd, k, jitter)) told[k.kind] = { windowEnd: k.windowEnd, keys: /* @__PURE__ */ new Set() };
     const staged = stageKey(key, k.atFloor);
     if (told[k.kind].keys.has(staged)) continue;
     told[k.kind].keys.add(staged);
@@ -2547,20 +2557,30 @@ function claimTold(told, gating, key) {
   return fresh;
 }
 var toldMark = (k) => `${k.windowEnd}:${k.atFloor ? "floor" : "reserve"}`;
-function toldNotice(s, a, marks) {
+function toldNotice(s, a, marks, jitter = 0) {
   const ks = namedKinds(s, a);
-  if (ks.every((k) => marks[k.kind] === toldMark(k))) return void 0;
-  for (const k of ks) marks[k.kind] = toldMark(k);
+  const shown = (k) => {
+    const m = marks[k.kind];
+    if (typeof m !== "string") return false;
+    const mine = toldMark(k);
+    if (m === mine) return true;
+    const cut = m.lastIndexOf(":");
+    const end = Number(m.slice(0, cut));
+    return cut > 0 && m.slice(cut) === mine.slice(mine.lastIndexOf(":")) && Number.isFinite(end) && toldWindow(end, k, jitter);
+  };
+  const fresh = ks.filter((k) => !shown(k));
+  if (fresh.length === 0) return void 0;
+  for (const k of fresh) marks[k.kind] = toldMark(k);
   return notice.told(factsFrom(ks, s.now));
 }
-function unattendedLines(s, marks) {
+function unattendedLines(s, marks, jitter = 0) {
   const out = [];
-  const fresh = s.kinds.filter((k) => k.tripped && !k.open && marks.reserve[k.kind] !== k.windowEnd);
+  const fresh = s.kinds.filter((k) => k.tripped && !k.open && !toldWindow(marks.reserve[k.kind], k, jitter));
   if (fresh.length > 0) {
     for (const k of fresh) marks.reserve[k.kind] = k.windowEnd;
     out.push(debugLine.unattended(factsFrom(fresh, s.now), s.cfg.headless));
   }
-  const opened = s.kinds.filter((k) => k.open && marks.open[k.kind] !== k.windowEnd);
+  const opened = s.kinds.filter((k) => k.open && !toldWindow(marks.open[k.kind], k, jitter));
   if (opened.length > 0) {
     for (const k of opened) marks.open[k.kind] = k.windowEnd;
     out.push(debugLine.unattendedOpen(factsFrom(opened, s.now)));
@@ -2807,7 +2827,7 @@ function stopAskingIdle(q, auto, now) {
 }
 function stopCase(s, cfg, absent2) {
   const trip = tripOf(cfg.reserve);
-  const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : void 0;
+  const weeklyTrip = cfg.weeklyReserve > 0 && absent2?.includes("seven_day") !== true ? tripOf(cfg.weeklyReserve) : void 0;
   const read = s.kinds.filter((k) => k.basis.kind !== "none");
   if (read.length === 0) return { reply: stopReply("none", void 0, trip, void 0, weeklyTrip, void 0, absent2) };
   if (!s.tripped) return { reply: stopReply("below", factsFrom(read, s.now), trip, void 0, weeklyTrip, void 0, absent2) };
@@ -2910,7 +2930,7 @@ function seenOf(i) {
   const toldKeys = /* @__PURE__ */ new Set();
   for (const k of split.gating) {
     const t = i.told[k.kind];
-    if (t.windowEnd !== k.windowEnd) continue;
+    if (!toldWindow(t.windowEnd, k, i.jitter)) continue;
     for (const key of t.keys) {
       const ks = keyStage(key);
       if (key.startsWith(prefix) && ks.atFloor === k.atFloor) toldKeys.add(ks.base);
@@ -3743,10 +3763,10 @@ function createSense(d) {
   };
   const noteUnattended = (sx, s) => {
     try {
-      if (unattendedLines(s, unattendedMarksOf(sx.store.read())).length === 0) return;
+      if (unattendedLines(s, unattendedMarksOf(sx.store.read()), RESET_JITTER_MS).length === 0) return;
       const lines = sx.store.locked((tx) => {
         const m = unattendedMarksOf(tx.state);
-        const ls = unattendedLines(s, m);
+        const ls = unattendedLines(s, m, RESET_JITTER_MS);
         if (ls.length > 0) {
           tx.state.unattendedNote = m.reserve;
           tx.state.openNote = m.open;
@@ -3776,7 +3796,7 @@ function createSense(d) {
       }
       let toldMain = false;
       try {
-        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid);
+        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid, RESET_JITTER_MS);
       } catch (e) {
         d.log.debug(codexDebug.readFailed("the told loops", errText2(e)));
       }
@@ -3789,10 +3809,10 @@ function createSense(d) {
       try {
         const fresh = sx.store.locked((tx) => {
           const told = toldOf(tx.state);
-          if (!claimTold(told, namedKinds(s, a), key)) return false;
+          if (!claimTold(told, namedKinds(s, a), key, RESET_JITTER_MS)) return false;
           tx.state.told = toldBack(told);
           const marks = marksOf(tx.state.toldNotice);
-          const text2 = toldNotice(s, a, marks);
+          const text2 = toldNotice(s, a, marks, RESET_JITTER_MS);
           tx.state.toldNotice = marks;
           if (text2 !== void 0) noticeIn(tx.state, text2, s.now);
           return true;
@@ -4848,6 +4868,20 @@ function createQuestions(d) {
     if (q.leader !== null) return !alive(q.leader.pid) && !waited;
     return !(now - q.createdAt < BEAT_STALE_MS || waited);
   };
+  const lastAnswer = (tx) => {
+    try {
+      return tx.answer();
+    } catch {
+      return void 0;
+    }
+  };
+  const lateAnswer = (tx, s, a, now) => {
+    const ans = lastAnswer(tx);
+    if (ans === void 0 || typeof ans.key !== "string" || typeof ans.at !== "number" || !Array.isArray(ans.answered)) return void 0;
+    if (ans.outcome !== "resume" && ans.outcome !== "stop") return void 0;
+    if (!(s.now < ans.at && ans.at <= now)) return void 0;
+    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf)) ? ans.key : void 0;
+  };
   const ensureQuestion = (sx, call, opener, s, a) => {
     const now = d.clock.now();
     return sx.store.locked((tx) => {
@@ -4864,6 +4898,8 @@ function createQuestions(d) {
           if (opener === "loop") tx.setQuestion({ ...q, loops: q.loops + 1 });
           key = q.key;
         }
+      } else {
+        key = lateAnswer(tx, s, a, now);
       }
       if (key === void 0) {
         const core = questionOf(opener, s, a, s.now);
@@ -5120,13 +5156,13 @@ function createQuestions(d) {
             const after = readAnswer(sx);
             return after?.key === key ? after.outcome : "stop";
           }
-          if (!q.silent && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
-            void raise(sx, call, key).catch((e) => d.log.debug(codexDebug.gateError(errText5(e))));
-          }
           const elsewhere = decidedElsewhere(sx, q, now);
           if (elsewhere !== void 0) {
             await settle(sx, key, elsewhere, "elsewhere").catch((e) => d.log.debug(codexDebug.writeFailed("the answer", errText5(e))));
             return elsewhere;
+          }
+          if (!q.silent && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
+            void raise(sx, call, key).catch((e) => d.log.debug(codexDebug.gateError(errText5(e))));
           }
           if (await dueCheck(sx, key, q)) continue;
         }

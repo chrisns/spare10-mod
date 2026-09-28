@@ -175,6 +175,20 @@ test('parseStopped reads the three fields and refuses junk', () => {
   }
 })
 
+test('parseStopped refuses a time that no Date can hold, and keeps the last one', () => {
+  for (const junk of [
+    `S1 99999999999999999 ${T0}`,
+    `S1 ${R} 99999999999999999`,
+    `S1 99999999999999999 ${T0} five_hour,auto`,
+    `S1 8640000000000001 ${T0} five_hour`,
+    `S1 ${'9'.repeat(400)} ${T0} five_hour,auto`,
+  ]) {
+    expect(parseStopped(junk)).toBeUndefined()
+  }
+  expect(parseStopped('S1 8640000000000000 8640000000000000 five_hour')?.windowEnd).toBe(8.64e15)
+  expect(new Date(8.64e15).toISOString()).toBe('+275760-09-13T00:00:00.000Z')
+})
+
 test('shouldAbortTurn: attended always, unattended only on a repeat', () => {
   expect(shouldAbortTurn(true, false)).toBe(true)
   expect(shouldAbortTurn(true, true)).toBe(true)
@@ -826,6 +840,21 @@ test('answers: a Resume answers a kind only on its basis and below its end point
   expect(answers([{ kind: 'five_hour', test: true }], { kind: 'five_hour', pct: 91, test: false })).toBe(false)
   expect(answers(full, { kind: 'five_hour', pct: 91, test: true })).toBe(false)
   expect(answers([], { kind: 'five_hour', pct: 91, test: false })).toBe(false)
+})
+
+test('answers: a Resume answers a kind only in the window of its question, and an unknown end matches', () => {
+  const asked: Answered[] = [{ kind: 'five_hour', test: false, end: R }]
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R })).toBe(true)
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R + 30_000 })).toBe(true) // a reset that moved a little
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R + 5 * HOUR })).toBe(false) // the next window asks again
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R - 5 * HOUR })).toBe(false)
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false })).toBe(true) // no reset time: unknown
+  expect(answers([{ kind: 'five_hour', test: false }], { kind: 'five_hour', pct: 99, test: false, end: R + 5 * HOUR })).toBe(true) // an older answer
+  const week: Answered[] = [{ kind: 'seven_day', test: false, to: 95, end: R + 3 * DAY }]
+  expect(answers(week, { kind: 'seven_day', pct: 93, test: false, end: R + 3 * DAY + HOUR })).toBe(true)
+  expect(answers(week, { kind: 'seven_day', pct: 93, test: false, end: R + 10 * DAY })).toBe(false)
+  expect(joinableAt('resume', asked, [{ kind: 'five_hour', pct: 99, test: false, end: R + 5 * HOUR }])).toBe(false)
+  expect(joinableAt('resume', asked, [{ kind: 'five_hour', pct: 99, test: false, end: R }])).toBe(true)
 })
 
 test('joinableAt: a settled Resume at the reserve takes no joiner past its end point or on another basis, and joinable keeps its 0.2 result', () => {

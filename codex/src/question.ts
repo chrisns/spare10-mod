@@ -125,6 +125,29 @@ export function createQuestions(d: QuestionDeps): Questions {
     return !(now - q.createdAt < BEAT_STALE_MS || waited)
   }
 
+  /** Under the lock: the last answer, or undefined when it is absent or of another format (then nothing joins it). */
+  const lastAnswer = (tx: Tx): AnswerFile | undefined => {
+    try {
+      return tx.answer()
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * B50: a step that sensed before a settle, and now finds no open question, joins that answer as
+   * register.tsx joins a question settled during its writes: a Stop here, or a Resume that answers every
+   * kind that gates in the step's sense. The answer must be newer than the sense (strictly: at the same
+   * time the sense may have seen it). Else the step opens a new question.
+   */
+  const lateAnswer = (tx: Tx, s: Sensed, a: Pick<Acted, 'gating' | 'holders'>, now: number): string | undefined => {
+    const ans = lastAnswer(tx)
+    if (ans === undefined || typeof ans.key !== 'string' || typeof ans.at !== 'number' || !Array.isArray(ans.answered)) return undefined
+    if (ans.outcome !== 'resume' && ans.outcome !== 'stop') return undefined
+    if (!(s.now < ans.at && ans.at <= now)) return undefined
+    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf)) ? ans.key : undefined
+  }
+
   const ensureQuestion: Questions['ensureQuestion'] = (sx, call, opener, s, a) => {
     const now = d.clock.now()
     return sx.store.locked((tx) => {
@@ -141,6 +164,8 @@ export function createQuestions(d: QuestionDeps): Questions {
           if (opener === 'loop') tx.setQuestion({ ...q, loops: q.loops + 1 })
           key = q.key
         }
+      } else {
+        key = lateAnswer(tx, s, a, now) // the wait then returns its outcome at once, with no form
       }
       if (key === undefined) {
         const core: QuestionCore = questionOf(opener, s, a, s.now)
@@ -447,14 +472,15 @@ export function createQuestions(d: QuestionDeps): Questions {
             const after = readAnswer(sx)
             return after?.key === key ? after.outcome : 'stop'
           }
-          if (!q.silent && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
-            void raise(sx, call, key).catch((e: unknown) => d.log.debug(codexDebug.gateError(errText(e))))
-          }
+          // Decided elsewhere first: a form cannot be withdrawn, so a question that is decided sends none.
           const elsewhere = decidedElsewhere(sx, q, now)
           if (elsewhere !== undefined) {
             // The consent or the stop is on disk already: the settle only closes the question.
             await settle(sx, key, elsewhere, 'elsewhere').catch((e: unknown) => d.log.debug(codexDebug.writeFailed('the answer', errText(e))))
             return elsewhere
+          }
+          if (!q.silent && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
+            void raise(sx, call, key).catch((e: unknown) => d.log.debug(codexDebug.gateError(errText(e))))
           }
           if (await dueCheck(sx, key, q)) continue // the top returns `again`
         }
