@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync,
 import { join } from 'node:path'
 import { VERSION } from '../../hooks/core/text.ts'
 import { readJson, withLock } from '../src/files.ts'
-import { NOTICE_TTL_MS, PRUNE_AFTER_MS, PRUNE_EVERY_MS } from '../src/timing.ts'
+import { NOTICE_TTL_MS, PRUNE_AFTER_MS, PRUNE_AGAIN_MS, PRUNE_EVERY_MS, PRUNE_MAX } from '../src/timing.ts'
+import { addHeld, heldNames, threadIds } from '../src/held.ts'
 import { FormatError, checkId, freshState, listSessions, pruneSessions, sessionStore, testOf, warnOnce } from '../src/store.ts'
 import type { AnswerFile, QuestionFile, SessionState, Unstamped } from '../src/store.ts'
 import { fakeClock } from './helpers/clock.ts'
@@ -250,6 +251,22 @@ test('store: a session or thread id that cannot name a file throws', (t) => {
   checkId('thread id', '01a0da2b-3ff7-7ad0-b5ee-c6281c89518f')
 })
 
+test('store: a stray file in threads/ that no thread id can have is skipped, and a join of the question still works', (t) => {
+  const w = world(t)
+  const store = w.store()
+  const call = { id: 'C1', site: 'tool' as const, turn: 'U1', since: T0, dropped: new AbortController().signal, drop: () => {}, holding: true }
+  store.locked((tx) => addHeld(tx, 'T1', call, { brokerPid: 7, hostPid: 8 }, T0, 'k1'))
+  const th = readFileSync(w.file(join('threads', 'T1.json')), 'utf8')
+  // A sync conflict copy and an AppleDouble file.
+  writeFileSync(w.file(join('threads', 'T1 2.json')), th)
+  writeFileSync(w.file(join('threads', '._T1.json')), '')
+  assert.deepEqual(threadIds(store), ['T1'])
+  assert.equal(
+    store.locked((tx) => heldNames(tx, store, 'k1', T0, (p) => p === 7)),
+    true,
+  )
+})
+
 test('store: a test reading of another host pid is hidden, and cleared with the next write', (t) => {
   const w = world(t)
   const test = { hostPid: 111, kinds: { five_hour: { pct: 92, resetsAtMs: T0 + 3_600_000 } }, consent: {} }
@@ -416,8 +433,31 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
     recent: setup('S-RECENT', (tx) => {
       tx.state.hostPid = 12
     }),
+    // Codex quit while the form showed: the question stays, and its leader is dead.
     question: setup('S-QUESTION', (tx) => {
+      tx.setQuestion({ ...question('k1'), leader: { brokerId: 'b', pid: 13, threadId: 'T1', call: 'C1' } })
+    }),
+    leader: setup('S-LEADER', (tx) => {
+      tx.setQuestion({ ...question('k1'), leader: { brokerId: 'b', pid: LIVE, threadId: 'T1', call: 'C1' } })
+    }),
+    questionFormat: setup('S-QFORMAT', (tx) => {
       tx.setQuestion(question('k1'))
+    }),
+    // A session of the Codex daemon, which still runs: its broker is dead.
+    daemon: setup('S-DAEMON', (tx) => {
+      tx.state.hostPid = LIVE
+      tx.state.hostKind = 'daemon'
+      const th = tx.thread('T1')
+      th.brokerPid = 13
+      th.hostPid = LIVE
+    }),
+    // The same, but the daemon has the thread loaded: its broker is alive.
+    daemonBroker: setup('S-DAEMONBROKER', (tx) => {
+      tx.state.hostPid = LIVE
+      tx.state.hostKind = 'daemon'
+      const th = tx.thread('T1')
+      th.brokerPid = LIVE
+      th.hostPid = LIVE
     }),
     stop: setup('S-STOP', (tx) => {
       tx.state.stopped = `S-STOP ${now + 3_600_000} ${now - OLD} five_hour`
@@ -473,6 +513,7 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
   const toFormat2 = (file: string): void => writeFileSync(file, JSON.stringify({ ...(JSON.parse(readFileSync(file, 'utf8')) as object), v: 2 }))
   toFormat2(join(dirs.format, 'state.json'))
   toFormat2(join(dirs.threadFormat, 'threads', 'T1.json'))
+  toFormat2(join(dirs.questionFormat, 'question.json'))
   for (const [k, dir] of Object.entries(dirs)) if (k !== 'recent') age(dir, OLD)
   age(dirs.recent, PRUNE_AFTER_MS - 2 * PRUNE_EVERY_MS)
   const beatAt = (now - 60_000) / 1000
@@ -482,18 +523,20 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
   mkdirSync(join(w.data, 'sessions', '.none'), { recursive: true })
   // A live lock of another process: the folder stays.
   const gone = withLock(join(dirs.locked, 'state.lock'), 'other', () => pruneSessions({ data: w.data }, 'broker-1', now, alive))
-  assert.deepEqual(gone.sort(), ['S-OLD', 'S-OLDSTOP'])
+  assert.deepEqual(gone.sort(), ['S-DAEMON', 'S-OLD', 'S-OLDSTOP', 'S-QUESTION'])
   const left = readdirSync(join(w.data, 'sessions')).sort()
   assert.deepEqual(left, [
     '.none',
     'S-BEAT',
     'S-BROKER',
+    'S-DAEMONBROKER',
     'S-EDITED',
     'S-FORMAT',
     'S-HELD',
     'S-HOST',
+    'S-LEADER',
     'S-LOCKED',
-    'S-QUESTION',
+    'S-QFORMAT',
     'S-RECENT',
     'S-STOP',
     'S-THREADFORMAT',
@@ -513,4 +556,24 @@ test('store: pruneSessions removes only the old folders that nothing needs, once
   const empty = join(w.data, '..', 'empty')
   assert.deepEqual(pruneSessions({ data: empty }, 'broker-1', now, alive), [])
   assert.equal(existsSync(empty), false)
+})
+
+test('store: pruneSessions that stops at PRUNE_MAX goes on PRUNE_AGAIN_MS later, not a day later', (t) => {
+  const w = world(t)
+  const now = T0
+  const root = join(w.data, 'sessions')
+  const at = (now - PRUNE_AFTER_MS - 60_000) / 1000
+  for (let i = 0; i < PRUNE_MAX + 3; i += 1) {
+    const dir = join(root, `S-${String(i).padStart(4, '0')}`)
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ ...freshState(`S-${i}`), hostPid: 12 }))
+    utimesSync(file, at, at)
+  }
+  const dead = (): boolean => false
+  assert.equal(pruneSessions({ data: w.data }, 'broker-1', now, dead).length, PRUNE_MAX)
+  assert.deepEqual(pruneSessions({ data: w.data }, 'broker-1', now + PRUNE_AGAIN_MS - 1, dead), [])
+  assert.equal(pruneSessions({ data: w.data }, 'broker-1', now + PRUNE_AGAIN_MS, dead).length, 3)
+  assert.equal(readFileSync(join(w.data, 'pruned'), 'utf8'), String(now + PRUNE_AGAIN_MS), 'below the cap: once a day again')
+  assert.deepEqual(readdirSync(root), [])
 })

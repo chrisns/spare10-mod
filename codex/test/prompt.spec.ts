@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { codexText, withPrefix } from '../../hooks/core/codex.ts'
 import { formatStopped } from '../../hooks/core/decide.ts'
 import { questionText, resumeContext } from '../../hooks/core/text.ts'
@@ -154,12 +156,26 @@ test('prompt: CX18 for a held prompt of a broker that died', async (t) => {
   const w = world(t)
   const b = await w.broker()
   w.store().locked((tx) => {
-    tx.thread(SID).held = [{ call: '9', site: 'prompt', turn: 'U-lost', since: T0 - 5 * MIN, prompt: 'the lost prompt', brokerPid: 999, hostPid: 3999 }]
+    tx.thread(SID).held = [{ call: '9', site: 'prompt', turn: 'U-lost', since: T0 - 5 * MIN, brokerPid: 999, hostPid: 3999 }]
   })
   w.reading(SID, 40, { reset: RESET })
   const out = parsed(await b.gate('prompt', { prompt: 'hello again' }))
   assert.equal(out['systemMessage'], withPrefix(codexText.promptLost))
   assert.deepEqual(w.thread(SID)?.held, [])
+})
+
+test('prompt: a held person prompt keeps no copy of its text in the thread file', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  const h = b.call('prompt', { prompt: 'a long pasted log that only the model reads' })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the prompt holds')
+  assert.deepEqual(
+    w.thread(SID)?.held.map((e) => e.site),
+    ['prompt'],
+  )
+  assert.ok(!readFileSync(w.file(join('threads', `${SID}.json`)), 'utf8').includes('pasted log'), 'the text stays out of the file')
 })
 
 test('prompt: a typed prompt while a loop question is open joins it: one form, and one Resume lets both in', async (t) => {

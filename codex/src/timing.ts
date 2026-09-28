@@ -13,6 +13,12 @@ export const LIVE_RELEASE_MAX_AGE_MS = 30_000
 /** The most a question check waits for a fresh live read (3.6). */
 export const LIVE_POLL_MS = 60_000
 
+/**
+ * A reading time more than this ahead of the clock comes from before a step back of the wall clock (3.6). It
+ * has no known age: it is never young, and any reading of a known time is newer.
+ */
+export const CLOCK_SKEW_MS = 60_000
+
 /** A near-trip gate reads the quota again unless the last read is younger (A19). */
 export const LIVE_NEAR_MAX_AGE_MS = 15_000
 
@@ -56,11 +62,14 @@ export const LOCK_SLEEP_MAX_MS = 10
 /** A session folder whose files did not change for this long can go: 30 days, past the end of any window (3.7). */
 export const PRUNE_AFTER_MS = 30 * 24 * 3_600_000
 
-/** The prune of old session folders runs at most this often for each data dir. */
+/** The prune of old session folders runs at most this often for each data dir, unless it stopped at PRUNE_MAX. */
 export const PRUNE_EVERY_MS = 24 * 3_600_000
 
 /** One prune removes at most this many session folders. The next prune goes on. */
 export const PRUNE_MAX = 500
+
+/** A prune that stopped at PRUNE_MAX lets the next prune run this long after it, not a day after it. */
+export const PRUNE_AGAIN_MS = 10 * 60_000
 
 /** The production Wake polls the session files this often while the broker holds a call (3.7). */
 export const WAKE_POLL_MS = 1_000

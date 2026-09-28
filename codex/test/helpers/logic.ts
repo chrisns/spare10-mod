@@ -131,7 +131,7 @@ export type TestCall = HeldCall & { ac: AbortController }
 
 let nextCall = 0
 
-export function heldCall(o: { id?: string | number; site?: GateSite; turn?: string; since?: number; prompt?: string } = {}): TestCall {
+export function heldCall(o: { id?: string | number; site?: GateSite; turn?: string; since?: number } = {}): TestCall {
   nextCall += 1
   const ac = new AbortController()
   return {
@@ -142,7 +142,6 @@ export function heldCall(o: { id?: string | number; site?: GateSite; turn?: stri
     dropped: ac.signal,
     drop: () => ac.abort(),
     holding: true,
-    ...(o.prompt === undefined ? {} : { prompt: o.prompt }),
     ac,
   }
 }

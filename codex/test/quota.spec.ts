@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, voidedByReset } from '../../hooks/core/codex.ts'
+import { codexDebug, liveOf, voidedByReset } from '../../hooks/core/codex.ts'
 import { VERSION } from '../../hooks/core/text.ts'
 import { readJson, writeJson } from '../src/files.ts'
 import type { Paths } from '../src/paths.ts'
@@ -10,7 +10,7 @@ import { createQuota } from '../src/quota.ts'
 import type { LiveErrorFile, LiveFile, QuotaCtx, SeedFile } from '../src/quota.ts'
 import { createRollouts } from '../src/rollout.ts'
 import { sessionStore } from '../src/store.ts'
-import { A_NEAR_MS, A_READ_MS, FIRST_READ_WAIT_MS, LIVE_NEAR_MAX_AGE_MS } from '../src/timing.ts'
+import { A_NEAR_MS, A_READ_MS, CLOCK_SKEW_MS, FIRST_READ_WAIT_MS, LIVE_NEAR_MAX_AGE_MS } from '../src/timing.ts'
 import { fakeClock } from './helpers/clock.ts'
 import { memoryLog } from './helpers/log.ts'
 import { memoryDaemon } from './helpers/memory-daemon.ts'
@@ -19,7 +19,8 @@ import { tempDir } from './helpers/tmp.ts'
 import { memoryWake } from './helpers/wake.ts'
 
 // The quota sources (Codex design 3.6, 8.2 quota.spec): route A through live.json and live.lock, route C
-// through the own rollout and seed.json, the present kinds, blindness, credits and the near-trip read.
+// through the own rollout and seed.json, the present kinds, blindness, credits and the near-trip read, a
+// wall clock that went back, and files with a bad inner shape.
 //
 // The kit port (8.2). The gate half of each case (pass, trip, ask) comes with sense.spec and gate.spec.
 // Each tests/kit case and the Codex case that tests it: codex/test/kit-port.txt, kept complete by kit-port.spec.ts.
@@ -51,6 +52,13 @@ function reply(o: { five?: number; week?: number; credits?: Credits | null; allo
     rateLimitReachedType: null,
   }
   return { ordinaryUsageAllowed: o.allowed === undefined ? true : o.allowed, rateLimits: codex, rateLimitsByLimitId: { codex } }
+}
+
+/** A live read of a reply at `at`, as quota.ts writes it into live.json. */
+function liveRead(r: unknown, at: number): unknown {
+  const l = liveOf(r, at, 'daemon')
+  if ('error' in l) throw new Error(l.error)
+  return l
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
@@ -560,4 +568,95 @@ test('quota: the count of an absent kind stops at two, so later observations wri
   r.tokenCount({ at: T0 - MIN, primary: week(97) })
   assert.deepEqual(q.view(w.sx(r.path), T0).present, ['seven_day'])
   assert.equal(w.store().read().rev, before.rev)
+})
+
+// A step back of the wall clock leaves files whose times lie ahead of the clock. Such a time has no known age.
+const AHEAD = T0 + HOUR
+
+test('quota: a live.json whose time is ahead of the clock is not young, so live reads the daemon and writes it again', async (t) => {
+  const w = world(t)
+  mkdirSync(w.data, { recursive: true })
+  w.daemon.script.rateLimits = reply({ five: 40 })
+  const q = w.quota()
+  // Within the skew, a time ahead is still young.
+  writeJson(w.file('live.json'), { at: T0 + CLOCK_SKEW_MS, route: 'daemon', v: 1, by: VERSION, recent: [] })
+  assert.equal((await q.live(30_000))?.at, T0 + CLOCK_SKEW_MS)
+  assert.equal(w.daemon.callsOf('rateLimits').length, 0)
+  writeJson(w.file('live.json'), { at: AHEAD, route: 'daemon', v: 1, by: VERSION, recent: [] })
+  w.daemon.script.rateLimits = reply({ five: 95 })
+  const got = await q.live(30_000)
+  assert.equal(w.daemon.callsOf('rateLimits').length, 1)
+  assert.equal(got?.at, T0)
+  assert.equal(readJson<LiveFile>(w.file('live.json'))?.at, T0)
+  assert.equal(q.view(w.sx(null), T0).readings.five_hour?.pct, 95)
+})
+
+test('quota: a reading whose time is ahead of the clock loses to any reading of a known time, and still answers alone', async (t) => {
+  const w = world(t)
+  const q = w.quota()
+  mkdirSync(w.data, { recursive: true })
+  // A seed.json entry ahead: the own rollout wins, and the entry is replaced.
+  writeJson(w.file('seed.json'), { v: 1, by: VERSION, five_hour: { pct: 40, resetsAtMs: FIVE_RESET, at: AHEAD } } satisfies SeedFile)
+  const r = w.rollout().tokenCount({ at: T0 - MIN, primary: five(95) })
+  let v = q.view(w.sx(r.path), T0)
+  assert.equal(v.readings.five_hour?.pct, 95)
+  assert.deepEqual(readJson<SeedFile>(w.file('seed.json'))?.five_hour, { pct: 95, resetsAtMs: FIVE_RESET, at: T0 - MIN })
+  // A live.json ahead loses to the own rollout.
+  writeJson(w.file('live.json'), { ...(liveRead(reply({ five: 40 }), AHEAD) as object), v: 1, by: VERSION, recent: [] })
+  v = q.view(w.sx(r.path), T0)
+  assert.equal(v.own.five_hour?.from, 'rollout')
+  assert.equal(v.readings.five_hour?.pct, 95)
+  // A rollout line ahead loses to a live read.
+  const ahead = w.rollout('ahead.jsonl').tokenCount({ at: AHEAD, primary: five(40) })
+  w.daemon.script.rateLimits = reply({ five: 96 })
+  await q.live(30_000)
+  v = q.view(w.sx(ahead.path), T0)
+  assert.equal(v.own.five_hour?.from, 'daemon')
+  assert.equal(v.readings.five_hour?.pct, 96)
+  // Alone, a seed ahead still answers: no daemon and no own reading.
+  const u = world(t)
+  u.link.socket = false
+  mkdirSync(u.data, { recursive: true })
+  writeJson(u.file('seed.json'), { v: 1, by: VERSION, five_hour: { pct: 95, resetsAtMs: FIVE_RESET, at: AHEAD } } satisfies SeedFile)
+  assert.equal(u.quota().view(u.sx(null), T0).readings.five_hour?.pct, 95)
+})
+
+test('quota: an absentAt ahead of the clock counts as none, so a later observation still counts', (t) => {
+  const w = world(t)
+  const q = w.quota()
+  w.store().locked((tx) => {
+    tx.state.absentCount = { five_hour: 1, seven_day: 0 }
+    tx.state.absentAt = AHEAD
+  })
+  const r = w.rollout().tokenCount({ at: T0 - MIN, primary: week(96) })
+  assert.deepEqual(q.view(w.sx(r.path), T0).present, ['seven_day'])
+  assert.equal(w.store().read().absentAt, T0 - MIN)
+})
+
+test('quota: a bad credits or kind entry of seed.json counts as absent, and the next update writes a good one', async (t) => {
+  const w = world(t)
+  mkdirSync(w.data, { recursive: true })
+  writeFileSync(w.file('seed.json'), JSON.stringify({ v: 1, by: 'x', credits: null, five_hour: null, seven_day: { pct: 20, resetsAtMs: WEEK_RESET, at: T0 - HOUR } }))
+  w.daemon.script.rateLimits = reply({ five: 91 })
+  const q = w.quota()
+  await q.live(30_000)
+  const v = q.view(w.sx(null), T0)
+  assert.equal(v.readings.five_hour?.pct, 91)
+  assert.equal(v.readings.seven_day?.pct, 20)
+  const seed = readJson<SeedFile>(w.file('seed.json'))
+  assert.deepEqual(seed?.credits, { at: T0, value: { hasCredits: false, unlimited: false, balance: '0' } })
+  assert.deepEqual(seed?.five_hour, { pct: 91, resetsAtMs: FIVE_RESET, at: T0 })
+})
+
+test('quota: a live.json whose blind history is no list counts as none, and the next read writes a good one', async (t) => {
+  const w = world(t)
+  mkdirSync(w.data, { recursive: true })
+  writeJson(w.file('live.json'), { ...(liveRead(reply({ five: 40 }), T0 - HOUR) as object), v: 1, by: VERSION, recent: {} })
+  const q = w.quota()
+  assert.equal(q.view(w.sx(null), T0).live, undefined)
+  w.daemon.script.rateLimits = reply({ five: 93 })
+  assert.equal((await q.live(30_000))?.at, T0)
+  assert.equal(w.daemon.callsOf('rateLimits').length, 1)
+  assert.ok(Array.isArray(readJson<LiveFile>(w.file('live.json'))?.recent))
+  assert.equal(q.view(w.sx(null), T0).readings.five_hour?.pct, 93)
 })

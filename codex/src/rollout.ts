@@ -1,6 +1,6 @@
 import { statSync } from 'node:fs'
-import { codexLimits, isCodexBucket, isObservation, sessionMetaOf, tokenCountOf, turnEndOf } from '../../hooks/core/codex.ts'
-import type { CodexSnapshot } from '../../hooks/core/codex.ts'
+import { codexLimits, isCodexBucket, isObservation, sessionMetaOf, tokenCountOf, turnContextOf, turnEndOf } from '../../hooks/core/codex.ts'
+import type { CodexSnapshot, TurnContextFacts } from '../../hooks/core/codex.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 import { firstLine, readBack, readFrom } from './files.ts'
 import type { Lines } from './files.ts'
@@ -8,10 +8,11 @@ import { ROLLOUT_CHUNK_BYTES, ROLLOUT_SCAN_MAX } from './timing.ts'
 
 // The rollout cursor (Codex design 3.6, route C). Each broker keeps, per rollout path, the offset of the
 // next line and what it found so far: the newest `codex` token_count, the newest turn start and the turn
-// ends, and the session_meta of the first line. A read parses only the bytes after the offset, up to the
-// last full line. On the first read, or when the file got shorter or was replaced, it scans backwards in
-// 256 KiB chunks until it finds the newest `codex` observation, at most 8 MiB, and reads the first line.
-// One sampling step can write more than 256 KiB between two token_count lines, so a fixed tail is not enough.
+// ends, the newest turn_context (CX9), and the session_meta of the first line. A read parses only the bytes
+// after the offset, up to the last full line. On the first read, or when the file got shorter or was
+// replaced, it scans backwards in 256 KiB chunks until it finds the newest `codex` observation, at most
+// 8 MiB, and reads the first line. One sampling step can write more than 256 KiB between two token_count
+// lines, so a fixed tail is not enough.
 
 /** A `codex` token_count: its time (the line's timestamp) and its snapshot. */
 export type TokenCount = { at: number; snapshot: CodexSnapshot }
@@ -40,6 +41,8 @@ export type Cursor = {
   meta?: SessionMeta
   turnStart?: TurnStart
   turnEnds: Map<string, TurnEnd>
+  /** The newest `turn_context`: the sandbox and approval of the turn (CX9). */
+  turnContext?: TurnContextFacts
 }
 
 /** One read of a rollout path. */
@@ -52,6 +55,7 @@ export type RolloutRead = {
   meta?: SessionMeta
   turnStart?: TurnStart
   turnEnds: Map<string, TurnEnd>
+  turnContext?: TurnContextFacts
 }
 
 /** The file reads of the cursor. The specs wrap them to see which bytes a read touches. */
@@ -147,10 +151,11 @@ function keepEnd(c: Cursor, end: TurnEnd): void {
 
 /**
  * One codex token_count into the cursor. True when it is an observation. `forward`: the lines come oldest
- * first, so a later line wins a tie. A backward scan keeps the first line it meets.
+ * first, and Codex only appends, so a later line wins whatever its time (the wall clock can go back). A
+ * backward scan keeps the first line it meets.
  */
 function noteCount(c: Cursor, tc: TokenCount, forward: boolean): boolean {
-  const wins = (prev: TokenCount | undefined): boolean => prev === undefined || tc.at > prev.at || (forward && tc.at === prev.at)
+  const wins = (prev: TokenCount | undefined): boolean => prev === undefined || forward
   if (wins(c.newest)) c.newest = tc
   if (!isObservation(tc.snapshot)) return false
   if (wins(c.newestObs)) c.newestObs = tc
@@ -185,6 +190,11 @@ function parseLine(c: Cursor, line: string, fresh: TokenCount[]): void {
     if (c.turnStart === undefined || !(start.at < c.turnStart.at)) c.turnStart = start
     return
   }
+  const ctx = turnContextOf(line)
+  if (ctx !== undefined) {
+    c.turnContext = ctx // lines come oldest first: the later one is newer
+    return
+  }
   if (c.meta === undefined) {
     const m = metaOf(line)
     if (m !== undefined) c.meta = m
@@ -194,10 +204,11 @@ function parseLine(c: Cursor, line: string, fresh: TokenCount[]): void {
 /**
  * The first read of a path (or after it shrank, was replaced, or grew by more than the scan cap): a
  * backward scan until it has the newest observation (3.6), with the newer window-less token_counts, the turn
- * ends and a turn start of the scanned part, and the session_meta of the first line. It never scans on for a
- * turn start (CX-R4): no part of the broker reads one yet, and a long turn would make each scan read 8 MiB.
- * The next forward read starts after the last full line of the file: the end of the newest chunk that holds
- * a full line.
+ * ends and a turn start of the scanned part, and the session_meta of the first line. The newest turn_context
+ * comes from the chunks it read: a turn writes it before its token_counts, so the chunk of the newest
+ * observation usually holds it. It never reads on for a turn start or a turn_context (CX-R4): a long turn
+ * would make each scan read 8 MiB. The next forward read starts after the last full line of the file: the end
+ * of the newest chunk that holds a full line.
  */
 function scan(io: RolloutIo, path: string, c: Cursor, fresh: TokenCount[]): void {
   let fromEnd = 0
@@ -210,7 +221,8 @@ function scan(io: RolloutIo, path: string, c: Cursor, fresh: TokenCount[]): void
     if (part === undefined) break
     if (offset === undefined && part.lines.length > 0) offset = part.end
     let found = c.newestObs !== undefined
-    for (let i = part.lines.length - 1; i >= 0 && !found; i -= 1) {
+    let i = part.lines.length - 1
+    for (; i >= 0 && !found; i -= 1) {
       const line = part.lines[i] ?? ''
       const tc = codexCountOf(line)
       if (tc !== undefined) {
@@ -226,8 +238,20 @@ function scan(io: RolloutIo, path: string, c: Cursor, fresh: TokenCount[]): void
       }
       if (c.turnStart === undefined) {
         const start = turnStartOf(line)
-        if (start !== undefined) c.turnStart = start
+        if (start !== undefined) {
+          c.turnStart = start
+          continue
+        }
       }
+      if (c.turnContext === undefined) {
+        const ctx = turnContextOf(line)
+        if (ctx !== undefined) c.turnContext = ctx // newest first: the first one met is the newest
+      }
+    }
+    // The rest of this chunk is read already: the turn_context of the turn of the newest observation.
+    for (; i >= 0 && c.turnContext === undefined; i -= 1) {
+      const ctx = turnContextOf(part.lines[i] ?? '')
+      if (ctx !== undefined) c.turnContext = ctx
     }
     const scanned = part.size - part.start
     lastStart = part.start
@@ -253,6 +277,7 @@ const readOf = (c: Cursor, fresh: TokenCount[]): RolloutRead => ({
   ...(c.meta === undefined ? {} : { meta: c.meta }),
   ...(c.turnStart === undefined ? {} : { turnStart: c.turnStart }),
   turnEnds: c.turnEnds,
+  ...(c.turnContext === undefined ? {} : { turnContext: c.turnContext }),
 })
 
 /** The cursors of one broker. `io` replaces the file reads in the specs. */

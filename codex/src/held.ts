@@ -6,7 +6,7 @@ import type { Clock } from './clock.ts'
 import { readOwnJson } from './files.ts'
 import type { Log } from './log.ts'
 import type { Rollouts } from './rollout.ts'
-import { FORMAT } from './store.ts'
+import { FORMAT, isSafeId } from './store.ts'
 import type { HeldEntry, SessionStore, ThreadState, Tx } from './store.ts'
 import { BEAT_STALE_MS, TICK_MS } from './timing.ts'
 import type { Wake } from './wake.ts'
@@ -21,8 +21,8 @@ import type { Wake } from './wake.ts'
  * One gate call that the broker may hold (7.2). `dropped` aborts when Codex dropped the call: an Esc, the
  * Interrupt gate, the broker's own `turn/interrupt`, or a turn end in the rollout (4.12). `holding` is the
  * actuator flag of 4.2: a call that holds answers its site's refusal when the gate fails or the broker shuts
- * down (3.4), never a pass. `attended` picks that refusal's text: set it before `holding`. `prompt`: the call
- * is a person prompt (CX18 finds it after a host restart).
+ * down (3.4), never a pass. `attended` picks that refusal's text: set it before `holding`. A held person
+ * prompt keeps no copy of its text: CX18 finds it by its site after a host restart.
  */
 export type HeldCall = {
   id: string | number
@@ -33,7 +33,6 @@ export type HeldCall = {
   drop(): void
   holding: boolean
   attended?: boolean
-  prompt?: string
 }
 
 /** The pids that own a held entry: this broker, and the Codex process that hosts its thread. */
@@ -58,7 +57,6 @@ export function addHeld(tx: Tx, tid: string, call: HeldCall, owner: HeldOwner, n
     ...(call.turn === undefined ? {} : { turn: call.turn }),
     since: call.since,
     ...(question === undefined ? {} : { question }),
-    ...(call.prompt === undefined ? {} : { prompt: call.prompt }),
     brokerPid: owner.brokerPid,
     hostPid: owner.hostPid,
   }
@@ -76,12 +74,17 @@ export function removeHeld(tx: Tx, tid: string, call: Pick<HeldCall, 'id'>, brok
   th.held = th.held.filter((e) => !(e.call === id && e.brokerPid === brokerPid))
 }
 
-/** The ids of the thread files of a session. No folder: none. */
+/**
+ * The ids of the thread files of a session. No folder: none. A name that no thread id can have (a sync
+ * conflict copy such as `<tid> 2.json`, or a `._` file) is skipped: the store writes a thread file only under
+ * an id that checkId takes.
+ */
 export function threadIds(store: Pick<SessionStore, 'dir'>): string[] {
   try {
     return readdirSync(join(store.dir, 'threads'))
       .filter((n) => n.endsWith('.json'))
       .map((n) => n.slice(0, -'.json'.length))
+      .filter(isSafeId)
       .sort()
   } catch (e) {
     const code = (e as { code?: unknown }).code

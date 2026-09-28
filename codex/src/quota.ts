@@ -1,7 +1,7 @@
 import type { SessionRateLimit } from 'claude-code'
 import { join } from 'node:path'
 import { blindFrom, codexDebug, codexLimits, isObservation, liveOf, nearTrip, nextPresence, pickSeed, usableCredits } from '../../hooks/core/codex.ts'
-import type { CodexCredits, CodexSnapshot, LiveRead, Presence } from '../../hooks/core/codex.ts'
+import type { CodexCredits, CodexSnapshot, LiveRead, Presence, TurnContextFacts } from '../../hooks/core/codex.ts'
 import { BLIND_AFTER, KINDS, anchoredOf, inWindow } from '../../hooks/core/reading.ts'
 import type { Anchored, Kind } from '../../hooks/core/reading.ts'
 import { VERSION } from '../../hooks/core/text.ts'
@@ -12,7 +12,7 @@ import type { Deps } from './deps.ts'
 import { readJson, tryLock, unlock, withLock, writeJson } from './files.ts'
 import type { Rollouts, TokenCount } from './rollout.ts'
 import type { SessionStore } from './store.ts'
-import { A_NEAR_MS, A_READ_MS, FIRST_READ_WAIT_MS, LIVE_LOCK_POLL_MS, LIVE_LOCK_STALE_MS, LIVE_NEAR_MAX_AGE_MS } from './timing.ts'
+import { A_NEAR_MS, A_READ_MS, CLOCK_SKEW_MS, FIRST_READ_WAIT_MS, LIVE_LOCK_POLL_MS, LIVE_LOCK_STALE_MS, LIVE_NEAR_MAX_AGE_MS } from './timing.ts'
 
 // The quota sources of a broker (Codex design 3.6). Route A: `account/rateLimits/read` on the daemon,
 // shared by every broker and the CLI of one data dir through live.json and live.lock. Route C: the
@@ -72,6 +72,8 @@ export type View = {
   newest?: TokenCount
   /** A19: a watched kind of `points` is near its trip or floor point. */
   near: boolean
+  /** The newest turn_context of the own rollout: the sandbox and approval of the turn (CX9). */
+  turnContext?: TurnContextFacts
 }
 
 /** The part of the session context that the view reads. */
@@ -109,6 +111,9 @@ export type Quota = {
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+/** A time from before a step back of the wall clock (CLOCK_SKEW_MS): its reading has no known age. */
+const ahead = (at: number, now: number): boolean => at > now + CLOCK_SKEW_MS
 
 /** A kind's reading in a codex snapshot. */
 const limitIn = (s: CodexSnapshot, k: Kind): SessionRateLimit | undefined => codexLimits(s).find((l) => l.kind === k)
@@ -151,10 +156,23 @@ export function createQuota(d: QuotaDeps): Quota {
       return undefined
     }
   }
-  const readLive = (): LiveFile | undefined => readFile<LiveFile>(livePath, (v) => finite(v['at']))
+  // A live.json whose blind history is no list counts as none, so the next read writes a good one.
+  const readLive = (): LiveFile | undefined => readFile<LiveFile>(livePath, (v) => finite(v['at']) && (v['recent'] === undefined || Array.isArray(v['recent'])))
   const readError = (): LiveErrorFile | undefined => readFile<LiveErrorFile>(errorPath, (v) => finite(v['at']) && typeof v['error'] === 'string')
-  const readSeed = (): SeedFile | undefined => readFile<SeedFile>(seedPath, () => true)
-  const young = (f: LiveFile | undefined, maxAgeMs: number): f is LiveFile => f !== undefined && d.clock.now() - f.at < maxAgeMs
+  /** seed.json without its entries of a bad shape: such a kind or credits counts as absent, and the next update writes a good one. */
+  const readSeed = (): SeedFile | undefined => {
+    const f = readFile<SeedFile>(seedPath, () => true)
+    if (f === undefined) return undefined
+    const out: SeedFile = { ...f }
+    for (const k of KINDS) if (out[k] !== undefined && asSeed(out[k]) === undefined) delete out[k]
+    const c: unknown = out.credits
+    if (c !== undefined && !(isObject(c) && finite(c['at']) && isObject(c['value']))) delete out.credits
+    return out
+  }
+  const young = (f: LiveFile | undefined, maxAgeMs: number): f is LiveFile => {
+    const now = d.clock.now()
+    return f !== undefined && now - f.at < maxAgeMs && !ahead(f.at, now)
+  }
 
   const write = (file: string, v: unknown): void => {
     try {
@@ -267,8 +285,10 @@ export function createQuota(d: QuotaDeps): Quota {
    * and the time of the newest observation it counted, so an observation that two brokers see counts
    * once. A kind is present while its count is under BLIND_AFTER, or while its seed is in its window.
    */
-  const presentOf = (store: QuotaCtx['store'], seen: readonly TokenCount[], seedInWindow: (k: Kind) => boolean): Kind[] => {
+  const presentOf = (store: QuotaCtx['store'], seen: readonly TokenCount[], seedInWindow: (k: Kind) => boolean, now: number): Kind[] => {
     const state = store.read()
+    // A stored time from before a step back of the clock would hide every later observation: it counts as none.
+    const since = (at: number | undefined): number => (at === undefined || ahead(at, now) ? 0 : at)
     let count: Partial<Record<Kind, number>> = { ...(state.absentCount ?? {}) }
     const apply = (from: Partial<Record<Kind, number>>, after: number): { count: Partial<Record<Kind, number>>; at: number } => {
       const news = seen.filter((o) => o.at > after && isObservation(o.snapshot)).sort((a, b) => a.at - b.at)
@@ -279,11 +299,11 @@ export function createQuota(d: QuotaDeps): Quota {
       for (const k of KINDS) if (p.count[k] !== undefined) capped[k] = Math.min(BLIND_AFTER, p.count[k] ?? 0)
       return { count: capped, at: news.length === 0 ? after : Math.max(after, news[news.length - 1]?.at ?? after) }
     }
-    const next = apply(count, state.absentAt ?? 0)
+    const next = apply(count, since(state.absentAt))
     if (!sameCounts(next.count, count)) {
       try {
         count = store.locked((tx) => {
-          const again = apply(tx.state.absentCount ?? {}, tx.state.absentAt ?? 0)
+          const again = apply(tx.state.absentCount ?? {}, since(tx.state.absentAt))
           tx.state.absentCount = again.count
           tx.state.absentAt = again.at
           return again.count
@@ -297,17 +317,20 @@ export function createQuota(d: QuotaDeps): Quota {
     return KINDS.filter((k) => (count[k] ?? 0) < BLIND_AFTER || seedInWindow(k))
   }
 
-  /** seed.json takes each own reading that is newer than its entry, and newer own credits (under seed.lock). */
-  const updateSeed = (own: Partial<Record<Kind, KindObs>>, credits: { at: number; value: CodexCredits } | undefined, file: SeedFile | undefined): void => {
+  /**
+   * seed.json takes each own reading that is newer than its entry, and newer own credits (under seed.lock).
+   * An entry whose time is ahead of the clock (it was written before a step back) is replaced.
+   */
+  const updateSeed = (own: Partial<Record<Kind, KindObs>>, credits: { at: number; value: CodexCredits } | undefined, file: SeedFile | undefined, now: number): void => {
+    const older = (had: { at: number } | undefined, at: number): boolean => had === undefined || at > had.at || ahead(had.at, now)
     const entries: Array<[Kind, SeedEntry]> = []
     for (const k of KINDS) {
       const o = own[k]
       const a = o === undefined ? undefined : anchoredOf(o.limit)
       if (o === undefined || a === undefined) continue
-      const had = file?.[k]
-      if (had === undefined || o.at > had.at) entries.push([k, { ...a, at: o.at }])
+      if (older(file?.[k], o.at)) entries.push([k, { ...a, at: o.at }])
     }
-    const newCredits = credits !== undefined && (file?.credits === undefined || credits.at > file.credits.at)
+    const newCredits = credits !== undefined && older(file?.credits, credits.at)
     if (entries.length === 0 && !newCredits) return
     try {
       withLock(seedLock, d.owner, () => {
@@ -315,13 +338,12 @@ export function createQuota(d: QuotaDeps): Quota {
         const next: SeedFile = { ...cur, v: 1, by: VERSION }
         let changed = false
         for (const [k, e] of entries) {
-          const had = asSeed(cur[k])
-          if (had === undefined || e.at > had.at) {
+          if (older(cur[k], e.at)) {
             next[k] = e
             changed = true
           }
         }
-        if (newCredits && credits !== undefined && (cur.credits === undefined || credits.at > cur.credits.at)) {
+        if (newCredits && credits !== undefined && older(cur.credits, credits.at)) {
           next.credits = credits
           changed = true
         }
@@ -333,8 +355,12 @@ export function createQuota(d: QuotaDeps): Quota {
   }
 
   const view = (sx: QuotaCtx, now: number, points: Points = {}): View => {
-    const liveFile = readLive()
-    const liveError = readError()
+    // A reading time ahead of the clock (the wall clock went back) has no known age: it counts as the oldest
+    // time, so it still answers when nothing else does, and any reading of a known time wins over it.
+    const known = <T extends { at: number }>(r: T | undefined): T | undefined => (r === undefined || !ahead(r.at, now) ? r : { ...r, at: 0 })
+    const rawLive = readLive()
+    const liveFile = known(rawLive)
+    const liveError = known(readError())
     const seedFile = readSeed()
     const roll = sx.transcript === null || sx.transcript === '' ? undefined : d.rollouts.read(sx.transcript)
     // Q1: a thread with no rollout has the live read as its only own reading, and nearView keeps it fresh on
@@ -346,7 +372,7 @@ export function createQuota(d: QuotaDeps): Quota {
     // Own readings per kind: the thread's rollout, then the live read. The newer observation wins.
     const own: Partial<Record<Kind, KindObs>> = {}
     for (const k of KINDS) {
-      const tc = roll?.byKind[k]
+      const tc = known(roll?.byKind[k])
       const l = tc === undefined ? undefined : limitIn(tc.snapshot, k)
       if (tc !== undefined && l !== undefined) own[k] = { at: tc.at, limit: l, from: 'rollout' }
       const lf = liveLimit(k)
@@ -357,13 +383,14 @@ export function createQuota(d: QuotaDeps): Quota {
     // Blind: only live reads make it, and a newer own observation with windows ends it. A blind login has
     // no reading to feed the core (the sense gives the basis `none`, why `blind`). The seed stays, for the
     // reset margin.
-    const newerObs = roll?.newestObs !== undefined && liveFile !== undefined && roll.newestObs.at > liveFile.at
+    const newestObs = known(roll?.newestObs)
+    const newerObs = newestObs !== undefined && liveFile !== undefined && newestObs.at > liveFile.at
     const blind = liveFile !== undefined && blindFrom(liveFile.recent ?? []) && !newerObs
 
     const seed: Partial<Record<Kind, SeedEntry>> = {}
     const readings: Partial<Record<Kind, KindReading>> = {}
     for (const k of KINDS) {
-      let s = asSeed(seedFile?.[k])
+      let s = known(asSeed(seedFile?.[k]))
       // Q1: a live read that is no own reading is a seed of its time, and the newer seed wins.
       const ll = liveOwn ? undefined : liveLimit(k)
       const la = ll === undefined ? undefined : anchoredOf(ll)
@@ -390,36 +417,35 @@ export function createQuota(d: QuotaDeps): Quota {
       const r = readings[k]?.seed
       return r !== undefined && inWindow(r, now, k)
     }
-    const seen: TokenCount[] = [...(roll?.fresh ?? [])]
+    const seen: TokenCount[] = (roll?.fresh ?? []).map((o) => known(o) ?? o)
     // Another reader of the cursor (attendance, a waiter's turn-end check) can take the fresh lines first.
     // The cursor keeps its newest observation, so that one always counts; the time dedupes it.
-    const obs = roll?.newestObs
+    const obs = newestObs
     if (obs !== undefined && !seen.some((o) => o.at === obs.at)) seen.push(obs)
     if (liveFile?.codex !== undefined && liveFile.codex !== null) seen.push({ at: liveFile.at, snapshot: liveFile.codex })
-    const present = presentOf(sx.store, seen, seedInWindow)
+    const present = presentOf(sx.store, seen, seedInWindow, now)
 
     // Credits: the newest of the live read, the own rollout and seed.json.
     const sources: Array<{ at: number; value: CodexCredits; own: boolean }> = []
     if (liveFile !== undefined && isObject(liveFile.credits)) sources.push({ at: liveFile.at, value: liveFile.credits, own: true })
     const rc = roll?.newest?.snapshot.credits
     if (roll?.newest !== undefined && isObject(rc)) sources.push({ at: roll.newest.at, value: rc, own: true })
-    if (seedFile?.credits !== undefined && isObject(seedFile.credits.value) && finite(seedFile.credits.at)) {
-      sources.push({ at: seedFile.credits.at, value: seedFile.credits.value, own: false })
-    }
-    const best = sources.reduce<(typeof sources)[number] | undefined>((a, b) => (a === undefined || b.at > a.at ? b : a), undefined)
+    if (seedFile?.credits !== undefined) sources.push({ at: seedFile.credits.at, value: seedFile.credits.value, own: false })
+    const best = sources.map((c) => known(c) ?? c).reduce<(typeof sources)[number] | undefined>((a, b) => (a === undefined || b.at > a.at ? b : a), undefined)
 
     const near = KINDS.some((k) => {
       const p = points[k]
       return p !== undefined && nearTrip(readings[k]?.pct, p.trip, p.floorPoint)
     })
 
-    updateSeed(own, best?.own === true ? { at: best.at, value: best.value } : undefined, seedFile)
+    updateSeed(own, best?.own === true ? { at: best.at, value: best.value } : undefined, seedFile, now)
 
     const out: View = { own, seed, readings, present, blind, creditsUsable: usableCredits(best?.value), near }
     if (best !== undefined) out.credits = best.value
-    if (liveFile !== undefined) out.live = liveReadOf(liveFile)
+    if (rawLive !== undefined) out.live = liveReadOf(rawLive)
     if (liveError !== undefined && (liveFile === undefined || liveError.at > liveFile.at)) out.liveError = { at: liveError.at, error: liveError.error }
     if (roll?.newest !== undefined) out.newest = roll.newest
+    if (roll?.turnContext !== undefined) out.turnContext = roll.turnContext
     return out
   }
 
