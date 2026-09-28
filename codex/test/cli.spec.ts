@@ -2,16 +2,20 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexText } from '../../hooks/core/codex.ts'
+import { OPTIONS, codexText } from '../../hooks/core/codex.ts'
 import { formatConsent } from '../../hooks/core/decide.ts'
-import { VERSION } from '../../hooks/core/text.ts'
+import { VERSION, simulateReply, stopReply } from '../../hooks/core/text.ts'
 import { parseArgs } from '../src/cli.ts'
+import { brokerEnvOf, withBrokerEnv } from '../src/store.ts'
+import { fakeRollout } from './helpers/rollout.ts'
 import { tempDir } from './helpers/tmp.ts'
-import { HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
+import { HOST_PID, HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
 
 // The CLI (Codex design 2.9, 4.20, 8.2 cli.spec): the agent check, a session that must be named, the usage,
-// the short line from `!` with the full reply queued, the full reply from a terminal with the session,
-// broker and daemon rows, a resume that releases a held broker, a stop over a held stop, and the path flags.
+// the short line from `!` with the full reply queued, the reply of a command from `!` that changes nothing,
+// the full reply from a terminal with the session, broker and daemon rows, and its queued copy, a resume
+// that releases a held broker, a stop over a held stop, the path flags, the attendance and the SPARE10_*
+// values of the root broker.
 //
 // The kit port (8.2). Claude has no CLI: /spare10 is a slash command. No kit case maps here.
 
@@ -186,4 +190,127 @@ test('cli: status from a terminal with no session reads the daemon and writes on
   const again = await w.cli(['status'])
   assert.match(again.out, /\n {2}· reading {8}none: Codex reports no 5-hour window for this plan\n/)
   assert.match(again.out, /^spare10: version .+\n\n {2}⚠ tripped/)
+})
+
+test('cli: from ! a command that changes nothing prints its reply at once and queues nothing', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false, 'the tool holds')
+  const bang = { CODEX_THREAD_ID: SID, CODEX_SESSION_ID: SID }
+  assert.deepEqual(await w.cli(['simulate', '9x'], bang), { code: 0, out: `spare10: ${simulateReply('bad')}` })
+  const range = OPTIONS.find((o) => o.name === 'reserve')?.range ?? ''
+  assert.deepEqual(await w.cli(['set', 'reserve', 'abc'], bang), { code: 0, out: `spare10: ${codexText.setBad('reserve', range)}` })
+  assert.equal(w.state().notices, undefined, 'no line waits for the end of the hold')
+  // A command that changes config.json prints CX44 and queues its reply.
+  assert.deepEqual(await w.cli(['set', 'reserve', '20'], bang), { code: 0, out: codexText.cliDone('set') })
+  assert.equal(w.notices().length, 1)
+  assert.equal(h.box.done, false, 'the tool still holds')
+  // Below the reserve, a stop changes nothing.
+  const v = world(t)
+  await v.broker()
+  v.reading(SID, 40, { reset: RESET })
+  const r = await v.cli(['stop'], bang)
+  assert.match(r.out, /^spare10: nothing to stop\./)
+  assert.equal(v.state().stopped, undefined)
+  assert.equal(v.state().notices, undefined)
+})
+
+test('cli: a command from a terminal that can change a named session also queues its reply, also with an empty CODEX_THREAD_ID', async (t) => {
+  const w = world(t, { daemon: true })
+  const b = await w.broker({ hosted: true })
+  w.reading(SID, 92, { reset: RESET })
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false)
+  const r = await w.cli(['resume', '--session', SID], { CODEX_THREAD_ID: '' })
+  assert.match(r.out, /^spare10: resumed\. Held work continues/)
+  await w.settle()
+  assert.equal(h.box.done, true, 'the held tool runs')
+  assert.match(parsed(h.box.text)['systemMessage'] as string, /^spare10: resumed\. Held work continues/, 'the transcript shows the resume')
+  const s = await w.cli(['stop', '--session', SID])
+  assert.deepEqual(w.notices(), [s.out.replace(/^spare10: /, '')])
+})
+
+test('cli: resume and stop act on a daemon session whose rollout had no session_meta at its first root gate', async (t) => {
+  const w = world(t)
+  const late = join(w.root, 'sessions', 'rollout-late.jsonl')
+  const b = await w.broker({ hostKind: 'daemon', transcript: late })
+  assert.equal(w.state().attended, false, 'the first root gate read no session_meta')
+  fakeRollout(late).sessionMeta({ originator: 'codex-tui', source: 'cli', id: SID }).tokenCount({ at: w.clock.now(), primary: { pct: 92, mins: 300, resetsAt: RESET } })
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false, 'the gate holds and asks')
+  const r = await w.cli(['stop', '--session', SID])
+  assert.notEqual(r.out, `spare10: ${stopReply('off')}`)
+  assert.ok(w.state().stopped !== undefined, 'the stop is written')
+  // With no rollout, the CLI keeps the answer of the broker, which knows the permission mode.
+  const v = world(t)
+  await v.broker({ transcript: null, mode: 'bypassPermissions' })
+  assert.deepEqual(await v.cli(['stop', '--session', SID]), { code: 0, out: `spare10: ${stopReply('off')}` })
+})
+
+test('cli: a codex exec resume of a live TUI session keeps the TUI as its host, so a stop from ! acts', async (t) => {
+  const w = world(t)
+  w.alive.add(HOST_PID)
+  const tui = await w.broker()
+  const exec = await w.broker({ hostKind: 'exec', hostPid: 5000 })
+  const host = (): unknown[] => [w.state().attended, w.state().hostKind, w.state().hostPid]
+  assert.deepEqual(host(), [true, 'tui', HOST_PID])
+  await exec.end()
+  w.reading(SID, 92, { reset: RESET })
+  const h = tui.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false)
+  assert.deepEqual(await w.cli(['stop'], { CODEX_THREAD_ID: SID, CODEX_SESSION_ID: SID }), { code: 0, out: codexText.cliDone('stop') })
+  assert.ok(w.state().stopped !== undefined, 'the stop is written')
+  // Once the TUI is gone, the next host takes the fields.
+  w.alive.delete(HOST_PID)
+  await w.broker({ hostKind: 'exec', hostPid: 6000 })
+  assert.deepEqual(host(), [false, 'exec', 6000])
+})
+
+test('cli: a named session is judged with the SPARE10_* values of its root broker, not of the terminal', async (t) => {
+  // Scope opt-in, and the broker has SPARE10=on.
+  const w = world(t, { config: { scope: 'opt-in' } })
+  const b = await w.broker({ env: { SPARE10: 'on' } })
+  assert.deepEqual(w.state().brokerEnv, { SPARE10: 'on' })
+  w.reading(SID, 92, { reset: RESET })
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false)
+  const r = await w.cli(['stop', '--session', SID])
+  assert.notEqual(r.out, `spare10: ${stopReply('off')}`)
+  assert.ok(w.state().stopped !== undefined, 'the stop is written')
+  // A terminal with SPARE10=off still stops a guarded session.
+  const v = world(t)
+  await v.broker()
+  v.reading(SID, 92, { reset: RESET })
+  assert.match((await v.cli(['stop', '--session', SID], { SPARE10: 'off' })).out, /^spare10: stopped/)
+  assert.ok(v.state().stopped !== undefined)
+  // A broker with SPARE10_RESERVE=20 trips at 80%: at 85% the stop is written.
+  const u = world(t)
+  await u.broker({ env: { SPARE10_RESERVE: '20' } })
+  u.reading(SID, 85, { reset: RESET })
+  assert.match((await u.cli(['stop', '--session', SID])).out, /^spare10: stopped/)
+  assert.ok(u.state().stopped !== undefined)
+  // A junk record counts as none: the CLI takes its own env, with no error.
+  const x = world(t, { config: { scope: 'opt-in' } })
+  await x.broker({ env: { SPARE10: 'on' } })
+  x.setState({ brokerEnv: 'junk' as unknown as Record<string, string> })
+  x.reading(SID, 92, { reset: RESET })
+  assert.match((await x.cli(['stop', '--session', SID], { SPARE10: 'on' })).out, /^spare10: stopped/)
+})
+
+test('cli: brokerEnvOf keeps the SPARE10_* values but SPARE10_SIMULATE, and withBrokerEnv takes a record that is no object as none', () => {
+  assert.deepEqual(brokerEnvOf({ SPARE10: 'on', SPARE10_RESERVE: '20', SPARE10_SIMULATE: '50', HOME: '/h' }), { SPARE10: 'on', SPARE10_RESERVE: '20' })
+  const env = { SPARE10: 'off', SPARE10_SIMULATE: '50', HOME: '/h' }
+  for (const junk of ['x', [1], null, undefined, 5]) assert.equal(withBrokerEnv(env, junk), env)
+  const e = withBrokerEnv(env, { SPARE10_RESERVE: '20', SPARE10: 5 })
+  assert.equal(e['SPARE10_RESERVE'], '20')
+  assert.equal(e['SPARE10'], undefined, 'an entry that is not a text counts as unset')
+  assert.equal(e['SPARE10_SIMULATE'], undefined)
+  assert.equal(e['HOME'], '/h')
 })

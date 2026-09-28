@@ -429,3 +429,28 @@ test('gate: a sense that fails in the round after a question ended with no answe
   const out = parsed(h.box.text)['hookSpecificOutput'] as Record<string, unknown>
   assert.equal(out['permissionDecision'], 'deny', 'never a pass')
 })
+
+test('gate: a root sense warns once (CX9) when the turn_context shows no sandbox, and a read-only or exec session does not', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 40, { reset: RESET })
+  w.rollout(SID).turnContext({ turn: 'U1', sandbox: 'danger-full-access' })
+  assert.equal(parsed(await b.gate('tool'))['systemMessage'], withPrefix(codexText.unsafe))
+  assert.ok(w.state().warned?.includes('CX9'))
+  assert.equal(await b.gate('tool'), '', 'once per session')
+  // The Stop gate also senses, so a turn with no tool call warns too.
+  const s = world(t)
+  const c = await s.broker()
+  s.reading(SID, 40, { reset: RESET })
+  s.rollout(SID).turnContext({ turn: 'U1', sandbox: 'danger-full-access' })
+  assert.equal(parsed(await c.gate('stop'))['systemMessage'], withPrefix(codexText.unsafe))
+  // A read-only sandbox, or an unattended exec run: no CX9.
+  for (const o of [{ sandbox: 'read-only', broker: {} }, { sandbox: 'danger-full-access', broker: { hostKind: 'exec' as const, originator: 'codex_exec', source: 'exec' } }]) {
+    const v = world(t)
+    const e = await v.broker(o.broker)
+    v.reading(SID, 40, { reset: RESET })
+    v.rollout(SID).turnContext({ turn: 'U1', sandbox: o.sandbox })
+    assert.equal(await e.gate('tool'), '', o.sandbox)
+    assert.ok(!(v.state().warned ?? []).includes('CX9'), o.sandbox)
+  }
+})

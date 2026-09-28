@@ -163,7 +163,8 @@ export function createBroker(d: BrokerDeps): Broker {
     } catch (e) {
       log.debug(codexDebug.writeFailed(paths.launcher, errText(e)))
     }
-    // At most once a day for each data dir: the session folders that nothing needs any more go.
+    // At most once a day for each data dir, or 10 min after a prune that stopped at its cap: the session
+    // folders that nothing needs any more go.
     const pruned = pruneSessions(paths, owner, clock.now(), d.pidAlive)
     if (pruned.length > 0) log.debug(codexDebug.pruned(pruned.length))
     const rollouts = createRollouts()

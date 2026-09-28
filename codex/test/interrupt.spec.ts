@@ -4,8 +4,8 @@ import { formatStopped } from '../../hooks/core/decide.ts'
 import { CHILD, HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
 
 // Esc, the Interrupt gate and dropped calls (Codex design 4.12, 8.2 interrupt.spec): the Interrupt gate
-// answers fast with the queued stop line, drops the held calls of its turn, records whether spare10
-// caused the interrupt, and a turn end in a subagent's rollout drops the subagent's held call.
+// answers fast with the queued stop line, drops the held calls of its turn and writes nothing, and a turn
+// end in a subagent's rollout drops the subagent's held call.
 //
 // The kit port (8.2). The withdrawal of a dialog (hook 5) has no Codex form.
 // Each tests/kit case and the Codex case that tests it: codex/test/kit-port.txt, kept complete by kit-port.spec.ts.
@@ -50,11 +50,23 @@ test('interrupt: Esc drops the held calls of its turn, and only those', async (t
     w.thread(SID)?.held.map((e) => e.turn),
     ['U2'],
   )
-  assert.equal(w.state().lastInterrupt?.bySpare10, false, 'an Esc: not spare10')
+  assert.equal(w.state().interrupts, undefined, 'an Esc: spare10 records no interrupt')
   assert.ok(w.log.lines.includes('spare10: 1 held call(s) dropped.'), w.log.lines.join('\n'))
 })
 
-test('interrupt: bySpare10 is true after the broker interrupted the turn itself', async (t) => {
+test('interrupt: the Interrupt gate writes no session file when no line waits', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 40, { reset: RESET })
+  assert.equal(await b.gate('tool', { turn: 'U1' }), '')
+  const rev = w.state().rev
+  const fires = w.wake.fired.length
+  assert.equal(await b.gate('interrupt', { turn: 'U1' }), '')
+  assert.equal(w.state().rev, rev, 'state.json stays as it was')
+  assert.equal(w.wake.fired.length, fires, 'no waiter wakes')
+})
+
+test('interrupt: the broker records its own interrupt of the turn, and the Interrupt gate carries the stop line', async (t) => {
   const w = world(t, { daemon: true })
   const b = await w.broker({ hosted: true })
   w.reading(SID, 92, { reset: RESET })
@@ -67,8 +79,7 @@ test('interrupt: bySpare10 is true after the broker interrupted the turn itself'
   assert.deepEqual(w.daemon.callsOf('interrupt'), [[SID, 'U1']])
   // Codex then runs the Interrupt hook of the turn.
   const out = parsed(await b.gate('interrupt', { turn: 'U1' }))
-  assert.equal(w.state().lastInterrupt?.bySpare10, true)
-  assert.equal(w.state().lastInterrupt?.turnId, 'U1')
+  assert.ok(w.state().interrupts?.['U1'] !== undefined, 'spare10 interrupted U1')
   assert.match(out['systemMessage'] as string, /^spare10: stopped at your 10% reserve/)
 })
 

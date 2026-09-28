@@ -9,8 +9,8 @@ import type { RolloutIo } from '../src/rollout.ts'
 import { fakeRollout, sessionMetaLine, taskStartedLine, tokenCountLine } from './helpers/rollout.ts'
 import { tempDir } from './helpers/tmp.ts'
 
-// The rollout cursor (Codex design 3.6, route C): only new bytes, a backward scan on the first read, and
-// the newest codex token_count past large tool outputs.
+// The rollout cursor (Codex design 3.6, route C): only new bytes, a backward scan on the first read, the
+// newest codex token_count past large tool outputs, and the newest turn_context (CX9).
 
 const T0 = Date.UTC(2026, 8, 26, 10)
 const MIN = 60_000
@@ -272,4 +272,29 @@ test('rollout: metaOf and turnStartOf read the probed shapes', () => {
   assert.deepEqual(turnStartOf(taskStartedLine('U9', undefined, T0)), { turnId: 'U9', startedAt: null, at: T0 })
   assert.equal(turnStartOf('{"type":"event_msg","payload":{"type":"task_started"}}'), undefined)
   assert.equal(turnStartOf('not json "task_started"'), undefined)
+})
+
+test('rollout: the cursor keeps the newest turn_context, on a forward read and on a scan', (t) => {
+  const path = join(tempDir(t), 'rollout.jsonl')
+  const r = fakeRollout(path).sessionMeta({ originator: 'codex-tui', source: 'cli' }).turnContext({ turn: 'U1', sandbox: 'read-only' })
+  const rolls = createRollouts()
+  assert.equal(rolls.read(path).turnContext?.sandbox, 'read-only', 'the first scan finds it')
+  r.turnContext({ turn: 'U2', sandbox: 'danger-full-access' }).tokenCount({ at: T0, primary: five(40) })
+  assert.deepEqual(rolls.read(path).turnContext, { sandbox: 'danger-full-access', approval: 'on-request', roots: [] }, 'a forward read takes the later one')
+  assert.equal(rolls.read(path).turnContext?.sandbox, 'danger-full-access', 'a read with no new line keeps it')
+  // A scan meets the newest turn_context first, and keeps it.
+  r.turnContext({ turn: 'U3', sandbox: 'workspace-write' }).tokenCount({ at: T0 + MIN, primary: five(41) })
+  assert.equal(createRollouts().read(path).turnContext?.sandbox, 'workspace-write')
+})
+
+test('rollout: a forward read takes a later line whatever its time, so a clock that went back does not freeze the reading', (t) => {
+  const path = join(tempDir(t), 'rollout.jsonl')
+  const r = fakeRollout(path).tokenCount({ at: T0 + HOUR, primary: five(40) })
+  const rolls = createRollouts()
+  assert.deepEqual(pcts(rolls.read(path).newest?.snapshot), [40])
+  r.tokenCount({ at: T0, primary: five(95) })
+  const got = rolls.read(path)
+  assert.deepEqual(pcts(got.newest?.snapshot), [95])
+  assert.deepEqual(pcts(got.newestObs?.snapshot), [95])
+  assert.equal(got.byKind.five_hour?.at, T0)
 })

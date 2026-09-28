@@ -1052,6 +1052,36 @@ function turnEndOf(line) {
   if (how === void 0 || typeof turnId !== "string" || turnId === "") return void 0;
   return { turnId, how, startedAt: finite(p["started_at"]) ? p["started_at"] : null };
 }
+var SPECIAL_ROOTS = { root: "/", slash_tmp: "/tmp" };
+function turnContextOf(line) {
+  if (!line.includes('"turn_context"')) return void 0;
+  const o = jsonLine(line);
+  const p = o === void 0 ? void 0 : payloadOf(o);
+  if (o === void 0 || p === void 0 || o["type"] !== "turn_context") return void 0;
+  const typeOf = (v) => isObject(v) && typeof v["type"] === "string" ? v["type"] : void 0;
+  const str = (v) => typeof v === "string" ? v : void 0;
+  const roots = [];
+  const profile = isObject(p["permission_profile"]) ? p["permission_profile"] : void 0;
+  const fsPolicy = profile !== void 0 && isObject(profile["file_system"]) ? profile["file_system"] : void 0;
+  const entries = fsPolicy !== void 0 && Array.isArray(fsPolicy["entries"]) ? fsPolicy["entries"] : [];
+  for (const e of entries) {
+    if (!isObject(e) || e["access"] !== "write" || !isObject(e["path"])) continue;
+    const path = e["path"];
+    if (path["type"] === "path" && typeof path["path"] === "string") roots.push(path["path"]);
+    const kind = path["type"] === "special" && isObject(path["value"]) ? path["value"]["kind"] : void 0;
+    if (typeof kind === "string" && SPECIAL_ROOTS[kind] !== void 0) roots.push(SPECIAL_ROOTS[kind]);
+  }
+  const out = { roots };
+  const sandbox = typeOf(p["sandbox_policy"]);
+  const prof = typeOf(profile);
+  const approval = str(p["approval_policy"]);
+  const reviewer = str(p["approvals_reviewer"]);
+  if (sandbox !== void 0) out.sandbox = sandbox;
+  if (prof !== void 0) out.profile = prof;
+  if (approval !== void 0) out.approval = approval;
+  if (reviewer !== void 0) out.reviewer = reviewer;
+  return out;
+}
 function liveOf(result, at, route) {
   if (!isObject(result)) return { error: "the reply is not an object" };
   if (isObject(result["error"])) return { error: typeof result["error"]["message"] === "string" ? result["error"]["message"] : "the reply is an error" };
@@ -1132,6 +1162,22 @@ function attendedFrom(i) {
   }
   return { attended: false };
 }
+function unsafeMode(tc, dataDir) {
+  if (tc === void 0) return false;
+  if (tc.sandbox === "danger-full-access" || tc.sandbox === "external-sandbox") return true;
+  if (tc.profile === "disabled") return true;
+  if (tc.reviewer === "auto_review" && (tc.approval === "on-request" || tc.approval === "untrusted")) return true;
+  return tc.roots.some((r) => within(dataDir, r));
+}
+var bare = (p) => {
+  const t = p.replace(/\/+$/, "");
+  return t.startsWith("/private/") ? t.slice("/private".length) : t === "" ? "/" : t;
+};
+var within = (path, root) => {
+  const p = bare(path);
+  const r = bare(root);
+  return r === "/" || p === r || p.startsWith(`${r}/`);
+};
 function parseAutoResumeOption(raw) {
   if (typeof raw === "boolean") return raw;
   const s = parseSwitch(raw);
@@ -1448,7 +1494,7 @@ var codexDebug = {
 import { join as join12 } from "node:path";
 
 // codex/src/attend.ts
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // codex/src/files.ts
 import { randomBytes } from "node:crypto";
@@ -1557,8 +1603,8 @@ function parseConsent(raw) {
   }
   const stamped = m === null ? Number.NaN : isoMs(m[2] ?? "");
   if (m !== null && Number.isFinite(stamped)) return { until: stamped, sessionId: m[1] ?? "" };
-  const bare = /\s/.test(text3) ? Number.NaN : isoMs(text3);
-  return Number.isFinite(bare) ? { until: bare } : void 0;
+  const bare2 = /\s/.test(text3) ? Number.NaN : isoMs(text3);
+  return Number.isFinite(bare2) ? { until: bare2 } : void 0;
 }
 var formatConsent = (sessionId, until, to) => `${sessionId} ${new Date(until).toISOString()}${to === void 0 ? "" : ` to:${String(Math.round(to * 10) / 10 + 0)}`}`;
 var fullCovers = (prev, ids, until, now) => prev !== void 0 && prev.to === void 0 && prev.sessionId !== void 0 && ids.includes(prev.sessionId) && consentCovers(prev.until, now, until);
@@ -1691,6 +1737,7 @@ function phaseOf(i) {
 var FIRST_READ_WAIT_MS = 2e3;
 var LIVE_RELEASE_MAX_AGE_MS = 3e4;
 var LIVE_POLL_MS = 6e4;
+var CLOCK_SKEW_MS = 6e4;
 var LIVE_NEAR_MAX_AGE_MS = 15e3;
 var LIVE_LOCK_STALE_MS = 2e4;
 var LIVE_LOCK_POLL_MS = 100;
@@ -1708,6 +1755,7 @@ var LOCK_SLEEP_MAX_MS = 10;
 var PRUNE_AFTER_MS = 30 * 24 * 36e5;
 var PRUNE_EVERY_MS = 24 * 36e5;
 var PRUNE_MAX = 500;
+var PRUNE_AGAIN_MS = 10 * 6e4;
 var WAKE_POLL_MS = 1e3;
 var DAEMON_CONNECT_MS = 1e3;
 var A_READ_MS = 5e3;
@@ -2035,8 +2083,120 @@ function firstLine(file, max = FIRST_LINE_MAX_BYTES) {
 
 // codex/src/store.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync, readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, rmSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
+import { readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, rmSync, statSync as statSync2, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+
+// codex/src/settings.ts
+import { statSync } from "node:fs";
 import { join } from "node:path";
+var ENV_NAMES = [
+  ["reserve", "SPARE10_RESERVE"],
+  ["weeklyReserve", "SPARE10_WEEKLY_RESERVE"],
+  ["lastMinutes", "SPARE10_LAST_MINUTES"],
+  ["weeklyLastHours", "SPARE10_WEEKLY_LAST_HOURS"],
+  ["resumeFloor", "SPARE10_RESUME_FLOOR"],
+  ["weeklyResumeFloor", "SPARE10_WEEKLY_RESUME_FLOOR"],
+  ["pausePrompt", "SPARE10_PAUSE_PROMPT"],
+  ["autoResume", "SPARE10_AUTO_RESUME"],
+  ["headless", "SPARE10_HEADLESS"],
+  ["onOff", "SPARE10"],
+  ["simulate", "SPARE10_SIMULATE"]
+];
+function envReadsOf(env) {
+  const out = {};
+  for (const [field2, name] of ENV_NAMES) {
+    const v = env[name];
+    if (v !== void 0) out[field2] = v;
+  }
+  return out;
+}
+var ownsSimulate = (hostKind) => hostKind === void 0 || hostKind === "exec" || hostKind === "tui";
+var configPath = (paths) => join(paths.data, "config.json");
+function readConfig(path) {
+  try {
+    const raw = readJson(path);
+    return { raw: raw === void 0 ? {} : raw };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function markOf(path) {
+  try {
+    const st = statSync(path);
+    return `${st.ino}:${st.size}:${st.mtimeMs}`;
+  } catch (e) {
+    const code = e.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "-" : `error:${String(code)}`;
+  }
+}
+function createSettings(d) {
+  const path = configPath(d.paths);
+  const shown = shownPath(path, d.paths.home);
+  const base = envReadsOf(d.env);
+  if (base.simulate !== void 0 && !ownsSimulate(d.hostKind)) {
+    delete base.simulate;
+    d.log.debug(codexDebug.simulateIgnored);
+  }
+  let cache;
+  const parentChild = () => {
+    if (base.headless !== void 0) return void 0;
+    try {
+      return d.parentChild();
+    } catch (e) {
+      d.log.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
+      return void 0;
+    }
+  };
+  const build = (child, simulateKind) => {
+    const env = base.headless === void 0 && child !== void 0 ? { ...base, headless: child } : { ...base };
+    const read = readConfig(path);
+    if ("raw" in read && isObject2(read.raw)) {
+      const { options, warnings } = configOptions(shown, read.raw);
+      const eff2 = withEnv(fromOptions(options), env, { simulateKind });
+      eff2.warnings = [...warnings, ...eff2.warnings];
+      return eff2;
+    }
+    const cx12 = "error" in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0];
+    const eff = withEnv(DEFAULTS, env, { simulateKind });
+    if (eff.from.lastMinutes !== "env") {
+      eff.lastMinutes = 0;
+      eff.from.lastMinutes = "unread";
+    }
+    if (eff.from.weeklyLastHours !== "env") {
+      eff.weeklyLastHours = 0;
+      eff.from.weeklyLastHours = "unread";
+    }
+    eff.warnings = [...cx12 === void 0 ? [] : [cx12], ...eff.warnings];
+    return eff;
+  };
+  return {
+    path,
+    get() {
+      const child = parentChild();
+      const simulateKind = d.simulateKind();
+      const key = `${markOf(path)}|${child ?? ""}|${simulateKind}`;
+      if (cache?.key !== key) cache = { key, eff: build(child, simulateKind) };
+      return structuredClone(cache.eff);
+    }
+  };
+}
+function setOption(paths, owner, name, value) {
+  const path = configPath(paths);
+  return withLock(join(paths.data, "config.lock"), owner, () => {
+    const read = readJson(path);
+    const raw = read === void 0 ? {} : read;
+    if (!isObject2(raw)) throw new Error("it is not a JSON object");
+    const next = { ...raw };
+    const old = next[name];
+    if (value === void 0) delete next[name];
+    else next[name] = value;
+    writeJson(path, next);
+    return { old };
+  });
+}
+
+// codex/src/store.ts
 var FORMAT = 1;
 var FormatError = class extends Error {
   file;
@@ -2047,11 +2207,12 @@ var FormatError = class extends Error {
   }
 };
 var SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+var isSafeId = (id) => SAFE_ID.test(id) && !id.includes("..");
 function checkId(what, id) {
-  if (!SAFE_ID.test(id) || id.includes("..")) throw new Error(`spare10: the ${what} ${JSON.stringify(id)} cannot name a file`);
+  if (!isSafeId(id)) throw new Error(`spare10: the ${what} ${JSON.stringify(id)} cannot name a file`);
 }
-var sessionDir = (paths, sid) => join(paths.data, "sessions", sid);
-var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var sessionDir = (paths, sid) => join2(paths.data, "sessions", sid);
+var isObject3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var freshState = (sid) => ({ v: 1, by: VERSION, rev: 0, sessionId: sid, updatedAt: 0 });
 var freshThread = (sid, tid) => ({
   v: 1,
@@ -2068,7 +2229,7 @@ var freshThread = (sid, tid) => ({
 function readStamped(file) {
   const v = readOwnJson(file);
   if (v === void 0) return void 0;
-  if (!isObject2(v) || v["v"] !== FORMAT) throw new FormatError(file, isObject2(v) ? v["v"] : void 0);
+  if (!isObject3(v) || v["v"] !== FORMAT) throw new FormatError(file, isObject3(v) ? v["v"] : void 0);
   return v;
 }
 var testOf = (state, hostPid) => state.test !== void 0 && state.test.hostPid === hostPid ? state.test : void 0;
@@ -2078,15 +2239,24 @@ function warnOnce(state, id, text3, now) {
   state.notices = [...state.notices ?? [], { at: now, text: text3 }];
   return true;
 }
+var BROKER_ENV_NAMES = ENV_NAMES.map(([, name]) => name).filter((name) => name !== "SPARE10_SIMULATE");
+function brokerEnvOf(env) {
+  const out = {};
+  for (const name of BROKER_ENV_NAMES) {
+    const v = env[name];
+    if (typeof v === "string") out[name] = v;
+  }
+  return out;
+}
 var text = (v) => JSON.stringify(v);
 function sessionStore(paths, sid, owner, wake, o = {}) {
   checkId("session id", sid);
   const dir = sessionDir(paths, sid);
-  const stateFile = join(dir, "state.json");
-  const lockFile = join(dir, "state.lock");
-  const questionFile = join(dir, "question.json");
-  const answerFile = join(dir, "answer.json");
-  const threadFile = (tid) => join(dir, "threads", `${tid}.json`);
+  const stateFile = join2(dir, "state.json");
+  const lockFile = join2(dir, "state.lock");
+  const questionFile = join2(dir, "question.json");
+  const answerFile = join2(dir, "answer.json");
+  const threadFile = (tid) => join2(dir, "threads", `${tid}.json`);
   const now = () => (o.clock ?? Date).now();
   let inLock = false;
   const hideForeignTest = (s) => {
@@ -2226,18 +2396,18 @@ function sessionStore(paths, sid, owner, wake, o = {}) {
 function changedSince(dir, since) {
   const newer2 = (file) => {
     try {
-      return statSync(file).mtimeMs > since;
+      return statSync2(file).mtimeMs > since;
     } catch {
       return false;
     }
   };
-  if (["state.json", "question.json", "answer.json"].some((name) => newer2(join(dir, name)))) return true;
+  if (["state.json", "question.json", "answer.json"].some((name) => newer2(join2(dir, name)))) return true;
   let threads = [];
   try {
-    threads = readdirSync(join(dir, "threads"));
+    threads = readdirSync(join2(dir, "threads"));
   } catch {
   }
-  return threads.some((name) => newer2(join(dir, "threads", name)));
+  return threads.some((name) => newer2(join2(dir, "threads", name)));
 }
 var PRUNED = ".pruned-";
 function removeTree(dir) {
@@ -2247,8 +2417,8 @@ function removeTree(dir) {
   }
 }
 function pruneSessions(paths, owner, now, alive) {
-  const root = join(paths.data, "sessions");
-  const stamp = join(paths.data, "pruned");
+  const root = join2(paths.data, "sessions");
+  const stamp = join2(paths.data, "pruned");
   let names;
   try {
     let last = Number.NaN;
@@ -2264,21 +2434,26 @@ function pruneSessions(paths, owner, now, alive) {
   }
   const live = (pid) => pid !== void 0 && pid > 0 && alive(pid);
   const unused = (dir) => {
-    if (changedSince(dir, now - PRUNE_AFTER_MS) || existsSync(join(dir, "question.json"))) return false;
+    if (changedSince(dir, now - PRUNE_AFTER_MS)) return false;
     try {
-      const st = readOwnJson(join(dir, "state.json"));
-      if (st !== void 0 && (st.v !== FORMAT || live(st.hostPid))) return false;
+      const q = readOwnJson(join2(dir, "question.json"));
+      if (q !== void 0 && (q.v !== FORMAT || live(q.leader?.pid))) return false;
+      const st = readOwnJson(join2(dir, "state.json"));
+      if (st !== void 0 && st.v !== FORMAT) return false;
+      const daemon = st?.hostKind === "daemon" ? st.hostPid : void 0;
+      const host = (pid) => pid !== daemon && live(pid);
+      if (host(st?.hostPid)) return false;
       const stop = parseStopped(st?.stopped);
       if (stop !== void 0 && stop.windowEnd > now - PRUNE_AFTER_MS) return false;
       let threads = [];
       try {
-        threads = readdirSync(join(dir, "threads"));
+        threads = readdirSync(join2(dir, "threads"));
       } catch {
       }
       for (const name of threads.filter((n) => n.endsWith(".json"))) {
-        const th = readOwnJson(join(dir, "threads", name));
+        const th = readOwnJson(join2(dir, "threads", name));
         if (th === void 0) continue;
-        if (th.v !== FORMAT || live(th.brokerPid) || live(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false;
+        if (th.v !== FORMAT || live(th.brokerPid) || host(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false;
       }
     } catch {
       return false;
@@ -2288,17 +2463,17 @@ function pruneSessions(paths, owner, now, alive) {
   const gone = [];
   for (const name of names) {
     if (name.startsWith(PRUNED)) {
-      removeTree(join(root, name));
+      removeTree(join2(root, name));
       continue;
     }
     if (gone.length >= PRUNE_MAX) break;
     if (!SAFE_ID.test(name)) continue;
-    const dir = join(root, name);
+    const dir = join2(root, name);
     if (!unused(dir)) continue;
-    const trash = join(root, `${PRUNED}${name}-${randomBytes2(4).toString("hex")}`);
+    const trash = join2(root, `${PRUNED}${name}-${randomBytes2(4).toString("hex")}`);
     try {
       const moved = withLock(
-        join(dir, "state.lock"),
+        join2(dir, "state.lock"),
         owner,
         () => {
           if (!unused(dir)) return false;
@@ -2313,6 +2488,12 @@ function pruneSessions(paths, owner, now, alive) {
     }
     removeTree(trash);
     gone.push(name);
+  }
+  if (gone.length >= PRUNE_MAX) {
+    try {
+      writeFileAtomic(stamp, String(now - PRUNE_EVERY_MS + PRUNE_AGAIN_MS));
+    } catch {
+    }
   }
   return gone;
 }
@@ -2341,7 +2522,7 @@ function parentChildOf(paths, env, sid) {
   const parent = nestedParent(env, sid);
   if (parent === void 0) return void 0;
   checkId("session id", parent);
-  const st = readOwnJson(join2(sessionDir(paths, parent), "state.json"));
+  const st = readOwnJson(join3(sessionDir(paths, parent), "state.json"));
   if (typeof st !== "object" || st === null || st.v !== 1) return void 0;
   return st.child === "stop" ? "stop" : void 0;
 }
@@ -3145,7 +3326,7 @@ function setTombs(st, kind, tombs) {
 
 // codex/src/held.ts
 import { readdirSync as readdirSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 var callId = (call) => String(call.id);
 var BEAT_EVERY_MS = TICK_MS;
 function addHeld(tx, tid, call, owner, now, question) {
@@ -3157,7 +3338,6 @@ function addHeld(tx, tid, call, owner, now, question) {
     ...call.turn === void 0 ? {} : { turn: call.turn },
     since: call.since,
     ...question === void 0 ? {} : { question },
-    ...call.prompt === void 0 ? {} : { prompt: call.prompt },
     brokerPid: owner.brokerPid,
     hostPid: owner.hostPid
   };
@@ -3174,7 +3354,7 @@ function removeHeld(tx, tid, call, brokerPid) {
 }
 function threadIds(store) {
   try {
-    return readdirSync2(join3(store.dir, "threads")).filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -".json".length)).sort();
+    return readdirSync2(join4(store.dir, "threads")).filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -".json".length)).filter(isSafeId).sort();
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT" || code === "ENOTDIR") return [];
@@ -3182,7 +3362,7 @@ function threadIds(store) {
   }
 }
 function readThread(store, tid) {
-  const v = readOwnJson(join3(store.dir, "threads", `${tid}.json`));
+  const v = readOwnJson(join4(store.dir, "threads", `${tid}.json`));
   if (typeof v !== "object" || v === null || v.v !== FORMAT) return void 0;
   return v;
 }
@@ -3250,7 +3430,7 @@ function waiterOf(d, dir, signal) {
 }
 
 // codex/src/quota.ts
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 
 // codex/src/clock.ts
 var MAX_TIMER_MS = 2147483647;
@@ -3316,11 +3496,12 @@ var realClock = {
 };
 
 // codex/src/quota.ts
-var isObject3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var finite2 = (v) => typeof v === "number" && Number.isFinite(v);
 var errText = (e) => e instanceof Error ? e.message : String(e);
+var ahead = (at, now) => at > now + CLOCK_SKEW_MS;
 var limitIn = (s, k) => codexLimits(s).find((l) => l.kind === k);
-var asSeed = (v) => isObject3(v) && finite2(v["pct"]) && finite2(v["resetsAtMs"]) && finite2(v["at"]) ? { pct: v["pct"], resetsAtMs: v["resetsAtMs"], at: v["at"] } : void 0;
+var asSeed = (v) => isObject4(v) && finite2(v["pct"]) && finite2(v["resetsAtMs"]) && finite2(v["at"]) ? { pct: v["pct"], resetsAtMs: v["resetsAtMs"], at: v["at"] } : void 0;
 function liveReadOf(f) {
   const { v: _v, by: _by, recent: _recent, ...read } = f;
   return read;
@@ -3328,11 +3509,11 @@ function liveReadOf(f) {
 var sameCounts = (a, b) => KINDS.every((k) => (a[k] ?? 0) === (b[k] ?? 0));
 var noRollout = (sx) => sx.transcript === null || sx.transcript === "";
 function createQuota(d) {
-  const livePath = join4(d.paths.data, "live.json");
-  const liveLock = join4(d.paths.data, "live.lock");
-  const errorPath = join4(d.paths.data, "live-error.json");
-  const seedPath = join4(d.paths.data, "seed.json");
-  const seedLock = join4(d.paths.data, "seed.lock");
+  const livePath = join5(d.paths.data, "live.json");
+  const liveLock = join5(d.paths.data, "live.lock");
+  const errorPath = join5(d.paths.data, "live-error.json");
+  const seedPath = join5(d.paths.data, "seed.json");
+  const seedLock = join5(d.paths.data, "seed.lock");
   const lockClock = d.lockClock ?? realClock;
   let inflight;
   let firstDone = () => {
@@ -3344,16 +3525,27 @@ function createQuota(d) {
   const readFile2 = (file, valid) => {
     try {
       const v = readJson(file);
-      return isObject3(v) && v["v"] === 1 && valid(v) ? v : void 0;
+      return isObject4(v) && v["v"] === 1 && valid(v) ? v : void 0;
     } catch (e) {
       d.log.debug(codexDebug.readFailed(file, errText(e)));
       return void 0;
     }
   };
-  const readLive = () => readFile2(livePath, (v) => finite2(v["at"]));
+  const readLive = () => readFile2(livePath, (v) => finite2(v["at"]) && (v["recent"] === void 0 || Array.isArray(v["recent"])));
   const readError = () => readFile2(errorPath, (v) => finite2(v["at"]) && typeof v["error"] === "string");
-  const readSeed = () => readFile2(seedPath, () => true);
-  const young = (f, maxAgeMs) => f !== void 0 && d.clock.now() - f.at < maxAgeMs;
+  const readSeed = () => {
+    const f = readFile2(seedPath, () => true);
+    if (f === void 0) return void 0;
+    const out = { ...f };
+    for (const k of KINDS) if (out[k] !== void 0 && asSeed(out[k]) === void 0) delete out[k];
+    const c = out.credits;
+    if (c !== void 0 && !(isObject4(c) && finite2(c["at"]) && isObject4(c["value"]))) delete out.credits;
+    return out;
+  };
+  const young = (f, maxAgeMs) => {
+    const now = d.clock.now();
+    return f !== void 0 && now - f.at < maxAgeMs && !ahead(f.at, now);
+  };
   const write = (file, v) => {
     try {
       writeJson(file, v);
@@ -3448,8 +3640,9 @@ function createQuota(d) {
     inflight = p;
     return p;
   };
-  const presentOf = (store, seen, seedInWindow) => {
+  const presentOf = (store, seen, seedInWindow, now) => {
     const state = store.read();
+    const since = (at) => at === void 0 || ahead(at, now) ? 0 : at;
     let count = { ...state.absentCount ?? {} };
     const apply = (from, after) => {
       const news = seen.filter((o) => o.at > after && isObservation(o.snapshot)).sort((a, b) => a.at - b.at);
@@ -3459,11 +3652,11 @@ function createQuota(d) {
       for (const k of KINDS) if (p.count[k] !== void 0) capped[k] = Math.min(BLIND_AFTER, p.count[k] ?? 0);
       return { count: capped, at: news.length === 0 ? after : Math.max(after, news[news.length - 1]?.at ?? after) };
     };
-    const next = apply(count, state.absentAt ?? 0);
+    const next = apply(count, since(state.absentAt));
     if (!sameCounts(next.count, count)) {
       try {
         count = store.locked((tx) => {
-          const again = apply(tx.state.absentCount ?? {}, tx.state.absentAt ?? 0);
+          const again = apply(tx.state.absentCount ?? {}, since(tx.state.absentAt));
           tx.state.absentCount = again.count;
           tx.state.absentAt = again.at;
           return again.count;
@@ -3475,16 +3668,16 @@ function createQuota(d) {
     }
     return KINDS.filter((k) => (count[k] ?? 0) < BLIND_AFTER || seedInWindow(k));
   };
-  const updateSeed = (own, credits, file) => {
+  const updateSeed = (own, credits, file, now) => {
+    const older = (had, at) => had === void 0 || at > had.at || ahead(had.at, now);
     const entries = [];
     for (const k of KINDS) {
       const o = own[k];
       const a = o === void 0 ? void 0 : anchoredOf(o.limit);
       if (o === void 0 || a === void 0) continue;
-      const had = file?.[k];
-      if (had === void 0 || o.at > had.at) entries.push([k, { ...a, at: o.at }]);
+      if (older(file?.[k], o.at)) entries.push([k, { ...a, at: o.at }]);
     }
-    const newCredits = credits !== void 0 && (file?.credits === void 0 || credits.at > file.credits.at);
+    const newCredits = credits !== void 0 && older(file?.credits, credits.at);
     if (entries.length === 0 && !newCredits) return;
     try {
       withLock(seedLock, d.owner, () => {
@@ -3492,13 +3685,12 @@ function createQuota(d) {
         const next = { ...cur, v: 1, by: VERSION };
         let changed = false;
         for (const [k, e] of entries) {
-          const had = asSeed(cur[k]);
-          if (had === void 0 || e.at > had.at) {
+          if (older(cur[k], e.at)) {
             next[k] = e;
             changed = true;
           }
         }
-        if (newCredits && credits !== void 0 && (cur.credits === void 0 || credits.at > cur.credits.at)) {
+        if (newCredits && credits !== void 0 && older(cur.credits, credits.at)) {
           next.credits = credits;
           changed = true;
         }
@@ -3509,27 +3701,30 @@ function createQuota(d) {
     }
   };
   const view = (sx, now, points = {}) => {
-    const liveFile = readLive();
-    const liveError = readError();
+    const known = (r) => r === void 0 || !ahead(r.at, now) ? r : { ...r, at: 0 };
+    const rawLive = readLive();
+    const liveFile = known(rawLive);
+    const liveError = known(readError());
     const seedFile = readSeed();
     const roll = sx.transcript === null || sx.transcript === "" ? void 0 : d.rollouts.read(sx.transcript);
     const liveOwn = !noRollout(sx) || routeNow() !== void 0;
     const liveLimit = (k) => liveFile?.codex === void 0 || liveFile.codex === null ? void 0 : limitIn(liveFile.codex, k);
     const own = {};
     for (const k of KINDS) {
-      const tc = roll?.byKind[k];
+      const tc = known(roll?.byKind[k]);
       const l = tc === void 0 ? void 0 : limitIn(tc.snapshot, k);
       if (tc !== void 0 && l !== void 0) own[k] = { at: tc.at, limit: l, from: "rollout" };
       const lf = liveLimit(k);
       const prev = own[k];
       if (liveOwn && liveFile !== void 0 && lf !== void 0 && (prev === void 0 || liveFile.at >= prev.at)) own[k] = { at: liveFile.at, limit: lf, from: liveFile.route };
     }
-    const newerObs = roll?.newestObs !== void 0 && liveFile !== void 0 && roll.newestObs.at > liveFile.at;
+    const newestObs = known(roll?.newestObs);
+    const newerObs = newestObs !== void 0 && liveFile !== void 0 && newestObs.at > liveFile.at;
     const blind = liveFile !== void 0 && blindFrom(liveFile.recent ?? []) && !newerObs;
     const seed = {};
     const readings = {};
     for (const k of KINDS) {
-      let s = asSeed(seedFile?.[k]);
+      let s = known(asSeed(seedFile?.[k]));
       const ll = liveOwn ? void 0 : liveLimit(k);
       const la = ll === void 0 ? void 0 : anchoredOf(ll);
       if (la !== void 0 && liveFile !== void 0 && (s === void 0 || liveFile.at > s.at)) s = { ...la, at: liveFile.at };
@@ -3554,29 +3749,28 @@ function createQuota(d) {
       const r = readings[k]?.seed;
       return r !== void 0 && inWindow(r, now, k);
     };
-    const seen = [...roll?.fresh ?? []];
-    const obs = roll?.newestObs;
+    const seen = (roll?.fresh ?? []).map((o) => known(o) ?? o);
+    const obs = newestObs;
     if (obs !== void 0 && !seen.some((o) => o.at === obs.at)) seen.push(obs);
     if (liveFile?.codex !== void 0 && liveFile.codex !== null) seen.push({ at: liveFile.at, snapshot: liveFile.codex });
-    const present = presentOf(sx.store, seen, seedInWindow);
+    const present = presentOf(sx.store, seen, seedInWindow, now);
     const sources = [];
-    if (liveFile !== void 0 && isObject3(liveFile.credits)) sources.push({ at: liveFile.at, value: liveFile.credits, own: true });
+    if (liveFile !== void 0 && isObject4(liveFile.credits)) sources.push({ at: liveFile.at, value: liveFile.credits, own: true });
     const rc = roll?.newest?.snapshot.credits;
-    if (roll?.newest !== void 0 && isObject3(rc)) sources.push({ at: roll.newest.at, value: rc, own: true });
-    if (seedFile?.credits !== void 0 && isObject3(seedFile.credits.value) && finite2(seedFile.credits.at)) {
-      sources.push({ at: seedFile.credits.at, value: seedFile.credits.value, own: false });
-    }
-    const best = sources.reduce((a, b) => a === void 0 || b.at > a.at ? b : a, void 0);
+    if (roll?.newest !== void 0 && isObject4(rc)) sources.push({ at: roll.newest.at, value: rc, own: true });
+    if (seedFile?.credits !== void 0) sources.push({ at: seedFile.credits.at, value: seedFile.credits.value, own: false });
+    const best = sources.map((c) => known(c) ?? c).reduce((a, b) => a === void 0 || b.at > a.at ? b : a, void 0);
     const near = KINDS.some((k) => {
       const p = points[k];
       return p !== void 0 && nearTrip(readings[k]?.pct, p.trip, p.floorPoint);
     });
-    updateSeed(own, best?.own === true ? { at: best.at, value: best.value } : void 0, seedFile);
+    updateSeed(own, best?.own === true ? { at: best.at, value: best.value } : void 0, seedFile, now);
     const out = { own, seed, readings, present, blind, creditsUsable: usableCredits(best?.value), near };
     if (best !== void 0) out.credits = best.value;
-    if (liveFile !== void 0) out.live = liveReadOf(liveFile);
+    if (rawLive !== void 0) out.live = liveReadOf(rawLive);
     if (liveError !== void 0 && (liveFile === void 0 || liveError.at > liveFile.at)) out.liveError = { at: liveError.at, error: liveError.error };
     if (roll?.newest !== void 0) out.newest = roll.newest;
+    if (roll?.turnContext !== void 0) out.turnContext = roll.turnContext;
     return out;
   };
   return {
@@ -3895,116 +4089,6 @@ function createSense(d) {
     },
     memOf: (sid, kind) => ({ ...memsOf(sid)[kind] })
   };
-}
-
-// codex/src/settings.ts
-import { statSync as statSync2 } from "node:fs";
-import { join as join5 } from "node:path";
-var ENV_NAMES = [
-  ["reserve", "SPARE10_RESERVE"],
-  ["weeklyReserve", "SPARE10_WEEKLY_RESERVE"],
-  ["lastMinutes", "SPARE10_LAST_MINUTES"],
-  ["weeklyLastHours", "SPARE10_WEEKLY_LAST_HOURS"],
-  ["resumeFloor", "SPARE10_RESUME_FLOOR"],
-  ["weeklyResumeFloor", "SPARE10_WEEKLY_RESUME_FLOOR"],
-  ["pausePrompt", "SPARE10_PAUSE_PROMPT"],
-  ["autoResume", "SPARE10_AUTO_RESUME"],
-  ["headless", "SPARE10_HEADLESS"],
-  ["onOff", "SPARE10"],
-  ["simulate", "SPARE10_SIMULATE"]
-];
-function envReadsOf(env) {
-  const out = {};
-  for (const [field2, name] of ENV_NAMES) {
-    const v = env[name];
-    if (v !== void 0) out[field2] = v;
-  }
-  return out;
-}
-var ownsSimulate = (hostKind) => hostKind === void 0 || hostKind === "exec" || hostKind === "tui";
-var configPath = (paths) => join5(paths.data, "config.json");
-function readConfig(path) {
-  try {
-    const raw = readJson(path);
-    return { raw: raw === void 0 ? {} : raw };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
-}
-var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function markOf(path) {
-  try {
-    const st = statSync2(path);
-    return `${st.ino}:${st.size}:${st.mtimeMs}`;
-  } catch (e) {
-    const code = e.code;
-    return code === "ENOENT" || code === "ENOTDIR" ? "-" : `error:${String(code)}`;
-  }
-}
-function createSettings(d) {
-  const path = configPath(d.paths);
-  const shown = shownPath(path, d.paths.home);
-  const base = envReadsOf(d.env);
-  if (base.simulate !== void 0 && !ownsSimulate(d.hostKind)) {
-    delete base.simulate;
-    d.log.debug(codexDebug.simulateIgnored);
-  }
-  let cache;
-  const parentChild = () => {
-    if (base.headless !== void 0) return void 0;
-    try {
-      return d.parentChild();
-    } catch (e) {
-      d.log.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
-      return void 0;
-    }
-  };
-  const build = (child, simulateKind) => {
-    const env = base.headless === void 0 && child !== void 0 ? { ...base, headless: child } : { ...base };
-    const read = readConfig(path);
-    if ("raw" in read && isObject4(read.raw)) {
-      const { options, warnings } = configOptions(shown, read.raw);
-      const eff2 = withEnv(fromOptions(options), env, { simulateKind });
-      eff2.warnings = [...warnings, ...eff2.warnings];
-      return eff2;
-    }
-    const cx12 = "error" in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0];
-    const eff = withEnv(DEFAULTS, env, { simulateKind });
-    if (eff.from.lastMinutes !== "env") {
-      eff.lastMinutes = 0;
-      eff.from.lastMinutes = "unread";
-    }
-    if (eff.from.weeklyLastHours !== "env") {
-      eff.weeklyLastHours = 0;
-      eff.from.weeklyLastHours = "unread";
-    }
-    eff.warnings = [...cx12 === void 0 ? [] : [cx12], ...eff.warnings];
-    return eff;
-  };
-  return {
-    path,
-    get() {
-      const child = parentChild();
-      const simulateKind = d.simulateKind();
-      const key = `${markOf(path)}|${child ?? ""}|${simulateKind}`;
-      if (cache?.key !== key) cache = { key, eff: build(child, simulateKind) };
-      return structuredClone(cache.eff);
-    }
-  };
-}
-function setOption(paths, owner, name, value) {
-  const path = configPath(paths);
-  return withLock(join5(paths.data, "config.lock"), owner, () => {
-    const read = readJson(path);
-    const raw = read === void 0 ? {} : read;
-    if (!isObject4(raw)) throw new Error("it is not a JSON object");
-    const next = { ...raw };
-    const old = next[name];
-    if (value === void 0) delete next[name];
-    else next[name] = value;
-    writeJson(path, next);
-    return { old };
-  });
 }
 
 // codex/src/commands.ts
@@ -4385,7 +4469,7 @@ import { dirname as dirname3 } from "node:path";
 
 // codex/src/paths.ts
 import { execFileSync } from "node:child_process";
-import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync } from "node:fs";
+import { existsSync, readFileSync as readFileSync3, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, delimiter, dirname as dirname2, isAbsolute, join as join7, resolve, sep } from "node:path";
 var DATA_NAME = "spare10-spare10";
@@ -4411,7 +4495,7 @@ function realish(p) {
   const tail = [];
   for (; ; ) {
     try {
-      if (existsSync2(head)) return join7(realpathSync(head), ...tail);
+      if (existsSync(head)) return join7(realpathSync(head), ...tail);
     } catch {
     }
     const up = dirname2(head);
@@ -4483,7 +4567,7 @@ function findPaths(env, selfFile, homeDir = homedir) {
 var PS = ["/bin/ps", "/usr/bin/ps", "/run/current-system/sw/bin/ps"];
 function parentArgs(ppid) {
   if (!Number.isSafeInteger(ppid) || ppid <= 0) return "";
-  const ps = PS.find((f) => existsSync2(f));
+  const ps = PS.find((f) => existsSync(f));
   if (ps === void 0) return "";
   try {
     return execFileSync(ps, ["-ww", "-o", "args=", "-p", String(ppid)], {
@@ -5088,10 +5172,14 @@ function createGate(d) {
     const now = d.clock.now();
     sx.store.locked((tx) => {
       const st = tx.state;
-      st.hostPid = d.hostPid;
-      st.hostKind = d.hostKind;
-      st.transcript = sx.transcript;
-      st.attended = att.attended;
+      const other = st.hostPid !== void 0 && st.hostPid !== d.hostPid && st.attended === true && !att.attended && d.pidAlive(st.hostPid);
+      if (!other) {
+        st.hostPid = d.hostPid;
+        st.hostKind = d.hostKind;
+        st.transcript = sx.transcript;
+        st.attended = att.attended;
+        st.brokerEnv = brokerEnvOf(d.env);
+      }
       if (guarded) {
         const child = childHeadless(cfg.headless, d.env.SPARE10_HEADLESS !== void 0);
         if (child === void 0) delete st.child;
@@ -5109,19 +5197,22 @@ function createGate(d) {
       await d.sense.sense(sx).catch((e) => d.log.debug(codexDebug.readFailed("the quota at the start", errText5(e))));
     }
   };
-  const noteSensed = (sx, s) => {
-    if (!sx.root) return;
-    d.onSensed?.(s);
-    if (s.blind || s.present.includes("five_hour") || !s.present.includes("seven_day")) return;
-    const id = s.cfg.weeklyReserve <= 0 ? "CX13" : s.cfg.weeklyLastHours > 0 ? "CX40" : void 0;
-    if (id === void 0) return;
+  const warnSensed = (sx, id, text3, now) => {
     try {
       if ((sx.store.read().warned ?? []).includes(id)) return;
-      const t = id === "CX13" ? codexText.weeklyOnlyOff : codexText.weeklyOnlyOpen(s.cfg.weeklyLastHours);
-      sx.store.locked((tx) => warnOnce(tx.state, id, t, s.now));
+      sx.store.locked((tx) => warnOnce(tx.state, id, text3(), now));
     } catch (e) {
       d.log.debug(codexDebug.writeFailed(`the warning ${id}`, errText5(e)));
     }
+  };
+  const noteSensed = (sx, s) => {
+    if (!sx.root) return;
+    d.onSensed?.(s);
+    if (s.attended && s.cfg.enabled && unsafeMode(s.view.turnContext, d.paths.data)) warnSensed(sx, "CX9", () => codexText.unsafe, s.now);
+    if (s.blind || s.present.includes("five_hour") || !s.present.includes("seven_day")) return;
+    const id = s.cfg.weeklyReserve <= 0 ? "CX13" : s.cfg.weeklyLastHours > 0 ? "CX40" : void 0;
+    if (id === void 0) return;
+    warnSensed(sx, id, () => id === "CX13" ? codexText.weeklyOnlyOff : codexText.weeklyOnlyOpen(s.cfg.weeklyLastHours), s.now);
   };
   const loopKey = (sx) => sx.root ? `${sx.sid}:main` : `${sx.sid}:${sx.thread}`;
   const blockOf = (s, a, sid) => ({
@@ -5324,7 +5415,6 @@ function createGate(d) {
     if (cmd !== void 0) return onCommand(sx, cmd, steer);
     if (sx.root && takeContinuation(sx, prompt)) return { r: await rounds(sx, input, call, "step", { block: true }) };
     if (!sx.root) return { r: await rounds(sx, input, call, "step", { block: true }) };
-    call.prompt = prompt;
     return personRounds(sx, input, call);
   };
   const onStop = async (sx, input) => {
@@ -5342,21 +5432,11 @@ function createGate(d) {
       return { kind: "pass" };
     }
   };
-  const onInterrupt = (sx, input) => {
+  const onInterrupt = (input) => {
     const turn = input.turn;
-    if (turn === void 0) return true;
+    if (turn === void 0) return;
     const n = d.dropTurn(turn);
     if (n > 0) d.log.debug(codexDebug.dropped(n));
-    const now = d.clock.now();
-    try {
-      sx.store.locked((tx) => {
-        tx.state.lastInterrupt = { turnId: turn, at: now, bySpare10: tx.state.interrupts?.[turn] !== void 0 };
-      });
-      return true;
-    } catch (e) {
-      d.log.debug(codexDebug.writeFailed("the interrupt", errText5(e)));
-      return false;
-    }
   };
   const dispatch = async (sx, input, call) => {
     if (sx.root && !started.has(sx.sid) && input.site !== "interrupt") {
@@ -5387,11 +5467,10 @@ function createGate(d) {
     }
     let answer = PASS2;
     let sx;
-    let notices = true;
     try {
       sx = bind(input, meta);
       call.thread = sx.thread;
-      if (input.site === "interrupt") notices = onInterrupt(sx, input);
+      if (input.site === "interrupt") onInterrupt(input);
       else answer = await dispatch(sx, input, call);
     } catch (e) {
       d.log.debug(codexDebug.gateError(e instanceof Error ? e.stack ?? e.message : String(e)));
@@ -5410,7 +5489,7 @@ function createGate(d) {
           d.log.debug(codexDebug.writeFailed("the held entry", errText5(e)));
         }
       }
-      if (ctx.root && notices && !call.dropped.aborted) {
+      if (ctx.root && !call.dropped.aborted) {
         try {
           lines.push(...ctx.store.takeNotices(d.clock.now()).map(withPrefix));
         } catch (e) {
@@ -6135,8 +6214,8 @@ function createQuestions(d) {
 function nextWait(q, call, now) {
   const times = [call.since + HOLD_LIMIT_MS];
   if (q !== void 0) times.push(q.due, q.nextCheck, ...q.noted ? [] : [q.noteAt]);
-  const ahead = times.map((t) => t - now).filter((ms) => ms > 0);
-  return Math.min(TICK_MS, ...ahead);
+  const ahead2 = times.map((t) => t - now).filter((ms) => ms > 0);
+  return Math.min(TICK_MS, ...ahead2);
 }
 
 // codex/src/refuse.ts
@@ -6269,8 +6348,8 @@ function createRefusal(d) {
           beat(sx.store, sx.thread, t, d.log);
           lastBeat = t;
         }
-        const ahead = [TICK_MS, call.since + HOLD_LIMIT_MS - t, ...due !== void 0 && due > t ? [due - t] : []];
-        await w.next(Math.max(1, Math.min(...ahead)));
+        const ahead2 = [TICK_MS, call.since + HOLD_LIMIT_MS - t, ...due !== void 0 && due > t ? [due - t] : []];
+        await w.next(Math.max(1, Math.min(...ahead2)));
       }
     } finally {
       w.close();
@@ -6374,7 +6453,7 @@ function keepEnd(c, end) {
   }
 }
 function noteCount(c, tc, forward) {
-  const wins = (prev) => prev === void 0 || tc.at > prev.at || forward && tc.at === prev.at;
+  const wins = (prev) => prev === void 0 || forward;
   if (wins(c.newest)) c.newest = tc;
   if (!isObservation(tc.snapshot)) return false;
   if (wins(c.newestObs)) c.newestObs = tc;
@@ -6405,6 +6484,11 @@ function parseLine(c, line, fresh) {
     if (c.turnStart === void 0 || !(start2.at < c.turnStart.at)) c.turnStart = start2;
     return;
   }
+  const ctx = turnContextOf(line);
+  if (ctx !== void 0) {
+    c.turnContext = ctx;
+    return;
+  }
   if (c.meta === void 0) {
     const m = metaOf(line);
     if (m !== void 0) c.meta = m;
@@ -6421,7 +6505,8 @@ function scan(io, path, c, fresh) {
     if (part2 === void 0) break;
     if (offset === void 0 && part2.lines.length > 0) offset = part2.end;
     let found = c.newestObs !== void 0;
-    for (let i = part2.lines.length - 1; i >= 0 && !found; i -= 1) {
+    let i = part2.lines.length - 1;
+    for (; i >= 0 && !found; i -= 1) {
       const line2 = part2.lines[i] ?? "";
       const tc = codexCountOf(line2);
       if (tc !== void 0) {
@@ -6437,8 +6522,19 @@ function scan(io, path, c, fresh) {
       }
       if (c.turnStart === void 0) {
         const start2 = turnStartOf(line2);
-        if (start2 !== void 0) c.turnStart = start2;
+        if (start2 !== void 0) {
+          c.turnStart = start2;
+          continue;
+        }
       }
+      if (c.turnContext === void 0) {
+        const ctx = turnContextOf(line2);
+        if (ctx !== void 0) c.turnContext = ctx;
+      }
+    }
+    for (; i >= 0 && c.turnContext === void 0; i -= 1) {
+      const ctx = turnContextOf(part2.lines[i] ?? "");
+      if (ctx !== void 0) c.turnContext = ctx;
     }
     const scanned = part2.size - part2.start;
     lastStart = part2.start;
@@ -6461,7 +6557,8 @@ var readOf = (c, fresh) => ({
   fresh: fresh.slice(-FRESH_KEPT),
   ...c.meta === void 0 ? {} : { meta: c.meta },
   ...c.turnStart === void 0 ? {} : { turnStart: c.turnStart },
-  turnEnds: c.turnEnds
+  turnEnds: c.turnEnds,
+  ...c.turnContext === void 0 ? {} : { turnContext: c.turnContext }
 });
 function createRollouts(d = {}) {
   const io = d.io ?? nodeRolloutIo;
