@@ -83,20 +83,28 @@ export function removeDead(st: SessionState, dead: readonly Dead[]): void {
 export type ConsentCtx = { store: Pick<SessionStore, 'read' | 'locked'>; parent?: Pick<SessionStore, 'read'>; hostPid: number }
 
 /**
+ * 3.10: the state of the parent session that an unattended reader of a nested run takes consents from.
+ * An attended reader, or a run with no parent, gets none, and nothing is read. A failed read is logged and
+ * gives none, so the parent's consent does not count (fail closed).
+ */
+export function parentOf(sx: { parent?: Pick<SessionStore, 'read'> }, attended: boolean, log?: Log): SessionState | undefined {
+  if (attended || sx.parent === undefined) return undefined
+  try {
+    return sx.parent.read()
+  } catch (e) {
+    log?.debug(codexDebug.readFailed('the parent session', e instanceof Error ? e.message : String(e)))
+    return undefined
+  }
+}
+
+/**
  * The consents of a kind now, read with no lock (4.1). A dead value of this session is removed under the
  * lock, best effort: a LockTimeout leaves it on disk, and the list leaves it out all the same. Never call it
  * inside `locked`. A state.json that does not read throws (the caller fails open when it senses).
  */
 export function consentsOf(sx: ConsentCtx, q: ConsentQuery, log?: Log): Sourced[] {
   const state = sx.store.read()
-  let parent: SessionState | undefined
-  if (!q.attended && sx.parent !== undefined) {
-    try {
-      parent = sx.parent.read()
-    } catch (e) {
-      log?.debug(codexDebug.readFailed('the parent session', e instanceof Error ? e.message : String(e)))
-    }
-  }
+  const parent = parentOf(sx, q.attended, log)
   const r = consentsIn({ ...q, state, ...(parent === undefined ? {} : { parent }), hostPid: sx.hostPid })
   if (r.dead.length > 0) {
     try {

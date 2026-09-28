@@ -428,7 +428,7 @@ test('the Codex report equals the sample of 2.8', () => {
   )
 })
 
-// ---- The texts of CX1 to CX48 ----
+// ---- The texts of CX1 to CX53 ----
 
 const HOME = '/Users/me'
 const L = '/Users/me/.codex/plugins/data/spare10-spare10/bin/spare10'
@@ -459,7 +459,7 @@ test('the CX texts read as in the design', () => {
   )
   assert.equal(
     codexText.configUnread(CFG, 'Unexpected token } in JSON at position 12'),
-    `cannot read ${CFG} (Unexpected token } in JSON at position 12). spare10 uses the default options, and keeps each reserve until the reset.`,
+    `cannot read ${CFG} (Unexpected token } in JSON at position 12). spare10 uses the default options, and keeps each reserve until the reset. Correct the file, or remove it to use the defaults.`,
   )
   assert.equal(
     codexText.daemonEnv([['SPARE10', 'off'], ['SPARE10_RESERVE', '15']]),
@@ -515,11 +515,28 @@ test('the CX texts read as in the design', () => {
     'reserve is now 15. It was 10. It applies from the next step. SPARE10_RESERVE is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.',
   )
   assert.equal(codexText.setBad('reserve', '1 to 99'), 'reserve takes 1 to 99. Nothing changed.')
+  assert.equal(codexText.setBlankPause, 'pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.')
   assert.equal(
     codexText.setUnknown('foo'),
     'unknown option "foo". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.',
   )
   assert.equal(codexText.setFailed(CFG, 'EACCES'), `could not write ${CFG}: EACCES. Nothing changed.`)
+  assert.equal(
+    codexText.setFailed(CFG, 'it is not a JSON object', true),
+    `could not write ${CFG}: it is not a JSON object. Nothing changed. Correct the file, or remove it to use the defaults.`,
+  )
+  assert.equal(codexText.unknown('pause'), 'unknown command "pause". Nothing changed. Run spare10 help to list the commands.')
+  assert.equal(codexText.heldStopOver, 'the stop is over. Held work continues now.')
+  assert.equal(codexText.heldStopEnded, 'the stop is over. Held work waits. Run !spare10 resume to continue it now.')
+  assert.equal(codexText.stopAskingWaits(), 'stopped. Held work waits. Run !spare10 resume to continue it now.')
+  assert.equal(
+    codexText.stopAskingWaits({ at: '15:00' }),
+    'stopped. Held work waits. spare10 continues it after 15:00. Run !spare10 resume to continue it now.',
+  )
+  assert.equal(
+    codexText.stopAskingWaits({ at: '14:40', lead: '20 min before the reset' }),
+    'stopped. Held work waits. spare10 continues it at 14:40, 20 min before the reset. Run !spare10 resume to continue it now.',
+  )
   assert.equal(
     codexText.setList(CFG, [
       ['reserve', '15', 'config.json'],
@@ -631,8 +648,16 @@ function codexPrefixed(): string[] {
     codexText.setOk('reserve', '15', '10') + codexText.setEnvWins('SPARE10_RESERVE'),
     codexText.setDefault('pausePrompt', 'an empty text'),
     codexText.setBad('headless', 'off, prompt, stop or wait'),
+    codexText.setBlankPause,
     codexText.setUnknown('foo'),
+    codexText.unknown('pause'),
+    codexText.heldStopOver,
+    codexText.heldStopEnded,
+    codexText.stopAskingWaits(),
+    codexText.stopAskingWaits({ at: '15:00' }),
+    codexText.stopAskingWaits({ at: '14:40', lead: '20 min before the reset' }),
     codexText.setFailed(CFG, 'EROFS'),
+    codexText.setFailed(CFG, 'bad JSON', true),
     codexText.setList(CFG, [['reserve', '10', 'default']]),
     codexText.help(D, HOME),
   ]

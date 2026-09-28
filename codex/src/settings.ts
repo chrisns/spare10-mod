@@ -5,7 +5,7 @@ import type { HostKind, OptionName } from '../../hooks/core/codex.ts'
 import { DEFAULTS, fromOptions, withEnv } from '../../hooks/core/config.ts'
 import type { Effective, EnvReads } from '../../hooks/core/config.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
-import { readJson, withLock, writeJson } from './files.ts'
+import { readJson, readOwnJson, withLock, writeJson } from './files.ts'
 import type { Log } from './log.ts'
 import type { Env, Paths } from './paths.ts'
 
@@ -142,11 +142,15 @@ export function createSettings(d: SettingsDeps): SettingsSource {
   }
 }
 
+/** setOption finds a config.json that parses but is not a JSON object (CX32). */
+export class ConfigUnreadError extends Error {}
+
 /**
  * `spare10 set <option> <value>` and `spare10 set <option> default` (5.1): writes one key of config.json
- * under config.lock, by rename. `value` undefined removes the key. A config.json that does not parse is
- * not overwritten: the call throws, and the command says that nothing changed (CX32). The result is the
- * old value of the key (undefined when it had none).
+ * under config.lock, by rename. `value` undefined removes the key. A torn config.json (files.ts isTorn: an
+ * OS crash after a write) counts as empty, so this write repairs it. Other bad JSON, or a value that is not
+ * an object, is not overwritten: the call throws, and the command says that nothing changed (CX32). The
+ * result is the old value of the key (undefined when it had none).
  */
 export function setOption(
   paths: Pick<Paths, 'data'>,
@@ -156,9 +160,9 @@ export function setOption(
 ): { old: unknown } {
   const path = configPath(paths)
   return withLock(join(paths.data, 'config.lock'), owner, () => {
-    const read = readJson<unknown>(path)
+    const read = readOwnJson<unknown>(path)
     const raw = read === undefined ? {} : read
-    if (!isObject(raw)) throw new Error('it is not a JSON object')
+    if (!isObject(raw)) throw new ConfigUnreadError('it is not a JSON object')
     const next = { ...raw }
     const old = next[name]
     if (value === undefined) delete next[name]

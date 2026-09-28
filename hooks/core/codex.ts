@@ -14,12 +14,12 @@ import {
 import type { Consent } from './decide.ts'
 import { BLIND_AFTER, KINDS, parseSimulate, windowMs } from './reading.ts'
 import type { Anchored, Kind } from './reading.ts'
-import { HEADER, HEADLESS_GENERIC, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilText, yourReserves } from './text.ts'
+import { HEADER, HEADLESS_GENERIC, HELD_WAITS, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilPhrase, untilText, yourReserves } from './text.ts'
 import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX48, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX53, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -442,13 +442,18 @@ export function attendedFrom(i: {
   return { attended: false }
 }
 
-/** P1 (CX9): the agent can send prompts for the person, or write spare10's files, in this turn. */
+/**
+ * P1 (CX9): the agent can send prompts for the person, or write spare10's files, in this turn. Auto review
+ * (`guardian_subagent` is its old name) approves for the person with any approval but `never`. Codex keeps
+ * `<root>/.codex` of each writable root read-only, so a writable home folder alone does not expose
+ * `~/.codex`.
+ */
 export function unsafeMode(tc: TurnContextFacts | undefined, dataDir: string): boolean {
   if (tc === undefined) return false
   if (tc.sandbox === 'danger-full-access' || tc.sandbox === 'external-sandbox') return true
   if (tc.profile === 'disabled') return true
-  if (tc.reviewer === 'auto_review' && (tc.approval === 'on-request' || tc.approval === 'untrusted')) return true
-  return tc.roots.some((r) => within(dataDir, r))
+  if ((tc.reviewer === 'auto_review' || tc.reviewer === 'guardian_subagent') && tc.approval !== 'never') return true
+  return tc.roots.some((r) => within(dataDir, r) && !within(dataDir, `${bare(r) === '/' ? '' : bare(r)}/.codex`))
 }
 
 // macOS keeps /tmp and /var under /private: compare both forms.
@@ -538,9 +543,12 @@ export function configOptions(path: string, raw: unknown): { options: PluginOpti
   return { options, warnings }
 }
 
+/** A typed pause prompt with no text: blank, or only a pair of quotes. It would turn on tell mode by mistake. */
+const blankPause = (raw: string): boolean => /^\s*(""|'')?\s*$/.test(raw)
+
 /** The typed words of `spare10 set <option> <value>` as the stored JSON value (5.1). */
 export function parseSetValue(name: OptionName, raw: string): { ok: true; value: string | number | boolean } | { ok: false } {
-  if (name === 'pausePrompt') return raw.trim() === '' ? { ok: false } : { ok: true, value: raw }
+  if (name === 'pausePrompt') return blankPause(raw) ? { ok: false } : { ok: true, value: raw }
   const o = OPTIONS.find((x) => x.name === name)
   const v = o?.parse(raw)
   if (v === undefined || v === null) return { ok: false }
@@ -750,7 +758,7 @@ const pathLine = (dir: string, home: string | undefined): string => {
   return `export PATH="${rest === undefined ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`
 }
 
-// ---- Texts (CX1 to CX48) and debug lines ----
+// ---- Texts (CX1 to CX53) and debug lines ----
 
 /** CX5 {Rs} and {quiet}: five_hour first, as the core texts read a list of Facts. */
 const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
@@ -759,6 +767,9 @@ const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
 const envList = (set: ReadonlyArray<readonly [string, string]>): string => set.map(([name, raw]) => `${name}=${JSON.stringify(raw)}`).join(', ')
 
 const HELP_WIDTH = 18
+
+/** CX12 and CX32: how to repair a config.json that does not parse. */
+const CONFIG_FIX = 'Correct the file, or remove it to use the defaults.'
 
 /**
  * The Codex-only texts. Transcript lines, warnings and command replies have no prefix: the broker adds
@@ -802,7 +813,7 @@ export const codexText = {
     `${path} sets ${name} to ${JSON.stringify(raw) ?? String(raw)}, which is not ${range}. spare10 uses ${used}.`,
   /** CX12: config.json exists but does not parse. */
   configUnread: (path: string, err: string): string =>
-    `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset.`,
+    `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset. ${CONFIG_FIX}`,
   /** CX13: only a weekly window, and the weekly reserve is 0. */
   weeklyOnlyOff: 'Codex reports only a weekly window, and the weekly reserve is 0. So spare10 watches no window.',
   /** CX40: only a weekly window, with a weekly open span. */
@@ -860,11 +871,31 @@ export const codexText = {
   setEnvWins: (env: string): string => ` ${env} is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.`,
   /** CX30 */
   setBad: (name: string, range: string): string => `${name} takes ${range}. Nothing changed.`,
+  /** CX52: `spare10 set pausePrompt` with no text. */
+  setBlankPause: 'pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.',
   /** CX31 */
   setUnknown: (name: string): string =>
     `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.`,
-  /** CX32 */
-  setFailed: (path: string, err: string): string => `could not write ${path}: ${err}. Nothing changed.`,
+  /** CX49: a typed `spare10 <word>` that is no command. */
+  unknown: (word: string): string => `unknown command "${word}". Nothing changed. Run spare10 help to list the commands.`,
+  /**
+   * CX50: `spare10 resume` after a stop that ended, while held work still waits under it. spare10 cleared
+   * the stop, so each held call decides again. A kind that gates still asks.
+   */
+  heldStopOver: 'the stop is over. Held work continues now.',
+  /**
+   * CX51 (4.4, 4.20): `spare10 stop` on an open question wrote an auto stop, and each held tool call is in a
+   * thread that no daemon hosts. So the calls wait in place under the stop. `until`: when spare10 continues
+   * them, as the core `asking` reply says it.
+   */
+  stopAskingWaits: (until?: { at: string; lead?: string }): string =>
+    until === undefined
+      ? `stopped. ${HELD_WAITS}`
+      : `stopped. Held work waits. spare10 continues it ${until.lead === undefined ? `after ${until.at}` : `at ${untilPhrase(until)}`}. Run !spare10 resume to continue it now.`,
+  /** CX53 (report only): a stop that spare10 does not end by itself is over, and held work still waits under it. */
+  heldStopEnded: `the stop is over. ${HELD_WAITS}`,
+  /** CX32. `unread`: config.json does not parse, or is not an object, so the text says how to repair it. */
+  setFailed: (path: string, err: string, unread = false): string => `could not write ${path}: ${err}. Nothing changed.${unread ? ` ${CONFIG_FIX}` : ''}`,
   /** CX33: rows of [name, value, source]. */
   setList: (path: string, rows: ReadonlyArray<readonly [string, string, string]>): string =>
     [
