@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { codexText, defaultText, initialPresence, nextPresence, optionText, OPTIONS, parseSetValue, shownPath } from '../../hooks/core/codex.ts'
+import { RESET_JITTER_MS, codexText, defaultText, initialPresence, nextPresence, optionText, OPTIONS, parseSetValue, shownPath } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot, Command, OptionName } from '../../hooks/core/codex.ts'
 import { watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective } from '../../hooks/core/config.ts'
@@ -81,7 +81,7 @@ export type Commands = {
   /** As `run`, but a command that fails throws (the CLI exits 1). */
   exec(sx: SessionCtx, cmd: Command, o: { cli: boolean }): Promise<string>
   /** The report (4.19). `sx` undefined: the CLI with no session. `cli`: the rows session and broker. */
-  statusText(sx: SessionCtx | undefined, o: { cli: boolean; full: boolean }): Promise<string>
+  statusText(sx: SessionCtx | undefined, o: { cli: boolean }): Promise<string>
   /** The phase line of the report, as one line (2.9). */
   phaseLine(sx: SessionCtx | undefined): Promise<string>
   /** The phase of a session (the CX36 rows). */
@@ -279,6 +279,7 @@ export function createCommands(d: CommandDeps): Commands {
       told: toldOf(state),
       sessionId: sx.sid,
       present: s.present, // 4.15: the phase reads the bases of the kinds the host reports, so a weekly-only plan is armed
+      jitter: RESET_JITTER_MS, // 3.6: a reset that moves a little keeps the told loops of its window
     })
     return { p, s, state }
   }
@@ -483,7 +484,7 @@ export function createCommands(d: CommandDeps): Commands {
         clearStopped(tx.state)
       }
     })
-    return simulateText({ spec, reading, inPlace, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now })
+    return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now })
   }
 
   /** 4.20 setCommand: the option list, or one key of config.json under config.lock. */
@@ -533,7 +534,7 @@ export function createCommands(d: CommandDeps): Commands {
   const exec: Commands['exec'] = async (sx, cmd, o) => {
     switch (cmd.verb) {
       case 'status':
-        return statusText(sx, { cli: o.cli, full: true })
+        return statusText(sx, { cli: o.cli })
       case 'help':
         return codexText.help(d.paths.bin, d.paths.home)
       case 'resume':

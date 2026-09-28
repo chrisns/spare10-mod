@@ -413,8 +413,9 @@ The vscode and mobile surfaces have no footer, so there the dialog is the only s
 
 `/spare10` runs at once, also while a turn runs.
 Only you can run `resume` and `stop`, from the prompt box or a remote surface.
-Claude cannot run them through a tool.
-It can still consent for you when it can write a settings file or type into your terminal.
+Claude cannot run them as a command of its own.
+spare10 refuses such a call, and nothing changes.
+Claude can still consent for you when it can write a settings file or type into your terminal.
 See items 55 and 56 of the [Known limitations](how-it-works.md#known-limitations).
 You cannot type `/spare10` while the dialog is on the screen, because the dialog holds the keys.
 Use `/spare10 resume` or `/spare10 stop` when no dialog shows, or from a remote surface.
@@ -626,7 +627,8 @@ The command takes this form:
   Without a live reading, it ends 5 hours from now, or 7 days for the weekly window.
   A live reset that has passed, or that is more than one window ahead, counts as no live reading.
 - Each window has one test reading.
-  A new value for a window clears the consent and the stop.
+  A new value for a window starts a new test.
+  It clears your consents for both windows and the stop, and its reply says so.
   A higher value without `in` is different: it raises the test reading in place, and your answers stay.
   So `/spare10 simulate 96` after a **Resume** at 91% shows the second question.
   The same value again, a lower value or a value with `in` starts a new test.
@@ -664,6 +666,12 @@ spare10: test reading set to 92% used, resets 14:22. It can only raise the real 
 
 The last reply warns you that a **Resume** on the test reading also covers the real reading.
 It gives this warning when the real reading is in the reserve and below the test reading.
+
+A value that replaces a test reading adds two sentences after the reset time:
+
+```
+spare10: test reading set to 91% used, resets 14:22. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. The reserve opens at 14:02, 20 min before the test window ends. Run /spare10 simulate off to clear it.
+```
 
 A value at or past the floor adds `This is past your 5% floor.` to the reply.
 A raise in place has its own reply:

@@ -98,6 +98,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
   ['simulateReply bad', () => simulateReply('bad'), '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'],
   ['simulateReply set', () => simulateReply('set', F), 'test reading set to 92% used, resets 15:00. It can only raise the real reading. Run /spare10 simulate off to clear it.'],
   ['simulateReply raised', () => simulateReply('raised', F), 'test reading raised to 92% used, resets 15:00. Your earlier answers stay. It can only raise the real reading. Run /spare10 simulate off to clear it.'],
+  ['simulateReply replaced', () => simulateReply('replaced', F), 'test reading set to 92% used, resets 15:00. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. Run /spare10 simulate off to clear it.'],
   ['commandFailed', () => commandFailed('boom'), '/spare10 failed: boom'],
   ['report: armed, the claude -p row and both help lines', () => statusReport(status()), [
       'version 0.3.0',

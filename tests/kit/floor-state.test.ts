@@ -110,6 +110,9 @@ const stopTripped = (lead = LEAD): string =>
 
 const simSet = (what: string, at: string, extra: string): string =>
   `test reading set to ${what}, resets ${at}. It can only raise the real reading.${extra} Run /spare10 simulate off to clear it.`
+/** 3.5: a value that replaces a test reading of the kind starts a new test, and the reply says what it clears. */
+const simNew = (what: string, at: string, extra: string): string =>
+  `test reading set to ${what}, resets ${at}. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading.${extra} Run /spare10 simulate off to clear it.`
 const simRaised = (what: string, at: string, extra: string): string =>
   `test reading raised to ${what}, resets ${at}. Your earlier answers stay. It can only raise the real reading.${extra} Run /spare10 simulate off to clear it.`
 const PAST = ' This is past your 5% floor.'
@@ -1357,7 +1360,7 @@ test('the floor sentence starts at the point: 95 has it, 94.9 does not', async (
   const w = world(on, { pct: 50 })
   await begin($, w)
   expect(await run($, 'simulate 95')).toBe(simSet('95% used', AT, `${PAST}${opens()}`))
-  expect(await run($, 'simulate 94.9')).toBe(simSet('94.9% used', AT, opens()))
+  expect(await run($, 'simulate 94.9')).toBe(simNew('94.9% used', AT, opens()))
 })
 
 test('the same value, a lower value or a value with in starts a new test and clears the consent', async ($, on) => {
@@ -1367,16 +1370,16 @@ test('the same value, a lower value or a value with in starts a new test and cle
   expect(await run($, 'resume')).toBe(TRIPPED_FIRST)
   expect(rowOf(await report($), 'consent')).toBe(floorConsent())
 
-  expect(await run($, 'simulate 91')).toBe(simSet('91% used', AT, opens())) // the same value again: a new test
+  expect(await run($, 'simulate 91')).toBe(simNew('91% used', AT, opens())) // the same value again: a new test
   expect(rowOf(await report($), 'consent')).toBe('none')
 
   expect(await run($, 'resume')).toBe(TRIPPED_FIRST)
-  expect(await run($, 'simulate 90')).toBe(simSet('90% used', AT, opens())) // lower: a new test
+  expect(await run($, 'simulate 90')).toBe(simNew('90% used', AT, opens())) // lower: a new test
   expect(rowOf(await report($), 'consent')).toBe('none')
 
   expect(await run($, 'resume')).toBe(`you can use the reserve until 95% used. ${asks()}`)
   const end = T0 + HOUR
-  expect(await run($, 'simulate 96 in 1h')).toBe(simSet('96% used', hhmm(end), `${PAST}${opens(hhmm(end - 20 * MIN))}`)) // in: a new test
+  expect(await run($, 'simulate 96 in 1h')).toBe(simNew('96% used', hhmm(end), `${PAST}${opens(hhmm(end - 20 * MIN))}`)) // in: a new test
   expect(rowOf(await report($), 'consent')).toBe('none')
   w.answer = 'Stop here'
   expect((await bash($)).deny).toBe(stopFloor(96, hhmm(end)))
@@ -1489,7 +1492,7 @@ test('a raise needs a test reading in its window: after the test window ends, a 
   await begin($, w)
   expect(await run($, 'simulate 91 in 30m')).toBe(simSet('91% used', hhmm(T0 + 30 * MIN), opens(hhmm(T0 + 10 * MIN))))
   await w.clock.advance(31 * MIN)
-  expect(await run($, 'simulate 96')).toBe(simSet('96% used', AT, `${PAST}${opens()}`))
+  expect(await run($, 'simulate 96')).toBe(simNew('96% used', AT, `${PAST}${opens()}`))
 })
 
 test('a raise is per kind: a 5-hour test reading never makes a first weekly value a raise', async ($, on) => {

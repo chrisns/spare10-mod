@@ -725,6 +725,10 @@ test('the test seam: simulate 91, Resume, simulate 96 asks the second question',
   expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
 })
 
+/** 3.5: the reply of a value that replaces a test reading says that it starts a new test, and what that clears. */
+const NEW_TEST = (pct: string): RegExp =>
+  new RegExp(`^test reading set to ${pct}% used, resets [^.]+\\. This starts a new test\\. Your consents for both windows and any stop are cleared\\. It can only raise`)
+
 test('simulate raises in place only upward and without in: the same value, a lower value or in starts a new test', async ($, on) => {
   const w = world(on, { pct: 50, answer: 'Resume' })
   await begin($, w)
@@ -734,14 +738,14 @@ test('simulate raises in place only upward and without in: the same value, a low
   expect(row(await report($), 'consent')).toBe(consent)
   expect(await run($, 'simulate 96')).toStartWith('test reading raised to 96% used')
   expect(row(await report($), 'consent')).toBe(consent)
-  expect(await run($, 'simulate 96')).toStartWith('test reading set to 96% used') // the same value: a new test
+  expect(await run($, 'simulate 96')).toMatch(NEW_TEST('96')) // the same value: a new test
   expect(row(await report($), 'consent')).toBe('  · consent        none')
   expect((await bash($)).result).toBe('ran')
   expect(row(await report($), 'consent')).toBe(consent)
-  expect(await run($, 'simulate 94')).toStartWith('test reading set to 94% used') // a lower value: a new test
+  expect(await run($, 'simulate 94')).toMatch(NEW_TEST('94')) // a lower value: a new test
   expect(row(await report($), 'consent')).toBe('  · consent        none')
   expect((await bash($)).result).toBe('ran')
-  expect(await run($, 'simulate 97 in 1h')).toStartWith('test reading set to 97% used') // with in: a new test
+  expect(await run($, 'simulate 97 in 1h')).toMatch(NEW_TEST('97')) // with in: a new test
   expect(row(await report($), 'consent')).toBe('  · consent        none')
   expect(w.asked).toHaveLength(3)
 })

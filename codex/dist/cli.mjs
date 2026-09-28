@@ -16,6 +16,8 @@ var BLIND_AFTER = 2;
 var FALLBACK_MS = 36e5;
 var TEST_WINDOW_MS = 5 * 36e5;
 var windowMs = (kind) => kind === "seven_day" ? WEEK_MS : 5 * 36e5;
+var RESET_JITTER_MS = 6e5;
+var voidedByReset = (c, windowEnd) => windowEnd - c.until > RESET_JITTER_MS;
 var kindOfLimit = (live) => live.kind === "seven_day" ? "seven_day" : "five_hour";
 var initialMemory = () => ({ misses: 0 });
 function parseReset(iso) {
@@ -703,7 +705,7 @@ function simulateReply(kind, f, opens, pastFloor, realIn) {
   const floorText = pastFloor === void 0 ? "" : ` This is past your ${fmtPct(pastFloor)}% ${weekly ? "weekly floor" : "floor"}.`;
   const realText = realIn === true ? ` A Resume on the test reading also lets real work use the ${weekly ? "weekly reserve" : "reserve"}.` : "";
   const verb = kind === "raised" ? "raised" : "set";
-  const stays = kind === "raised" ? " Your earlier answers stay." : "";
+  const stays = kind === "raised" ? " Your earlier answers stay." : kind === "replaced" ? " This starts a new test. Your consents for both windows and any stop are cleared." : "";
   return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run ${HOST.command} simulate off to clear it.`;
 }
 var commandFailed = (message) => `${HOST.leadFailed} failed: ${message}`;
@@ -901,7 +903,6 @@ function withEnv(base, env, o = {}) {
 
 // hooks/core/codex.ts
 var NEAR_TRIP_POINTS = 5;
-var RESET_JITTER_MS = 6e5;
 var isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var finite = (v) => typeof v === "number" && Number.isFinite(v);
 var kindOfMinutes = (mins) => {
@@ -973,7 +974,6 @@ function pickSeed(a, b) {
 }
 var usableCredits = (c) => isObject(c) && (c.unlimited === true || (c.hasCredits ?? c.has_credits) === true);
 var nearTrip = (pct, trip, floorPoint) => pct !== void 0 && (pct >= trip - NEAR_TRIP_POINTS || floorPoint !== void 0 && pct >= floorPoint - NEAR_TRIP_POINTS);
-var voidedByReset = (c, windowEnd) => windowEnd - c.until > RESET_JITTER_MS;
 function jsonLine(line) {
   try {
     const v = JSON.parse(line);
@@ -2907,7 +2907,7 @@ function simulateText(i) {
   const pastFloor = floor > 0 && spec.pct >= pointOf(floor) && opens !== "now" ? floor : void 0;
   const rv = viewOf(realBasis2, realBasis2, reserve, span, now);
   const realIn = rv.tripped && !rv.open && (pctOf(realBasis2) ?? 100) < spec.pct;
-  return simulateReply(i.inPlace ? "raised" : "set", f, opens, pastFloor, realIn);
+  return simulateReply(i.inPlace ? "raised" : i.replaces ? "replaced" : "set", f, opens, pastFloor, realIn);
 }
 function seenSplit(kinds, lists, now) {
   const out = { consent: {}, ended: {}, gating: [], open: [] };
@@ -3713,14 +3713,7 @@ function createSense(d) {
       d.log.debug(codexDebug.readFailed("the consents", errText2(e)));
       return {};
     }
-    let parent;
-    if (!attended && sx.parent !== void 0) {
-      try {
-        parent = sx.parent.read();
-      } catch (e) {
-        d.log.debug(codexDebug.readFailed("the parent session", errText2(e)));
-      }
-    }
+    const parent = parentOf(sx, attended, d.log);
     return { state, ...parent === void 0 ? {} : { parent } };
   };
   const split = (sx, s) => {
@@ -3972,8 +3965,10 @@ function createCommands(d) {
       question,
       told: toldOf(state),
       sessionId: sx.sid,
-      present: s.present
+      present: s.present,
       // 4.15: the phase reads the bases of the kinds the host reports, so a weekly-only plan is armed
+      jitter: RESET_JITTER_MS
+      // 3.6: a reset that moves a little keeps the told loops of its window
     });
     return { p, s, state };
   };
@@ -4146,7 +4141,7 @@ function createCommands(d) {
         clearStopped(tx.state);
       }
     });
-    return simulateText({ spec, reading, inPlace, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now });
+    return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now });
   };
   const setCommand = (words, rest) => {
     const path = configPath(d.paths);
@@ -4189,7 +4184,7 @@ function createCommands(d) {
   const exec = async (sx, cmd, o) => {
     switch (cmd.verb) {
       case "status":
-        return statusText(sx, { cli: o.cli, full: true });
+        return statusText(sx, { cli: o.cli });
       case "help":
         return codexText.help(d.paths.bin, d.paths.home);
       case "resume":
@@ -5732,7 +5727,7 @@ async function main(argv, d) {
       const sid = named ?? listSessions(paths, d.clock.now() - RECENT_MS)[0]?.sid;
       const p2 = partsFor(sid);
       if (fromBang && !a.full) print(`spare10: ${await p2.cmds.phaseLine(p2.sx)}`);
-      else print(`spare10: ${await p2.cmds.statusText(p2.sx, { cli: true, full: true })}`);
+      else print(`spare10: ${await p2.cmds.statusText(p2.sx, { cli: true })}`);
       return 0;
     }
     const p = partsFor(named);

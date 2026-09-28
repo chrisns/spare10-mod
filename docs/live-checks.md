@@ -59,7 +59,9 @@ A test reading trips spare10 at any time, far from the real reserve.
   The rows `⚠ Pausing at next step` and `⚠ Winding down at next step` have no label, so they show no `(test)`.
 - A Resume on a test reading stays in spare10's memory.
   It never goes into `SPARE10_CONSENT` or `SPARE10_WEEKLY_CONSENT`.
-- A new `/spare10 simulate` value for a window clears the consent and the stop, as `off` does.
+- A new `/spare10 simulate` value for a window starts a new test.
+  It clears the consents of both windows and the stop, as `off` does.
+  Its reply adds `This starts a new test. Your consents for both windows and any stop are cleared.`
 - A strictly higher value without `in` raises the test reading in place.
   The test window, the consent and the stop stay.
   So `/spare10 simulate 96` after a Resume at 91 shows the second question.

@@ -30,7 +30,7 @@ import { BLIND_AFTER, KINDS, basis, initialMemory, inWindow, pctOf, pointOf, saw
 import type { Anchored, Kind, Memory } from '../../hooks/core/reading.ts'
 import { debugLine } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
-import { consentField, consentsIn, endFloors, removeDead } from './consent.ts'
+import { consentField, consentsIn, endFloors, parentOf, removeDead } from './consent.ts'
 import type { Dead } from './consent.ts'
 import type { Deps } from './deps.ts'
 import { noRollout } from './quota.ts'
@@ -250,14 +250,7 @@ export function createSense(d: SenseDeps): SenseApi {
       d.log.debug(codexDebug.readFailed('the consents', errText(e)))
       return {}
     }
-    let parent: SessionState | undefined
-    if (!attended && sx.parent !== undefined) {
-      try {
-        parent = sx.parent.read()
-      } catch (e) {
-        d.log.debug(codexDebug.readFailed('the parent session', errText(e)))
-      }
-    }
+    const parent = parentOf(sx, attended, d.log) // 3.10: the shared read, logged when it fails
     return { state, ...(parent === undefined ? {} : { parent }) }
   }
 

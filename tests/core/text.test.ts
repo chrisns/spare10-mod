@@ -246,6 +246,9 @@ test('the notices, warnings and replies are the section 2 texts, without the pre
   expect(simulateReply('set', { ...F, used: 95, left: 5 })).toBe(
     'test reading set to 95% used, resets 15:00. It can only raise the real reading. Run /spare10 simulate off to clear it.',
   )
+  expect(simulateReply('replaced', { ...F, used: 95, left: 5 })).toBe(
+    'test reading set to 95% used, resets 15:00. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. Run /spare10 simulate off to clear it.',
+  )
   expect(simulateReply('off')).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
   expect(simulateReply('bad')).toBe(
     '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
@@ -395,7 +398,7 @@ function enginePrefixed(): string[] {
     statusReport(status()),
   ]
   for (const f of [F, NO_RESET]) {
-    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f))
+    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f), simulateReply('replaced', f))
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off'] as ReplyCase[]) out.push(resumeReply(c, f))
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off'] as const) out.push(stopReply(c, f, 90))
   }
@@ -477,7 +480,7 @@ function everyText(): string[] {
   for (const f of facts) {
     out.push(personFacts(f), modelFacts(f), untilText(f), stopText(f), pausedText(f), headlessText(f, 'S1'))
     out.push(pauseInstruction(f, null), pauseInstruction(f, 'Commit, then stop.'), resumeContext(f), notStarted(f))
-    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f))
+    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f), simulateReply('replaced', f))
     for (const policy of ['off', 'prompt', 'stop'] as const) out.push(debugLine.unattended(f, policy))
     for (const opener of ['loop', 'prompt'] as const) for (const mode of ['hold', 'tell'] as const) out.push(questionText(f, opener, mode))
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off'] as ReplyCase[]) out.push(resumeReply(c, f))

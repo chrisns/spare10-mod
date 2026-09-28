@@ -142,6 +142,20 @@ test('commands: status in each phase', async (t) => {
   assert.equal(h.box.done, true)
 })
 
+test('commands: the report keeps a told loop while the reset moves within its jitter (3.6)', async (t) => {
+  const w = world(t, { config: { pausePrompt: 'Wind down now.' } })
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  await b.gate('tool')
+  assert.deepEqual(w.state().told, { five_hour: { windowEnd: RESET, keys: [`${SID}:main`] } })
+  // The next reading has a reset 5 minutes later: the same window, so the loop is still told.
+  await w.advance(1000)
+  w.reading(SID, 92.5, { reset: RESET + 5 * MIN })
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '⏸ told')
+  assert.match(report, /the wind-down went to 1 agent\(s\)\./)
+})
+
 test('commands: the blind phase after two live reads with no window', async (t) => {
   const w = world(t)
   const b = await w.broker()
@@ -710,7 +724,7 @@ test('commands: the phase line reads only the view, with no daemon read (2.9)', 
   const line = await cmds.phaseLine(b.sx)
   assert.deepEqual(calls, [], 'no daemon read')
   assert.equal(line, '⚠ tripped        spare10 holds the next step and asks you.')
-  const report = await cmds.statusText(b.sx, { cli: true, full: true })
+  const report = await cmds.statusText(b.sx, { cli: true })
   assert.equal(line, (report.split('\n')[2] ?? '').replace(/^ {2}/, ''), 'the phase line of the report')
   assert.deepEqual(calls, ['hosted'])
   calls.length = 0
@@ -740,7 +754,7 @@ test('commands: a nested unattended report logs a parent state that it cannot re
     attendance: createAttendance({ hostKind: 'exec', rollouts: b.rollouts }),
     pidAlive: (p) => w.alive.has(p),
   })
-  const report = await cmds.statusText(b.sx, { cli: false, full: true })
+  const report = await cmds.statusText(b.sx, { cli: false })
   assert.match(report.split('\n')[2] ?? '', /tripped {8}unattended run, policy stop\./, 'the parent consent is gone, so the kind gates (fail closed)')
   const lines = log.lines.filter((l) => l.startsWith(codexDebug.readFailed('the parent session', '')))
   assert.equal(lines.length, 1, JSON.stringify(log.lines))
