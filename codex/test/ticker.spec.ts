@@ -124,6 +124,16 @@ test('ticker: a stop with no work ends with the stop-over line, and nothing is s
   assert.match(lines[0] ?? '', /and the stop is over\. Type a prompt to continue\.$/)
 })
 
+test('ticker: a failed turn/start names a path under the home folder as ~/', async (t) => {
+  const { w } = await hostedStop(t, stopOf())
+  const home = w.paths.home ?? ''
+  assert.ok(home.startsWith('/'), 'the world has a home folder')
+  w.daemon.script.newestTurn = { id: 'U1', status: 'completed', startedAt: Math.floor(T0 / 1000) - 60 }
+  w.daemon.script.start = new Error(`connect ENOENT ${home}/.codex/app-server-control/app-server-control.sock`)
+  await w.advance(SKIP - T0 + 31 * SEC)
+  assert.deepEqual(w.notices(), [notice.resumeFailed('connect ENOENT ~/.codex/app-server-control/app-server-control.sock')])
+})
+
 test('ticker: a failed turn/start clears the continuation and says so', async (t) => {
   const { w } = await hostedStop(t, stopOf())
   w.daemon.script.newestTurn = { id: 'U1', status: 'completed', startedAt: Math.floor(T0 / 1000) - 60 }

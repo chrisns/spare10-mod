@@ -1,4 +1,4 @@
-import { codexDebug, withInterruptedNote } from '../../hooks/core/codex.ts'
+import { codexDebug, hideHome, withInterruptedNote } from '../../hooks/core/codex.ts'
 import { formatStopped, parseStopped, stopAction, stopDue } from '../../hooks/core/decide.ts'
 import { endedFor, extendNotice, extended, namedStop, tickPlan } from '../../hooks/core/flow.ts'
 import { debugLine, notice, resumePrompt } from '../../hooks/core/text.ts'
@@ -32,6 +32,8 @@ export type TickerDeps = Pick<Deps, 'clock' | 'log'> & {
   sweep: Pick<Sweep, 'sweep'>
   /** The liveness test of a held entry's broker. Default: every broker is alive. */
   pidAlive?: (pid: number) => boolean
+  /** The home folder, so a failure line shows a path under it as `~/...`. */
+  home?: string
 }
 
 export type Ticker = {
@@ -149,7 +151,7 @@ export function createTicker(d: TickerDeps): Ticker {
       if (e instanceof DaemonError && e.kind === 'timeout' && (await newerTurn(sx, before))) return
       sx.store.locked((tx) => {
         if (tx.state.continuation?.text === text) delete tx.state.continuation
-        noticeIn(tx.state, notice.resumeFailed(reason), d.clock.now())
+        noticeIn(tx.state, notice.resumeFailed(hideHome(reason, d.home)), d.clock.now())
       })
     }
   }

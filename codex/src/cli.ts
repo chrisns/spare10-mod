@@ -1,7 +1,8 @@
+import { homedir } from 'node:os'
 import { readFileSync, realpathSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { codexDebug, codexText, optionOf, shownPath } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, hideHome, optionOf, shownPath } from '../../hooks/core/codex.ts'
 import type { Command, HostKind } from '../../hooks/core/codex.ts'
 import { VERSION, commandFailed } from '../../hooks/core/text.ts'
 import { createAttendance } from './attend.ts'
@@ -121,6 +122,8 @@ function pathsOf(env: Env, a: Args, selfFile: string): Paths {
 /** The CLI. The bundle entry calls it and sets process.exitCode. */
 export async function main(argv: string[], d: CliDeps): Promise<number> {
   const print = (text: string): void => void d.stdout.write(`${text}\n`)
+  // An error text of the system can name a path under the home folder. The model reads the output of `!`.
+  const failed = (e: unknown): string => `spare10: ${commandFailed(hideHome(errText(e), d.env.HOME ?? homedir()))}`
   const a = parseArgs(argv)
   if (a === undefined) {
     print(codexText.cliUsage) // CX37
@@ -137,7 +140,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
   try {
     paths = pathsOf(d.env, a, d.selfFile)
   } catch (e) {
-    print(`spare10: ${commandFailed(errText(e))}`)
+    print(failed(e))
     return 1
   }
   const pid = d.pid ?? process.pid
@@ -155,7 +158,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
         print(codexText.cliSandbox(verb))
         return 2
       }
-      print(`spare10: ${commandFailed(errText(e))}`)
+      print(failed(e))
       return 1
     }
     // No launcher write here (3.9): each broker keeps it on its own copy and its own Node.js. A CLI of another
@@ -283,7 +286,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
     print(`spare10: ${reply}`)
     return 0
   } catch (e) {
-    print(`spare10: ${commandFailed(errText(e))}`)
+    print(failed(e))
     return 1
   }
 }
@@ -311,7 +314,7 @@ if (isMain()) {
       process.exitCode = code
     },
     (e: unknown) => {
-      process.stdout.write(`spare10: ${commandFailed(errText(e))}\n`)
+      process.stdout.write(`spare10: ${commandFailed(hideHome(errText(e), process.env.HOME ?? homedir()))}\n`)
       process.exitCode = 1
     },
   )

@@ -578,7 +578,7 @@ export function createCommands(d: CommandDeps): Commands {
       try {
         return await exec(sx, cmd, o)
       } catch (e) {
-        return commandFailed(errText(e))
+        return commandFailed(hideHome(errText(e), d.paths.home))
       }
     },
     exec,

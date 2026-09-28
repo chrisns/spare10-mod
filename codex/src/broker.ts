@@ -189,7 +189,7 @@ export function createBroker(d: BrokerDeps): Broker {
     const questions = createQuestions({ clock, wake, log, owner, pid: d.pid, sense, settings, quota, rollouts, mcp, sweep, pidAlive: d.pidAlive })
     const refusal = createRefusal({ clock, wake, log, pid: d.pid, sense, settings, quota, daemon: link, rollouts, interrupts })
     const commands = createCommands({ paths, clock, log, owner, env: d.env, settings, quota, sense, questions, sweep, daemon: link, attendance, pidAlive: d.pidAlive })
-    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive })
+    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive, home: paths.home })
     const gate = createGate({
       paths,
       clock,

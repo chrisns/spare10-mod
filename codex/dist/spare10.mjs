@@ -4770,7 +4770,7 @@ function createCommands(d) {
       try {
         return await exec(sx, cmd, o);
       } catch (e) {
-        return commandFailed(errText3(e));
+        return commandFailed(hideHome(errText3(e), d.paths.home));
       }
     },
     exec,
@@ -7250,7 +7250,7 @@ function createTicker(d) {
       if (e instanceof DaemonError && e.kind === "timeout" && await newerTurn(sx, before)) return;
       sx.store.locked((tx) => {
         if (tx.state.continuation?.text === text3) delete tx.state.continuation;
-        noticeIn(tx.state, notice.resumeFailed(reason), d.clock.now());
+        noticeIn(tx.state, notice.resumeFailed(hideHome(reason, d.home)), d.clock.now());
       });
     }
   };
@@ -7463,7 +7463,7 @@ function createBroker(d) {
     const questions = createQuestions({ clock, wake, log, owner, pid: d.pid, sense, settings, quota, rollouts, mcp, sweep, pidAlive: d.pidAlive });
     const refusal = createRefusal({ clock, wake, log, pid: d.pid, sense, settings, quota, daemon: link, rollouts, interrupts });
     const commands = createCommands({ paths, clock, log, owner, env: d.env, settings, quota, sense, questions, sweep, daemon: link, attendance, pidAlive: d.pidAlive });
-    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive });
+    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive, home: paths.home });
     const gate = createGate({
       paths,
       clock,

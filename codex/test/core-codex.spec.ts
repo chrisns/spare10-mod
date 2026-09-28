@@ -1,51 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DEFAULTS, fromOptions } from '../../hooks/core/config.ts'
-import {
-  HARD_STOP_MAX_AGE_MS,
-  LIVE_LUNA_MAX_AGE_MS,
-  OPTIONS,
-  RESET_JITTER_MS,
-  UNATTENDED_ORIGINATORS,
-  answerOf,
-  attendedFrom,
-  blindFrom,
-  codexLimits,
-  codexText,
-  configOptions,
-  elicitParams,
-  hardStopOf,
-  hostKindOf,
-  initialPresence,
-  isCodexBucket,
-  isObservation,
-  kindOfMinutes,
-  limitAnswerOf,
-  liveOf,
-  nearTrip,
-  nextPresence,
-  nodeExposed,
-  nodePlaces,
-  offQuota,
-  optionOf,
-  optionText,
-  parseAutoResumeOption,
-  parseCommand,
-  parseSetValue,
-  pickSeed,
-  refuseModeOf,
-  render,
-  rootOnly,
-  sessionMetaOf,
-  tokenCountOf,
-  turnContextOf,
-  turnEndOf,
-  unsafeMode,
-  usableCredits,
-  voidedByReset,
-  withInterruptedNote,
-  withPrefix,
-} from '../../hooks/core/codex.ts'
+import { answerOf, attendedFrom, blindFrom, codexLimits, codexText, configOptions, elicitParams, HARD_STOP_MAX_AGE_MS, hardStopOf, hideHome, hostKindOf, initialPresence, isCodexBucket, isObservation, kindOfMinutes, limitAnswerOf, LIVE_LUNA_MAX_AGE_MS, liveOf, nearTrip, nextPresence, nodeExposed, nodePlaces, offQuota, optionOf, OPTIONS, optionText, parseAutoResumeOption, parseCommand, parseSetValue, pickSeed, refuseModeOf, render, RESET_JITTER_MS, rootOnly, sessionMetaOf, tokenCountOf, turnContextOf, turnEndOf, UNATTENDED_ORIGINATORS, unsafeMode, usableCredits, voidedByReset, withInterruptedNote, withPrefix } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot, GateResult, GateSite, HostKind, LiveRead, OptionName, Presence } from '../../hooks/core/codex.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 
@@ -1021,4 +977,14 @@ test('withPrefix prefixes each line that has text', () => {
   assert.equal(withPrefix('one\ntwo'), 'spare10: one\nspare10: two')
   assert.equal(withPrefix('version 0.3.0\n\n  ● armed'), 'spare10: version 0.3.0\n\nspare10:   ● armed')
   assert.equal(withPrefix(''), '')
+})
+
+test('core-codex: hideHome shows each path under the home folder as ~/, and leaves other text alone', () => {
+  const err = "EACCES: permission denied, open '/Users/me/.codex/plugins/data/spare10-spare10/config.json'"
+  assert.equal(hideHome(err, '/Users/me'), "EACCES: permission denied, open '~/.codex/plugins/data/spare10-spare10/config.json'")
+  assert.equal(hideHome(err, '/Users/me/'), "EACCES: permission denied, open '~/.codex/plugins/data/spare10-spare10/config.json'")
+  assert.equal(hideHome('connect ENOENT /Users/me/a.sock and /Users/me/b.sock', '/Users/me'), 'connect ENOENT ~/a.sock and ~/b.sock')
+  assert.equal(hideHome('open /Users/meta/x', '/Users/me'), 'open /Users/meta/x', 'a folder that only starts with the home name stays')
+  assert.equal(hideHome(err, undefined), err)
+  assert.equal(hideHome(err, '/'), err, 'the root folder hides nothing')
 })
