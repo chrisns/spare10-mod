@@ -30,6 +30,7 @@ import type {
 //   answer       the dialog: a label (answered at once), 'hang' (default) or 'dismiss' (w.answer)
 //   parkRejects  reject the first N $.spare10.park calls at once, as the host's 10 s cap does
 //   sessionId    default 'S1' (w.sessionId; change it to act out a /clear)
+//   sessionIdFails  session.id answers { deny }, so $.session.id() rejects (w.sessionIdFails)
 //   core         how core answers ordinary tool calls: 'ran' (default), 'deny' or 'error' (w.core)
 //   coreContext  context that core adds to a 'ran' or 'error' tool result, as a hook beneath would (w.coreContext)
 //   box          the prompt box text $.prompt.read returns (w.box)
@@ -176,6 +177,7 @@ export type WorldOptions = {
   answer?: string
   parkRejects?: number
   sessionId?: string
+  sessionIdFails?: boolean
   core?: Core
   coreContext?: string[]
   box?: string
@@ -206,6 +208,7 @@ export type World = {
   resetsAt: string | null
   answer: string
   sessionId: string
+  sessionIdFails: boolean
   surfaces: RenderSurface[]
   agents: string[]
   agentListFails: boolean
@@ -271,6 +274,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     resetsAt: opts.resetsAt === undefined ? RESETS : opts.resetsAt,
     answer: opts.answer ?? 'hang',
     sessionId: opts.sessionId ?? 'S1',
+    sessionIdFails: opts.sessionIdFails ?? false,
     surfaces: opts.surfaces ?? ['terminal'],
     agents: opts.agents ?? [],
     agentListFails: opts.agentListFails ?? false,
@@ -353,7 +357,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
   }
   // Without a delay the answer stays synchronous, as before usageDelayMs existed. A delayed one reads the limits late.
   on('session.usage', () => (w.usageDelayMs > 0 ? clock.sleep(w.usageDelayMs).then(usage) : usage()))
-  on('session.id', () => ({ value: w.sessionId }))
+  on('session.id', () => (w.sessionIdFails ? { deny: 'session id unavailable' } : { value: w.sessionId }))
   on('session.surfaces', () => ({ value: [...w.surfaces] }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))

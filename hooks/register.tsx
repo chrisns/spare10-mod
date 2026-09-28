@@ -271,7 +271,7 @@ let lastWatch = 0 // clock time of the last watch period (the ticker reads it)
 let pulse: Timer | undefined
 let blink = true
 let drawGen = 0 // redraw() calls: a render after one senses afresh
-let pulseDue = false // the pulse asked for the next render, and nothing else did since
+let pulseDue = false // a pulse asked for renders, and no redraw came since: each render of each surface may reuse
 let trippedInputs: { gen: number; at: number; reserve: number; test: boolean; mode: Mode } | undefined // the last full tripped render
 let viewKey = ''
 
@@ -807,7 +807,9 @@ async function decidedElsewhere($: EngineInterface, key: string): Promise<Outcom
   for (const kind of q.kinds) {
     const end = q.ends[kind]
     // B50 item 3: a consent answers a kind at a matching tier. A consent to the floor never answers a kind asked at the floor.
-    const list = end === undefined ? [] : await consentsOf($, kind, !q.silent, end.test).catch((): Sourced[] => [])
+    // A22: a consent of an earlier window is void, also when the gate could not unset it. As Codex question.ts.
+    const realEnd = end === undefined || end.test ? null : end.end
+    const list = end === undefined ? [] : await consentsOf($, kind, !q.silent, end.test, realEnd).catch((): Sourced[] => [])
     if (!answersKind(end, list, now)) {
       covered = false
       break
@@ -1392,9 +1394,9 @@ function redraw($: EngineInterface): void {
 }
 
 /**
- * The tripped row pulses once a second. A pulse only swaps the glyph: its render reuses the inputs of the
- * last full render for up to PULSE_REUSE_MS, unless a redraw came since (`drawGen`). So an idle tripped
- * session reads the quota at most once in 5 s, not each second.
+ * The tripped row pulses once a second. A pulse only swaps the glyph: until the next redraw, each render
+ * on each surface reuses the inputs of the last full render for up to PULSE_REUSE_MS (`drawGen`). So an
+ * idle tripped session reads the quota about once in 5 s, not once a second per surface.
  */
 function syncPulse($: EngineInterface, wanted: boolean): void {
   if (wanted && pulse === undefined) {
@@ -1434,9 +1436,8 @@ async function seen($: EngineInterface): Promise<Seen> {
 }
 
 async function badgeNow($: EngineInterface): Promise<View> {
-  // Read and clear at once: with two surfaces, only the first render of a pulse takes the reuse.
+  // Only redraw() clears pulseDue: with two surfaces, each render of a pulse takes the reuse.
   const reuse = pulseDue ? trippedInputs : undefined
-  pulseDue = false
   try {
     if (reuse !== undefined && reuse.gen === drawGen) {
       const now = await $.clock.now().catch(() => undefined)

@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import * as codexCore from '../../hooks/core/codex.ts'
 import { formatConsent } from '../../hooks/core/decide.ts'
+import * as reading from '../../hooks/core/reading.ts'
 import { questionText } from '../../hooks/core/text.ts'
 import { readJson } from '../src/files.ts'
 import type { QuestionRecord } from '../src/question.ts'
@@ -164,6 +166,18 @@ test('floor: after a reset credit, a consent of the old window is void and the n
   assert.equal(h.box.done, false, 'the old consent does not cover the new window')
   assert.equal(w.state().consent, undefined, 'the void value is removed')
   assert.equal(b.forms().length, 1)
+})
+
+test('floor: the A22 rule of Claude Code (reading.ts) and of Codex (codex.ts) agree', () => {
+  // Two copies until codex.ts re-exports the one in reading.ts: they must never drift apart.
+  assert.equal(reading.RESET_JITTER_MS, codexCore.RESET_JITTER_MS)
+  const J = reading.RESET_JITTER_MS
+  for (const end of [RESET - HOUR, RESET, RESET + 30_000, RESET + J, RESET + J + 1, RESET + 4 * HOUR]) {
+    for (const c of [{ until: RESET }, { until: RESET, to: 95 }]) {
+      assert.equal(reading.voidedByReset(c, end), codexCore.voidedByReset(c, end), `until ${c.until}, window end ${end}`)
+    }
+  }
+  assert.equal(reading.voidedByReset({ until: RESET }, RESET + J + 1), true)
 })
 
 test('floor: a real consent to the floor survives a Stop here on a test reading, and the stop ends on it with one continuation (TS1)', async (t) => {

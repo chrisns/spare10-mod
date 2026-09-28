@@ -594,9 +594,13 @@ test('two surfaces share one pulse: one redraw a second, one render per surface'
   await w.clock.settle()
   const r = w.renders
   const i = w.invalidations
+  const reads = w.usageReads
   await w.clock.advance(5000)
   expect({ renders: w.renders - r, invalidations: w.invalidations - i }).toEqual({ renders: 10, invalidations: 5 })
   expect(await badge(terminal)).toEqual(await badge(desktop))
+  await w.clock.advance(5000)
+  // Each render of a pulse reuses the inputs on both surfaces: reads at 5 s and 10 s, not one a second.
+  expect(w.usageReads - reads).toBe(2)
 })
 
 test('a failed stopped read draws the waiting mark', async ($, on) => {

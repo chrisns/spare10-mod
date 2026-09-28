@@ -472,11 +472,12 @@ export function badWarning(
 
 /**
  * B27 for SPARE10_SIMULATE: a value that is not a test reading, or a weekly test reading while the weekly
- * reserve is 0. Never "names the weekly window": on a Codex weekly-only plan a value with no kind word is weekly too.
+ * reserve is 0. The second stays set: a weekly reserve that the person sets later puts it in force.
+ * Never "names the weekly window": on a Codex weekly-only plan a value with no kind word is weekly too.
  */
 export const simulateWarning = (raw: string, weeklyOff = false): string =>
   weeklyOff
-    ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses none.`
+    ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses it only when the weekly reserve is more than 0.`
     : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`
 
 /** B54: a floor at or above its reserve does nothing. */

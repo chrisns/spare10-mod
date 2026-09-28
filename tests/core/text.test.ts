@@ -856,7 +856,7 @@ test('every new notice and reply starts without the engine prefix', () => {
   expect(badWarning('SPARE10_AUTO_RESUME', 'yes', 'on')).toBe('SPARE10_AUTO_RESUME="yes" is not on or off. spare10 uses on.')
   expect(simulateWarning('95 in 2 m')).toBe('SPARE10_SIMULATE="95 in 2 m" is not a test reading. spare10 uses none.')
   expect(simulateWarning('95 weekly', true)).toBe(
-    'SPARE10_SIMULATE="95 weekly" is a weekly test reading, and the weekly reserve is 0. spare10 uses none.',
+    'SPARE10_SIMULATE="95 weekly" is a weekly test reading, and the weekly reserve is 0. spare10 uses it only when the weekly reserve is more than 0.',
   )
   expect(timeoutWarning('askUserQuestionTimeout', true)).toBe(
     'questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the time that the question names.',

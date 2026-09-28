@@ -289,7 +289,8 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
     }
   }
   // SPARE10_SIMULATE: a blank value or `off` is no test reading and no warning. Junk is B27. A weekly test
-  // reading while the weekly reserve is 0 changes nothing, so it is B27 too. It stays set, as before.
+  // reading while the weekly reserve is 0 changes nothing yet, so it is B27 too. It stays set, as before: a
+  // weekly reserve that the person sets later puts it in force, and the warning says so.
   const words = simulateWords(env.simulate)
   const parsed = parseSimulate(words, o.simulateKind)
   if (parsed === undefined && words.length > 0) warnings.push(simulateWarning(env.simulate ?? ''))

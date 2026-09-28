@@ -36,6 +36,7 @@
 ! sweepAll = On Codex a stop interrupts every running turn of the session, subagents too (A18, 4.23).
 ! seedRead = The Claude module reads its $.store seed once per activation, and each Codex sense reads seed.json (3.6).
 ! seedWrite = On Codex each view writes seed.json from its own readings (3.6), and consent never goes there.
+! startStep = On Codex no start step can fail alone (4.22). The env is a snapshot, and the session id comes with the hook input. One store transaction writes the child policy and the warnings.
 
 # Codex cases that many lines name.
 @parse = core-codex|parseCommand: every form of 2.8
@@ -305,6 +306,7 @@ two windows at their floors at once: one second question names both, and one Res
 floors per window: a weekly floor of 3 ends the weekly consent at 97% and leaves the 5-hour consent to 95% => @fFloorPts ; @consEndFloors
 two windows at different stages: the reserve until 95% used and the last 4% of the weekly window => @fFacts ; @fResumeTo
 after a reset credit, a consent of the old window is void: the new window asks again at its reserve (A22) => floor|after a reset credit, a consent of the old window is void ; @consDead
+a failed consent unset after an early reset still holds: the old Resume never answers the new question (A22) => floor|after a reset credit, a consent of the old window is void ; none:env
 a reading that jumps from 89% to 96% asks only the second question, and its Resume lasts until the reset => @flFirst ; @fResumeTo
 after a Resume at the reserve, a jump past the floor asks the second question with what is left now => @flFirst ; @sFloor
 a reading that passes the floor while the first question waits: its Resume runs nothing, and the second question follows => @fUnanswered ; @qFloor
@@ -767,8 +769,9 @@ B29 names askUserQuestionTimeout first when both limits are set => none:flag
 no B29 without a positive time limit => none:flag
 a guarded session sets SPARE10_HEADLESS=stop for children when unset, and leaves a set value alone => @gateChild
 a guarded session leaves a set SPARE10_HEADLESS=${set} alone => @gateChild ; @setNested
-a failed read for a start warning still gives children SPARE10_HEADLESS=stop => @gateChild
-a failed child policy write at the start keeps the start warnings, and the debug log names the step => gate|a failed thread/loaded/list at the first root gate ; none:flag
+a failed read for a start warning still gives children SPARE10_HEADLESS=stop => @gateChild ; none:startStep
+a failed child policy write at the start keeps the start warnings, and the debug log names the step => none:startStep
+a failed session id read at the start still registers /spare10 and shows the start warnings => none:startStep
 an unattended run sets no SPARE10_HEADLESS for children => @gateChild
 a run switched off by SPARE10=off sets no SPARE10_HEADLESS for children => @gateChild
 a fresh module honours SPARE10_CONSENT for this window, not an earlier or a far-future one => @sConsent ; @fSplitFail
