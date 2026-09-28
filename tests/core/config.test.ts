@@ -24,6 +24,7 @@ import {
   watchedKinds,
   withEnv,
 } from '../../hooks/core/config.ts'
+import { simulateWarning } from '../../hooks/core/text.ts'
 
 test('parseReserve accepts 1 to 99 and rounds to one decimal', () => {
   expect(parseReserve(10)).toBe(10)
@@ -158,10 +159,27 @@ test('withEnv: SPARE10_SIMULATE gives a test percentage, junk gives none', () =>
   expect(withEnv(DEFAULTS, { simulate: '0' }).testPct).toBe(0)
   expect(withEnv(DEFAULTS, { simulate: '100' }).testPct).toBe(100)
   expect(withEnv(DEFAULTS, {}).testPct).toBeUndefined()
-  for (const junk of ['abc', '', ' ', '101', '-1', 'off']) {
-    expect(withEnv(DEFAULTS, { simulate: junk }).testPct).toBeUndefined()
-    expect(withEnv(DEFAULTS, { simulate: junk }).warnings).toEqual([])
+  // A blank value and off are no test reading and no warning. Junk is a B27 warning.
+  for (const blank of ['', ' ', 'off']) {
+    expect(withEnv(DEFAULTS, { simulate: blank }).testPct).toBeUndefined()
+    expect(withEnv(DEFAULTS, { simulate: blank }).warnings).toEqual([])
   }
+  for (const junk of ['abc', '101', '-1']) {
+    expect(withEnv(DEFAULTS, { simulate: junk }).testPct).toBeUndefined()
+    expect(withEnv(DEFAULTS, { simulate: junk }).warnings).toEqual([simulateWarning(junk)])
+  }
+})
+
+test('withEnv: a weekly SPARE10_SIMULATE while the weekly reserve is 0 warns, and changes nothing else', () => {
+  const weekly = withEnv(DEFAULTS, { simulate: '95 weekly', weeklyReserve: '0' })
+  expect(weekly.warnings).toEqual([simulateWarning('95 weekly', true)])
+  expect(weekly.testPct).toBe(95)
+  expect(weekly.testKind).toBe('seven_day')
+  // Codex design 4.15: with no kind word the value is weekly on a weekly-only plan. The same warning.
+  expect(withEnv(DEFAULTS, { simulate: '92', weeklyReserve: '0' }, { simulateKind: 'seven_day' }).warnings).toEqual([simulateWarning('92', true)])
+  // A 5-hour test reading, or a weekly one with a weekly reserve: no warning.
+  expect(withEnv(DEFAULTS, { simulate: '95', weeklyReserve: '0' }).warnings).toEqual([])
+  expect(withEnv(DEFAULTS, { simulate: '95 weekly' }).warnings).toEqual([])
 })
 
 test('parseWeeklyReserve takes 0 as off and 1 to 99 with one decimal', () => {
@@ -282,7 +300,7 @@ test('withEnv: SPARE10_SIMULATE takes a kind and a duration', () => {
     expect(e.testPct).toBeUndefined()
     expect(e.testKind).toBeUndefined()
     expect(e.testInMs).toBeUndefined()
-    expect(e.warnings).toEqual([])
+    expect(e.warnings).toEqual(junk === 'off' ? [] : [simulateWarning(junk)])
   }
 })
 

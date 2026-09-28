@@ -39,7 +39,7 @@ import {
   unbury,
   withoutFloor,
 } from './core/decide.ts'
-import type { Answered, Consent, ConsentSlots, Holder, Outcome, Site, StoppedRecord, Tomb } from './core/decide.ts'
+import type { Answered, Consent, ConsentSlots, Holder, Mode, Outcome, Site, StoppedRecord, Tomb } from './core/decide.ts'
 import {
   KINDS,
   anchoredOf,
@@ -53,6 +53,8 @@ import {
   sawLive,
   sawMeasure,
   viewOf,
+  voidedByReset,
+  withoutVoided,
 } from './core/reading.ts'
 import type { Anchored, Basis, Kind, Memory } from './core/reading.ts'
 import {
@@ -203,6 +205,7 @@ const HANDOFF_LIMIT = 5
 const FAST_MS = 1000
 const FAST_LIMIT = 3
 const PULSE_MS = 1000
+const PULSE_REUSE_MS = 5 * PULSE_MS // a pulse render reuses the last tripped inputs this long: only the glyph changes
 const BUDGET_LOG_MS = 600_000 // one budget debug line per 10 minutes per question (B40)
 const EDGE_LIMIT = 64
 const WATCH_MS = 300_000 // the period of the watch timer, the ticker's slow second clock (4.2)
@@ -267,6 +270,9 @@ let watch: Timer | undefined // the second clock: it re-arms a dead ticker (4.2)
 let lastWatch = 0 // clock time of the last watch period (the ticker reads it)
 let pulse: Timer | undefined
 let blink = true
+let drawGen = 0 // redraw() calls: a render after one senses afresh
+let pulseDue = false // the pulse asked for the next render, and nothing else did since
+let trippedInputs: { gen: number; at: number; reserve: number; test: boolean; mode: Mode } | undefined // the last full tripped render
 let viewKey = ''
 
 // ---- Settings (8.2) ----
@@ -407,13 +413,23 @@ async function isBg($: EngineInterface): Promise<boolean> {
  * The consents of a kind (floor 4.2): this copy's slots, the test slots on a test basis, and an env value
  * that belongs to this process (3.5, 9.3) with its raw text. A clear during the read gives the slots only.
  * An env value that a tomb of this copy buries is no consent, and it goes by compare-and-set (B52).
+ * `realEnd` (A22): the reset of the kind's real reading, null when unknown. A stamped env value and a real
+ * slot that an early reset voided are no consent either: the value goes by compare-and-set, the slot at once.
+ * A bare value that you set yourself stays until its time.
  */
-async function consentsOf($: EngineInterface, kind: Kind, attendedNow: boolean, testBasis: boolean): Promise<Sourced[]> {
+async function consentsOf(
+  $: EngineInterface,
+  kind: Kind,
+  attendedNow: boolean,
+  testBasis: boolean,
+  realEnd: number | null = null,
+): Promise<Sourced[]> {
   const epoch = consentEpoch
   // Two branches, so each $.env.get keeps a literal name.
   const raw = kind === 'seven_day' ? await $.env.get('SPARE10_WEEKLY_CONSENT') : await $.env.get('SPARE10_CONSENT')
   const read = parseConsent(raw)
-  const dead = read !== undefined && buried(tombs[kind], read)
+  const voided = read?.sessionId !== undefined && realEnd !== null && voidedByReset(read, realEnd)
+  const dead = read !== undefined && (buried(tombs[kind], read) || voided)
   if (dead) void unsetIfSame($, kind, raw).catch(() => undefined)
   const c = dead ? undefined : read
   const counts =
@@ -423,16 +439,22 @@ async function consentsOf($: EngineInterface, kind: Kind, attendedNow: boolean, 
       bg: attendedNow && c.sessionId === undefined ? await isBg($) : false,
       ids: attendedNow && c.sessionId !== undefined ? [...pastIds, await $.session.id()] : [],
     })
-  if (epoch !== consentEpoch) return slotsOf(kind, false) // a clear ran meanwhile: this read is stale
+  if (epoch !== consentEpoch) return slotsOf(kind, false, realEnd) // a clear ran meanwhile: this read is stale
   const env: Sourced[] = counts ? [{ c: { until: c.until, ...(c.to === undefined ? {} : { to: c.to }) }, from: 'env', ...(raw === undefined ? {} : { raw }) }] : []
-  return [...slotsOf(kind, testBasis), ...env]
+  return [...slotsOf(kind, testBasis, realEnd), ...env]
 }
 
-/** This copy's consents of a kind as they are now: the slots, and the test slots on a test basis. */
-const slotsOf = (kind: Kind, testBasis: boolean): Sourced[] => [
-  ...slotList(consentCache[kind]).map((x): Sourced => ({ c: x, from: 'slot' })),
-  ...(testBasis ? slotList(testConsent[kind]).map((x): Sourced => ({ c: x, from: 'test' })) : []),
-]
+/**
+ * This copy's consents of a kind as they are now: the slots, and the test slots on a test basis. A22: a
+ * real slot that an early reset voided (`realEnd`) goes at once. A test slot never does: its window is the test's.
+ */
+function slotsOf(kind: Kind, testBasis: boolean, realEnd: number | null = null): Sourced[] {
+  if (realEnd !== null) consentCache[kind] = withoutVoided(consentCache[kind], realEnd)
+  return [
+    ...slotList(consentCache[kind]).map((x): Sourced => ({ c: x, from: 'slot' })),
+    ...(testBasis ? slotList(testConsent[kind]).map((x): Sourced => ({ c: x, from: 'test' })) : []),
+  ]
+}
 
 /** A Resume of this copy. A new real consent to the floor lifts the tombs that bury it (B52). */
 function noteConsent(kind: Kind, c: Consent, isTest: boolean): void {
@@ -627,9 +649,9 @@ async function splitOf($: EngineInterface, s: { kinds: readonly KindSense[]; now
   const out = emptySplit()
   for (const k of s.kinds) {
     if (!k.tripped) continue
-    const read = await consentsOf($, k.kind, s.attended, k.test).then(
+    const read = await consentsOf($, k.kind, s.attended, k.test, k.realReset).then(
       (list) => ({ list, failed: false }),
-      () => ({ list: slotsOf(k.kind, k.test), failed: true }),
+      () => ({ list: slotsOf(k.kind, k.test, k.realReset), failed: true }),
     )
     if (!k.open) endFloors($, k, read.list, s.now, read.failed) // B52: sync slots and tombs, void env
     splitKind(out, k, read.list, read.failed, s.now) // unreadable: not consented
@@ -656,7 +678,7 @@ async function holdersOf(
 ): Promise<Holder[]> {
   const lists: Partial<Record<Kind, Sourced[]>> = {}
   for (const k of s.kinds) {
-    if (needsRealList(k)) lists[k.kind] = await consentsOf($, k.kind, s.attended, false).catch((): Sourced[] => [])
+    if (needsRealList(k)) lists[k.kind] = await consentsOf($, k.kind, s.attended, false, k.realReset).catch((): Sourced[] => [])
   }
   return holdersFrom(s.kinds, gating, (k) => lists[k.kind] ?? [], s.now)
 }
@@ -1364,19 +1386,29 @@ function took($: EngineInterface, record: StoppedRecord, s: { kinds: readonly Ki
 // ---- Badge (3.4, 7) ----
 
 function redraw($: EngineInterface): void {
+  drawGen += 1
+  pulseDue = false
   if (base.badge) $.ui.invalidate('ui.render')
 }
 
+/**
+ * The tripped row pulses once a second. A pulse only swaps the glyph: its render reuses the inputs of the
+ * last full render for up to PULSE_REUSE_MS, unless a redraw came since (`drawGen`). So an idle tripped
+ * session reads the quota at most once in 5 s, not each second.
+ */
 function syncPulse($: EngineInterface, wanted: boolean): void {
   if (wanted && pulse === undefined) {
     pulse = $.clock.every(PULSE_MS, () => {
       blink = !blink
-      redraw($)
+      pulseDue = true
+      if (base.badge) $.ui.invalidate('ui.render')
     })
   } else if (!wanted && pulse !== undefined) {
     pulse.cancel()
     pulse = undefined
     blink = true
+    pulseDue = false
+    trippedInputs = undefined
   }
 }
 
@@ -1390,7 +1422,7 @@ async function seen($: EngineInterface): Promise<Seen> {
   const att = await isAttended($)
   const kinds = att ? sensed : sensed.map(noFloor) // B55
   const lists: Partial<Record<Kind, Consent[]>> = {}
-  for (const k of kinds) lists[k.kind] = (await consentsOf($, k.kind, att, k.test)).map((e) => e.c)
+  for (const k of kinds) lists[k.kind] = (await consentsOf($, k.kind, att, k.test, k.realReset)).map((e) => e.c)
   // As splitOf classifies (floor 4.2), but it only reads: it never ends a consent (B52).
   const split = seenSplit(kinds, (k) => lists[k.kind] ?? [], now)
   const holders = cfg.enabled && att ? await holdersOf($, { kinds, now, attended: att }, split.gating) : [] // TS1
@@ -1402,11 +1434,26 @@ async function seen($: EngineInterface): Promise<Seen> {
 }
 
 async function badgeNow($: EngineInterface): Promise<View> {
+  // Read and clear at once: with two surfaces, only the first render of a pulse takes the reuse.
+  const reuse = pulseDue ? trippedInputs : undefined
+  pulseDue = false
   try {
+    if (reuse !== undefined && reuse.gen === drawGen) {
+      const now = await $.clock.now().catch(() => undefined)
+      if (now !== undefined && reuse.gen === drawGen && now >= reuse.at && now - reuse.at < PULSE_REUSE_MS) {
+        watchTicker($, now)
+        return badgeView('tripped', { reserve: reuse.reserve, test: reuse.test, mode: reuse.mode, blink })
+      }
+    }
+    const gen = drawGen // a redraw during the reads below makes these inputs stale
     const p = await seen($)
     watchTicker($, p.now)
-    return badgeView(p.phase, { reserve: p.cfg.reserve, test: p.kinds.some((k) => k.test), mode: modeOf(p.cfg), blink, ...untilOf(p) })
+    const test = p.kinds.some((k) => k.test)
+    const mode = modeOf(p.cfg)
+    trippedInputs = p.phase === 'tripped' ? { gen, at: p.now, reserve: p.cfg.reserve, test, mode } : undefined
+    return badgeView(p.phase, { reserve: p.cfg.reserve, test, mode, blink, ...untilOf(p) })
   } catch {
+    trippedInputs = undefined
     // The label of the reserve in force (SPARE10_RESERVE included), when the settings are readable.
     const cfg = await settings($).catch(() => undefined)
     return badgeView('waiting', { reserve: cfg?.reserve ?? base.reserve, test: false, mode: 'hold', blink })
@@ -1416,8 +1463,16 @@ async function badgeNow($: EngineInterface): Promise<View> {
 // ---- Start-up checks (B16, B28, B29, B37) ----
 
 async function sessionChecks($: EngineInterface, eff: Effective): Promise<string[]> {
+  // B16, B37 first, in a try of its own: a failed read for a warning never skips the child policy.
+  try {
+    const child = childHeadless(eff.headless, (await $.env.get('SPARE10_HEADLESS')) !== undefined)
+    if (child !== undefined) await $.env.set('SPARE10_HEADLESS', child)
+  } catch (err) {
+    $.ui.log(debugLine.startFailed(String(err)), { to: 'debug' })
+  }
+  // Each read below feeds one warning only: a failed read drops that warning.
   const out: string[] = []
-  const inProcess = (await $.env.get('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS')) !== undefined
+  const inProcess = (await $.env.get('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS').catch(() => undefined)) !== undefined
   const sources = [
     await $.settings.read({ source: 'user' }).catch(() => ({})),
     await $.settings.read({ source: 'project' }).catch(() => ({})),
@@ -1427,10 +1482,8 @@ async function sessionChecks($: EngineInterface, eff: Effective): Promise<string
   ]
   if (flagOnlyInShell(inProcess, sources)) out.push(W_FLAG)
   const merged = await $.settings.read().catch(() => ({}))
-  const limit = questionTimeout(merged, await $.env.get('CLAUDE_AFK_TIMEOUT_MS'))
+  const limit = questionTimeout(merged, await $.env.get('CLAUDE_AFK_TIMEOUT_MS').catch(() => undefined))
   if (limit !== undefined) out.push(timeoutWarning(limit, eff.autoResume))
-  const child = childHeadless(eff.headless, (await $.env.get('SPARE10_HEADLESS')) !== undefined)
-  if (child !== undefined) await $.env.set('SPARE10_HEADLESS', child) // B16, B37
   return out
 }
 
@@ -1456,6 +1509,9 @@ async function bgWarnings($: EngineInterface): Promise<string[]> {
   if (pausePrompt !== undefined) set.push(['SPARE10_PAUSE_PROMPT', pausePrompt])
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
   if (autoResume !== undefined) set.push(['SPARE10_AUTO_RESUME', autoResume])
+  // A test reading from the daemon trips each background job, and its question looks like a real one.
+  const simulate = await $.env.get('SPARE10_SIMULATE')
+  if (simulate !== undefined) set.push(['SPARE10_SIMULATE', simulate])
   return set.length === 0 ? [] : [bgEnvWarning(set)]
 }
 
@@ -1642,11 +1698,12 @@ export const register: Register = (on, options) => {
         startWatch($, now)
       }
       await rebuildEdges($) // consent ends and the stop's until and due, from the env
-    } catch {
+    } catch (err) {
       // the watchdog re-arms it
+      $.ui.log(debugLine.startFailed(String(err)), { to: 'debug' })
     }
     try {
-      sid = await $.session.id()
+      sid = await $.session.id().catch(() => sid) // a failed read never skips /spare10
       const eff = await settings($)
       for (const w of eff.warnings) $.ui.log(w)
       await $.command
@@ -1657,8 +1714,9 @@ export const register: Register = (on, options) => {
         ...(await bgWarnings($).catch(() => [])),
       ]
       for (const w of startWarnings) $.ui.log(w)
-    } catch {
+    } catch (err) {
       // never block the session
+      $.ui.log(debugLine.startFailed(String(err)), { to: 'debug' })
     }
     return r
   })

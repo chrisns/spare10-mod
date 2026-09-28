@@ -654,6 +654,6 @@ test('/spare10 simulate works in an unattended run and only raises the reading',
     `test reading set to 95% used, resets ${clockOf(RESET_MS)}. It can only raise the real reading. The reserve opens at ${clockOf(Date.parse(OPENS))}, 20 min before the test window ends. Run /spare10 simulate off to clear it.`,
   )
   expect((await bash($)).deny).toBe(HEADLESS(95))
-  expect((await $.command.run(cmd('simulate off'))).text).toBe('test reading cleared. Consent and stop for this window are cleared too.')
+  expect((await $.command.run(cmd('simulate off'))).text).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
   expect((await bash($)).result).toBe('ran')
 })

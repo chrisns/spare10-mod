@@ -137,7 +137,7 @@ const weeklyOffRow = (from: string): string => `· weekly reserve off. spare10 d
 const simulateWeekly = (used: number, clock: string, opens?: string): string =>
   `test reading set to ${one(used)}% used of the weekly window, resets ${clock}. It can only raise the real reading.` +
   `${opens === undefined ? '' : ` The weekly reserve opens at ${opens}, 8 h before the weekly test window ends.`} Run /spare10 simulate off to clear it.`
-const SIMULATE_OFF = 'test reading cleared. Consent and stop for this window are cleared too.'
+const SIMULATE_OFF = 'test readings cleared. Your consents for both windows and any stop are cleared too.'
 const SIMULATE_WEEKLY_OFF = 'the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.'
 
 // ---- helpers ----

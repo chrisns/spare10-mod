@@ -145,10 +145,7 @@ function parseSimulate(words, defaultKind = "five_hour") {
   const k = kind ?? defaultKind;
   return inMs === void 0 ? { pct, kind: k } : { pct, kind: k, inMs: Math.min(inMs, windowMs(k)) };
 }
-function parseSimulateEnv(raw, defaultKind = "five_hour") {
-  const spec = parseSimulate((raw ?? "").trim().split(/\s+/).filter((w) => w !== ""), defaultKind);
-  return spec === "off" ? void 0 : spec;
-}
+var simulateWords = (raw) => (raw ?? "").trim().split(/\s+/).filter((w) => w !== "");
 
 // codex/src/host.ts
 var HOST = {
@@ -374,6 +371,7 @@ function badWarning(name, raw, used) {
   if (name === "SPARE10_HEADLESS") return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`;
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`;
 }
+var simulateWarning = (raw, weeklyOff = false) => weeklyOff ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses none.` : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`;
 var floorWarning = (kind, floor, reserve) => kind === "seven_day" ? `the weekly resume floor (${fmtPct(floor)}%) is not below the weekly reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the weekly reserve, or to 0.` : `the resume floor (${fmtPct(floor)}%) is not below the reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the reserve, or to 0.`;
 var AGAIN = `Type a prompt to be asked again, or run ${HOST.command} resume.`;
 var HELD_WAITS = `Held work waits. Run ${HOST.anytime} resume to continue it now.`;
@@ -448,7 +446,8 @@ var debugLine = {
   boxDefer: (n) => `spare10: the prompt box has text. The resume prompt waits (${n} of 10).`,
   budget: (min, ms) => `spare10: held ${min} min. Budget left ${ms} ms.`,
   checkFailed: (err) => `spare10: the reset check did not run: ${err}`,
-  settleFailed: (err) => `spare10: could not write the answer: ${err}`
+  settleFailed: (err) => `spare10: could not write the answer: ${err}`,
+  startFailed: (err) => `spare10: a step of the session start failed: ${err}`
 };
 var GLYPH = {
   off: "○",
@@ -686,7 +685,7 @@ function stopReply(c, f, trip, auto, weeklyTrip, ended, absent2) {
   }
 }
 function simulateReply(kind, f, opens, pastFloor, realIn) {
-  if (kind === "off") return "test reading cleared. Consent and stop for this window are cleared too.";
+  if (kind === "off") return "test readings cleared. Your consents for both windows and any stop are cleared too.";
   if (kind === "weekly-off") return "the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.";
   if (kind === "bad" || f === void 0) {
     return `${HOST.leadSimulate} takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.`;
@@ -883,8 +882,12 @@ function withEnv(base, env, o = {}) {
       out.from.enabled = "SPARE10";
     }
   }
-  const spec = parseSimulateEnv(env.simulate, o.simulateKind);
+  const words = simulateWords(env.simulate);
+  const parsed = parseSimulate(words, o.simulateKind);
+  if (parsed === void 0 && words.length > 0) warnings.push(simulateWarning(env.simulate ?? ""));
+  const spec = parsed === "off" ? void 0 : parsed;
   if (spec !== void 0) {
+    if (spec.kind === "seven_day" && out.weeklyReserve <= 0) warnings.push(simulateWarning(env.simulate ?? "", true));
     out.testPct = spec.pct;
     if (spec.kind !== "five_hour") out.testKind = spec.kind;
     if (spec.inMs !== void 0) out.testInMs = spec.inMs;

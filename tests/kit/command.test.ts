@@ -70,7 +70,7 @@ const unknownVerb = (verb: string): string => `unknown command "${verb}". Use /s
 // Skip 2.9: a test reading at or above the trip point says when its reserve opens (`opens`: the skip start).
 const simulateSet = (used: string, at: string, opens?: string): string =>
   `test reading set to ${used}% used, resets ${at}. It can only raise the real reading.${opens === undefined ? '' : ` The reserve opens at ${opens}, ${TEST_LEAD}.`} Run /spare10 simulate off to clear it.`
-const SIMULATE_OFF = 'test reading cleared. Consent and stop for this window are cleared too.'
+const SIMULATE_OFF = 'test readings cleared. Your consents for both windows and any stop are cleared too.'
 const SIMULATE_BAD =
   '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'
 

@@ -470,6 +470,15 @@ export function badWarning(
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`
 }
 
+/**
+ * B27 for SPARE10_SIMULATE: a value that is not a test reading, or a weekly test reading while the weekly
+ * reserve is 0. Never "names the weekly window": on a Codex weekly-only plan a value with no kind word is weekly too.
+ */
+export const simulateWarning = (raw: string, weeklyOff = false): string =>
+  weeklyOff
+    ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses none.`
+    : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`
+
 /** B54: a floor at or above its reserve does nothing. */
 export const floorWarning = (kind: Kind, floor: number, reserve: number): string =>
   kind === 'seven_day'
@@ -587,6 +596,7 @@ export const debugLine = {
   budget: (min: number, ms: number): string => `spare10: held ${min} min. Budget left ${ms} ms.`,
   checkFailed: (err: string): string => `spare10: the reset check did not run: ${err}`,
   settleFailed: (err: string): string => `spare10: could not write the answer: ${err}`,
+  startFailed: (err: string): string => `spare10: a step of the session start failed: ${err}`,
 }
 
 export type StatusInput = {
@@ -1014,7 +1024,7 @@ export function simulateReply(
   pastFloor?: number,
   realIn?: boolean,
 ): string {
-  if (kind === 'off') return 'test reading cleared. Consent and stop for this window are cleared too.'
+  if (kind === 'off') return 'test readings cleared. Your consents for both windows and any stop are cleared too.'
   if (kind === 'weekly-off') return 'the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.'
   if (kind === 'bad' || f === undefined) {
     return `${HOST.leadSimulate} takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.`
