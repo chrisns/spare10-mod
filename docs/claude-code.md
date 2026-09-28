@@ -636,7 +636,8 @@ The command takes this form:
   There, `in` counts from the first gated event.
   spare10 reads it once per load, so it never raises a test reading in place.
   spare10 ignores a bad value and logs a warning at the start of the session.
-  It does the same for a weekly value while the weekly reserve is 0.
+  For a weekly value while the weekly reserve is 0, it logs a warning too.
+  It uses that value only when the weekly reserve is more than 0.
   A background session can get the variable from the `claude daemon` or a settings file.
   Then spare10 shows the background warning in that session.
 

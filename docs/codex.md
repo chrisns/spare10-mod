@@ -10,7 +10,8 @@ Some parts work in a different way, because Codex has other hooks.
 ## Install in Codex
 
 You need Node.js 20 or later.
-spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin`, in Volta and in nvm.
+spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin` and in Volta.
+Then it tries the versions of nvm, mise, asdf and fnm, newest first.
 It takes a Node.js from your `PATH` only when none of these is Node.js 20 or later.
 
 ```sh
@@ -57,7 +58,7 @@ The model reads this report too.
 A command that changes something, such as `!spare10 resume`, prints only that it is done.
 Its full answer shows in the transcript at the next step.
 If the command changes nothing, spare10 prints its answer in the `!` output.
-A `spare10 resume`, `stop` or `simulate` from another terminal also shows its answer in the transcript.
+A `spare10 resume`, `stop` or `simulate` from another terminal that changes something also shows its answer in the transcript.
 
 spare10 has no badge in Codex.
 To see the quota in the Codex footer, open `/statusline`, and add `five-hour-limit` and `weekly-limit`.
