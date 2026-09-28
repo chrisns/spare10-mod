@@ -6613,10 +6613,10 @@ function createTicker(d) {
     const r = parseStopped(raw);
     if (raw === void 0 || r === void 0 || r.sessionId !== sx.sid) return;
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
-    if (attended && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx);
+    const cfg = d.settings.get();
+    if (attended && cfg.enabled && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx);
     const now = d.clock.now();
     if (r.kinds === void 0 || r.auto !== true || now < stopDue(r)) return;
-    const cfg = d.settings.get();
     if (stopAction({ record: r, now, sessionId: sx.sid, autoResume: cfg.autoResume, enabled: cfg.enabled, attended }) !== "check") return;
     if (!await d.daemon.hosted(sx.sid)) return;
     await d.quota.live(LIVE_RELEASE_MAX_AGE_MS);

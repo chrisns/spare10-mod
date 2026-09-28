@@ -356,28 +356,51 @@ test('ticker: each cycle under an attended stop sweeps again, so a running turn 
 })
 
 test('ticker: a turn/start that times out counts as sent when a newer turn shows, and as failed when none does (3.5)', async (t) => {
-  const timeout = 'the daemon call took longer than 5000 ms'
-  for (const started of [true, false]) {
+  // Only a timeout is in doubt. Another failure is a failure, even when a newer turn shows (a person prompt).
+  const cases = [
+    { err: new DaemonError('timeout', 'the daemon call took longer than 5000 ms'), started: true, sent: true },
+    { err: new DaemonError('timeout', 'the daemon call took longer than 5000 ms'), started: false, sent: false },
+    { err: new DaemonError('rpc', 'turn/start failed: -32600 thread busy'), started: true, sent: false },
+    { err: new Error('the Codex daemon is gone'), started: true, sent: false },
+  ]
+  for (const { err, started, sent } of cases) {
+    const name = `${err.name} ${err.message} ${started}`
     const { w } = await hostedStop(t, stopOf())
     w.daemon.script.newestTurn = { id: 'U1', status: 'completed', startedAt: Math.floor(T0 / 1000) - 60 }
     w.daemon.script.start = () => {
-      // Codex took the request and started the turn, but its reply missed the call timer.
+      // Codex took the request and started the turn, but its reply missed the call timer or failed.
       if (started) w.daemon.script.newestTurn = { id: 'U-NEW', status: 'inProgress', startedAt: Math.floor(w.clock.now() / 1000) }
-      throw new DaemonError('timeout', timeout)
+      throw err
     }
     await w.advance(SKIP - T0 + 31 * SEC)
     const got = starts(w)
-    assert.equal(got.length, 1, `${started}`)
-    assert.ok(w.log.lines.includes(codexDebug.startFailed(timeout)), `${started}`)
-    assert.equal(w.state().stopped, undefined, `${started}`)
-    if (started) {
-      assert.deepEqual(w.notices(), [], 'no failure line')
-      assert.equal(w.state().continuation?.text, got[0]?.[1], 'the continuation stays for its prompt gate')
+    assert.equal(got.length, 1, name)
+    assert.ok(w.log.lines.includes(codexDebug.startFailed(err.message)), name)
+    assert.equal(w.state().stopped, undefined, name)
+    if (sent) {
+      assert.deepEqual(w.notices(), [], `${name}: no failure line`)
+      assert.equal(w.state().continuation?.text, got[0]?.[1], `${name}: the continuation stays for its prompt gate`)
     } else {
-      assert.equal(w.state().continuation, undefined)
-      assert.deepEqual(w.notices(), [notice.resumeFailed(timeout)])
+      assert.equal(w.state().continuation, undefined, name)
+      assert.deepEqual(w.notices(), [notice.resumeFailed(err.message)], name)
     }
     await w.advance(2 * MIN)
-    assert.equal(starts(w).length, 1, `${started}: no second turn/start`)
+    assert.equal(starts(w).length, 1, `${name}: no second turn/start`)
   }
+})
+
+test('ticker: switched off during a hosted held stop, the held call goes through and no sweep interrupts its turn (difference 18)', async (t) => {
+  const { w, b } = await hostedStop(t, stopOf())
+  w.setState({ stopMeta: { noDialog: true } })
+  w.daemon.script.newestTurn = { id: 'U1', status: 'inProgress', startedAt: Math.floor(T0 / 1000) - 60 }
+  const h = b.call('tool', { turn: 'U1' })
+  await w.advance(40 * SEC)
+  assert.equal(h.box.done, false, 'held')
+  assert.deepEqual(w.daemon.callsOf('interrupt'), [], 'the sweep leaves the held turn')
+  w.config({ scope: 'opt-in' }) // no SPARE10=on: spare10 is off
+  await w.advance(30 * SEC)
+  assert.equal(h.box.done, true, 'the held call goes through')
+  await w.advance(2 * MIN)
+  assert.deepEqual(w.daemon.callsOf('interrupt'), [], 'a switched-off spare10 interrupts nothing')
+  assert.equal(w.state().interrupts, undefined)
 })

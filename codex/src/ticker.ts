@@ -79,11 +79,12 @@ export function createTicker(d: TickerDeps): Ticker {
     const r = parseStopped(raw)
     if (raw === undefined || r === undefined || r.sessionId !== sx.sid) return
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
+    const cfg = d.settings.get()
     // 4.23: the sweep at each cycle while an attended stop is in force. It leaves the held work of a held stop (4.4).
-    if (attended && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx)
+    // A switched-off spare10 interrupts nothing (Codex difference 18).
+    if (attended && cfg.enabled && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx)
     const now = d.clock.now()
     if (r.kinds === undefined || r.auto !== true || now < stopDue(r)) return
-    const cfg = d.settings.get()
     // `drop` has no Codex case: a stop belongs to its session.
     if (stopAction({ record: r, now, sessionId: sx.sid, autoResume: cfg.autoResume, enabled: cfg.enabled, attended }) !== 'check') return
     if (!(await d.daemon.hosted(sx.sid))) return // not hosted: held work releases in place (4.4)
