@@ -114,6 +114,31 @@ Then spare10 holds the work, and asks nothing.
 Run `!spare10 resume` to continue, or press Esc to stop.
 On the Codex daemon, `!spare10 stop` also ends the held work.
 
+At 100% used, spare10 holds all work until the reset, as in [At the quota limit](claude-code.md#at-the-quota-limit).
+It does this also while a reserve is open, and after a **Resume**.
+The first held step asks the limit question in a Codex form:
+
+```
+  The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold. ...
+
+  spare10
+  › 1. Continue at the reset
+    2. Stop here
+  enter to submit | esc to cancel
+```
+
+**Continue at the reset** is first, and it is selected.
+Only **Stop here** stops the work.
+Esc on the limit form is **Continue at the reset**.
+If the step that asked went away, another held step asks again.
+With approval `never`, no form shows, and the work continues at the reset.
+`spare10 resume` on the limit form counts as **Continue at the reset**.
+`spare10 stop` counts as **Stop here**.
+When a turn ends at the limit, Codex shows `spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.`
+
+If you can spend Codex credits past 100%, spare10 does not pause at the limit.
+Then the question at the reserve names the balance.
+
 ## Commands in Codex
 
 Type a command as the whole prompt.
@@ -148,8 +173,11 @@ Codex has no screen for plugin options.
 spare10 keeps its options in `~/.codex/plugins/data/spare10-spare10/config.json`.
 Change them with `spare10 set`.
 The options, defaults and values are the same as in [Configure](configure.md#options), without **Status badge**.
-Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `pausePrompt`, `autoResume`, `headless` and `scope`.
+Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `pausePrompt`, `autoResume`, `limitPause`, `headless` and `scope`.
 A `SPARE10_*` variable with a valid value wins over the file, as in Claude Code.
+`limitPause` is **Pause at the limit**. Switch it off with `spare10 set limitPause off`.
+While it is off, the report warns when a window is at 100% used and no credits can pay:
+`past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.`
 If spare10 cannot read the file, it warns you, and keeps each reserve until the reset.
 Correct the file, or remove it to use the defaults.
 
@@ -213,10 +241,13 @@ The `headless` option works as in [Unattended runs](configure.md#unattended-runs
 19. spare10 does not put a dropped prompt back in the prompt box.
 20. Windows is not supported yet.
 21. Some sessions keep no session log, such as `/side` and `codex exec --ephemeral`. On the Codex daemon, spare10 reads the quota at each step of such a session. Without the daemon, spare10 has only the last readings of other sessions. Then such a session can use the reserve with no question.
+22. A question at the reserve can give way to the limit question while its form is on the screen. A form cannot be withdrawn, so the old form stays. Its answer changes nothing. Answer the limit form that follows.
+23. Codex tells spare10 when credits can pay past 100%. Then spare10 does not pause at the limit. Claude Code does not tell spare10 about extra usage.
+24. During an upgrade, an older spare10 process can show the question at the reserve for the limit question. Its **Resume** only asks again. Its **Stop here** can continue the work after the reset.
 
 Codex also gives spare10 some things that Claude Code does not:
 
-- A hold has no time budget.
+- A hold has no time budget. So a hold at the weekly quota limit lasts until the reset, and then the work continues.
 - When the Codex daemon runs, a `codex exec` run reads the live quota before its first request.
 - Work on Codex's own Luna Reserve model goes through while Codex uses it.
 

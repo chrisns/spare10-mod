@@ -14,6 +14,7 @@ Use the cheapest model and one-line prompts, and use `sleep` to make time window
 LC1, LC2, LC3, LC5, LC4, LC6, LC7 and LC8 must pass before each release.
 For 0.2, LC17 to LC24 and LC26 to LC31 must also pass, and LC25 must run once.
 For 0.3, LC32 to LC37 must also pass.
+For the pause at the limit, LC38 to LC42 and LC45 must also pass. LC43 and LC44 are optional.
 LC18b is optional.
 LC9 to LC16 are optional or regression checks.
 
@@ -156,6 +157,7 @@ The other lines of the listing must also name these entries, new in 0.2:
 
 The `env reads` line must also name `SPARE10_RESUME_FLOOR` and `SPARE10_WEEKLY_RESUME_FLOOR`, new in 0.3.
 The `calls` and `env writes` lines did not change in 0.3.
+The pause at the limit adds `$.spare10.limit` to the `calls` line and `SPARE10_LIMIT_PAUSE` to the `env reads` line.
 
 The `session.end` hook redraws the badge after `/clear` and an in-session `/resume` (LC5).
 
@@ -1222,6 +1224,273 @@ Cost: two small `-p` runs.
 
 **Leaves:** nothing. The `-p` processes have ended.
 
+## Quota limit checks
+
+These checks test the pause at the limit.
+LC38 to LC42 and LC45 are in the release gate for the pause at the limit.
+LC43 and LC44 are optional.
+The checks use the default open times and the default floors, so they start from the **floor start command**.
+A short test window at 100% used shows that the limit holds also in an open reserve.
+
+**Precondition of LC38 to LC42 and LC45.**
+The `reading` row and the `weekly reading` row of `/spare10` show less than 90% used.
+A real reading in the reserve can hold the work again after the test window ends.
+If a row shows 90% or more, wait for the reset.
+
+In these checks, `HH:MM` is the end of the test window.
+spare10 releases held work about one minute after HH:MM.
+The checks use the two-step prompt of [Weekly window and reset checks](#weekly-window-and-reset-checks).
+Each check ends with `/spare10 simulate off`, so no test reading, test consent or stop stays.
+
+### LC38 The limit question
+
+**Start:** a new session from the floor start command. No test reading is set.
+
+**Steps:**
+
+1. Send the two-step prompt with `$S10/lc38`.
+2. While `sleep` runs, type `/spare10 simulate 100 in 2m`.
+3. When the dialog shows, do not answer.
+4. Wait until about 2 minutes after HH:MM.
+5. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- Step 2 replies `spare10: test reading set to 100% used, resets HH:MM. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run /spare10 simulate off to clear it.`
+- `HH:MM` is two minutes after step 2.
+- The dialog shows, although the test window is shorter than the open time of 20 minutes.
+- The dialog has this text:
+  `The quota limit is reached: 100% used · 0% left · resets HH:MM. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue.`
+- The options are `❯ 1. Continue at the reset` and `2. Stop here`. The first option has the focus.
+- About one minute after HH:MM, the dialog leaves the screen by itself.
+- Then `$S10/lc38` exists.
+- The transcript shows `spare10: the test window ended. Held work continues.`
+- The debug log has no `hook failed` and no `exceeded 10000ms budget`.
+
+**Settles:** the limit question in the real dialog, its focus, and the release with no answer.
+It also settles that the limit holds in an open reserve.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop.
+
+### LC39 Continue at the reset with a subagent and a workflow agent
+
+**Start:** the session from LC38.
+
+**Steps:**
+
+1. Send: `Use the Agent tool once. The subagent runs these two Bash commands one after the other: sleep 30, then touch $S10/lc39a.`
+2. While the subagent sleeps, type `/spare10 simulate 100 in 3m`.
+3. When the dialog shows, choose **Continue at the reset**.
+4. Look at the badge. Then type `/spare10`.
+5. Wait until about 2 minutes after HH:MM.
+6. Do steps 1 to 5 again with a workflow agent. In step 1, send this prompt:
+   `Run a workflow with one agent. The agent runs these two Bash commands one after the other: sleep 30, then touch $S10/lc39b.`
+   If the Workflow tool is not available, record that, and skip this step.
+7. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- After step 3, the dialog leaves the screen at once.
+- The transcript shows `spare10: held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached.`
+- After step 3, no second dialog shows, also when the main loop makes a step.
+- After step 4, the badge shows `‖ spare10 (test): at the limit until HH:MM`.
+- After step 4, the phase line reads `‖ limit          the quota limit is reached. Held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached.`
+- Before HH:MM, `$S10/lc39a` does not exist.
+- About one minute after HH:MM, the transcript shows `spare10: the test window ended. Held work continues.`
+- Then the subagent finishes, and `$S10/lc39a` exists.
+- The subagent shows no error, and the main loop gets its result.
+- Step 6 gives the same results with the workflow agent and `$S10/lc39b`.
+
+**Settles:** Continue at the reset in the real dialog, the limit badge and the limit phase line.
+It also settles that a subagent and a workflow agent wait at the limit and then finish.
+Cost: two short turns, each with one agent.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop.
+
+### LC40 Stop here at the limit
+
+**Start:** the session from LC39.
+
+**Steps:**
+
+1. Send the two-step prompt with `$S10/lc40`.
+2. While `sleep` runs, type `/spare10 simulate 100 in 2m`.
+3. When the dialog shows, choose **Stop here**. Look at the badge.
+4. Wait until about 2 minutes after HH:MM.
+5. Send `Reply with the word ok.`
+6. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- After step 3, the transcript shows `spare10: stopped at the quota limit until HH:MM. After the reset, type a prompt to continue.`
+- After step 3, the Bash call gets this text, or the next request gets the matching PAUSED text:
+  `spare10: the user stopped work at the quota limit (100% of quota used · resets HH:MM). Stop now and wait for the user. Do not call any further tools.`
+- After step 3, the badge shows `■ spare10 (test): stopped`, with no time.
+- During step 4, no plugin message comes, and `$S10/lc40` does not exist.
+- Step 5 goes in with no question, and the model replies.
+
+**Settles:** Stop here at the limit stops until the reset. spare10 continues nothing, also with Continue at the reset on.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop.
+
+### LC41 Past a second Resume
+
+**Start:** the session from LC40.
+
+**Steps:**
+
+1. Send the two-step prompt with `$S10/lc41`.
+   While `sleep` runs, type `/spare10 simulate 91 in 1h`. When the dialog shows, choose Resume.
+2. Send the two-step prompt with `$S10/lc41b`.
+   While `sleep` runs, type `/spare10 simulate 96`. When the dialog shows, choose Resume.
+3. Send the two-step prompt with `$S10/lc41c`.
+   While `sleep` runs, type `/spare10 simulate 100`.
+4. When the dialog shows, make sure that `$S10/lc41c` does not exist yet. Choose **Continue at the reset**.
+5. Type `/spare10`.
+6. Type `/spare10 simulate off`. Wait 2 minutes.
+
+**Expected:**
+
+- Steps 1 and 2 show the first and the second question, as in LC32.
+- Step 3 replies `spare10: test reading raised to 100% used, resets HH:MM. Your earlier answers stay. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run /spare10 simulate off to clear it.`
+- Then the limit question shows. It starts `The quota limit is reached: 100% used · 0% left · resets HH:MM.`
+- After step 5, the phase line starts `‖ limit          the quota limit is reached. Held work waits until HH:MM.`
+- After step 5, the consent row still reads `consent        until HH:MM (you chose to continue)`.
+- Within about a minute after step 6, the transcript shows `spare10: the pause at the limit is over. Held work continues, unless a reserve is still reached.`
+- Then `$S10/lc41c` exists.
+
+**Settles:** a full consent after a second Resume does not let work past the limit.
+It also settles that `/spare10 simulate off` ends a pause at a test limit.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop. Type `/exit` before LC42.
+
+### LC42 Option off
+
+**Start:** a new session from the floor start command.
+
+**Steps:**
+
+1. Send the two-step prompt with `$S10/lc42`.
+2. While `sleep` runs, type `/spare10 simulate 100 in 10m`.
+3. When the dialog shows, choose **Continue at the reset**.
+4. Set `pluginConfigs["spare10@inline"].options.limitPause` to `false` in `~/.claude/settings.json`. This reloads the plugin.
+5. Wait 2 minutes.
+6. Type `/spare10 simulate 100 in 10m`. Then type `/spare10`.
+7. Send the two-step prompt with `$S10/lc42b`.
+8. Restore the setting. Type `/spare10 simulate off`. Then type `/exit`.
+9. Send this start command. Then type `/spare10`.
+
+   ```sh
+   : > "$S10/s10.log"
+   tmux send-keys -t s10 'SPARE10_LIMIT_PAUSE=yes CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file "$S10/s10.log"' Enter
+   ```
+
+**Expected:**
+
+- After step 4, the debug log shows the reload.
+- Within about a minute after step 4, the transcript shows `spare10: the pause at the limit is over. Held work continues, unless a reserve is still reached.`
+- Then `$S10/lc42` exists with no new question, because the test window is in its open time.
+- After the reload, the new copy has no test reading. So step 6 sets it again.
+- The reply of step 6 has the sentence `The test window ends within 20 min, so the reserve is open at once.` It has no sentence about the quota limit.
+- After step 6, the report shows `at the limit   off. spare10 does not pause at the limit (from /config)`.
+- After step 6, the phase line starts `↻ open`.
+- After step 7, no dialog shows, and `$S10/lc42b` exists.
+- After step 9, the transcript shows `spare10: SPARE10_LIMIT_PAUSE="yes" is not on or off. spare10 uses on.`
+- After step 9, the report shows the same warning as a `⚠` line, and no `at the limit` row.
+
+**Settles:** the option of the newest copy applies to the held work of an older copy.
+This is the way out of a stale reading at the limit.
+It also settles the option row and the warning for a bad value.
+
+**Leaves:** the session runs, with no test reading, no consent and no stop. Make sure that you restored the setting.
+
+### LC45 Unattended runs at the limit
+
+**Start:** a shell in the repo folder. This check needs no interactive session.
+If your `scope` option is `opt-in`, add `SPARE10=on` to the commands.
+
+**Steps:**
+
+```sh
+: > "$S10/p.log"
+time SPARE10_SIMULATE="100 in 2m" SPARE10_HEADLESS=wait CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "Run touch $S10/lc45a" --plugin-dir . --model haiku --output-format json --debug-file "$S10/p.log"; echo "exit $?"
+: > "$S10/p.log"
+time SPARE10_SIMULATE="100 in 10m" SPARE10_HEADLESS=stop CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "Run touch $S10/lc45b" --plugin-dir . --model haiku --output-format json --debug-file "$S10/p.log"; echo "exit $?"
+```
+
+**Expected:**
+
+- No dialog shows, and neither run shows an error.
+- The first run takes about 3 minutes, although its test window is in its open time.
+- `$S10/lc45a` exists, and the exit code of the first run is 0.
+- The debug log of the first run has `policy wait` and `spare10: the test window ended. Held work continues.`
+- The second run does not create `$S10/lc45b`.
+- The `result` of the second run starts `spare10 stopped this unattended run at the quota limit (100% of quota used · resets HH:MM).`
+
+**Settles:** `wait` holds and `stop` refuses at the limit, also in an open reserve.
+Cost: two small `-p` runs.
+
+**Leaves:** nothing. The `-p` processes have ended.
+
+### LC43 Hold budget at the limit (optional)
+
+**Start:** a new session with its own debug log.
+Type `/exit`, then send this start command:
+
+```sh
+: > "$S10/lc43.log"
+tmux send-keys -t s10 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir . --model haiku --debug-file "$S10/lc43.log"' Enter
+```
+
+**Steps:**
+
+1. Send the two-step prompt with `$S10/lc43`.
+2. While `sleep` runs, type `/spare10 simulate 100 weekly in 2d`.
+3. When the dialog shows, choose **Continue at the reset**.
+4. Leave the session alone until about 5 minutes after the test window ends.
+5. Run `grep 'spare10: held' "$S10/lc43.log"`.
+6. Type `/spare10 simulate off`.
+
+**Expected:**
+
+- The debug log has a line `spare10: held N min. Budget left MS ms.` about every 10 minutes.
+- If the budget runs out first, the transcript shows `spare10: the hold reached its time limit. The work is stopped at the quota limit until ddd HH:MM. Then spare10 continues it, unless a reserve is still reached.`
+  Then, about one minute after the test window ends, a plugin message starts a new turn, and `$S10/lc43` exists.
+- If the budget lasts, the held work continues about one minute after the test window ends, and `$S10/lc43` exists.
+
+**Record:** the budget in the last line, and whether the budget ran out.
+
+**Settles:** the hold budget at the weekly limit, and the stop that ends a hold at its time limit.
+Cost: one short turn, and a session that runs for 2 days.
+
+**Leaves:** no test reading, no consent and no stop.
+
+### LC44 The real limit (optional)
+
+Run this check only when your real quota reaches 100% used by itself.
+Never spend quota to reach the limit.
+
+**Start:** a guarded session with the default options, during your usual work.
+
+**Steps:**
+
+1. When the real reading of a window reaches 100% used, look at the dialog.
+2. Choose **Continue at the reset**.
+3. Wait until about 10 minutes after the reset.
+
+**Expected:**
+
+- The dialog is the limit question, with the real reset time.
+- Claude Code shows no limit error for the held work.
+- About 5 minutes after the reset, the held work continues.
+- Subagents and workflow agents that were on hold finish with no error.
+
+**Record:** which agents were on hold, and the time from the reset to the release.
+
+**Settles:** the pause at the real limit.
+
+**Leaves:** the session runs.
+
 ## Optional and regression checks
 
 ### LC9 Keys on the dialog
@@ -1501,6 +1770,14 @@ Keep the old rows.
 | LC35 Tell mode at the floor | | | | Record whether the model stopped after the floor instruction. |
 | LC36 Options and variables | | | | |
 | LC37 Unattended runs with an inherited consent to the floor | | | | Record the exit code of each run. |
+| LC38 The limit question | | | | |
+| LC39 Continue at the reset with a subagent and a workflow agent | | | | Record whether the Workflow tool was available. |
+| LC40 Stop here at the limit | | | | Record whether the stop landed on the Bash call or on the model request. |
+| LC41 Past a second Resume | | | | |
+| LC42 Option off | | | | |
+| LC45 Unattended runs at the limit | | | | Record the run time and the exit code of each run. |
+| LC43 Hold budget at the limit | | | | Record the budget in the last line, and whether the budget ran out. |
+| LC44 The real limit | | | | Record which agents were on hold, and the time from the reset to the release. |
 
 The run of 2026-09-24 found defects D1 to D4.
 The fixes change the texts of LC1, LC2 and LC5, and the badge after `/clear`.
@@ -1517,3 +1794,7 @@ The start command and the reset start command switch the floors off.
 So the texts of LC1 to LC31 stay as in 0.2, except the version and the floor rows of LC1.
 Before the 0.3 release, run the release gate again, with LC32 to LC37.
 Add a new row for each run.
+
+The pause at the limit adds LC38 to LC45.
+It does not change the texts of LC1 to LC37, because no earlier check reaches 100% used.
+Before the next release, run the release gate with LC38 to LC42 and LC45.

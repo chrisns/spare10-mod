@@ -28,6 +28,8 @@ It then asks you one question: **Stop here** or **Resume**.
 - **Stop here** ends the work at its next step.
   The session stays open.
 
+At 100% used, spare10 holds all work until the reset, and asks once: **Continue at the reset** or **Stop here**.
+
 Near the reset, a reserve that you do not use is lost.
 So spare10 opens the reserve in the last 20 minutes of the 5-hour window and the last 8 hours of the weekly window.
 Then, or after the reset, spare10 continues held and stopped work by itself.
@@ -71,7 +73,7 @@ You can switch each of these off.
    claude plugin install spare10@spare10
    ```
 
-   The install can say that 11 `userConfig` options are not set yet.
+   The install can say that 12 `userConfig` options are not set yet.
    You do not have to set them. The defaults apply until you change them in `/config`.
 
 3. Start a new Claude Code session in a terminal.
@@ -236,6 +238,7 @@ During a turn, put `!` in front of it.
 | `weeklyResumeFloor` | `5` | The same for the weekly window. |
 | `pausePrompt` | empty | Text here tells the agents to wind down, and spare10 stops nothing. |
 | `autoResume` | on | spare10 continues held and stopped work when the reserve opens, or after the reset. |
+| `limitPause` | on | At 100% used, spare10 holds all work and continues it after the reset. Switch it off when you pay for extra usage. |
 | `headless` | `off` | What spare10 does in unattended runs: `off`, `prompt`, `stop` or `wait`. |
 | `scope` | `all` | `all` guards every interactive session. `opt-in` guards only runs started with `SPARE10=on`. |
 | `badge` | on | Shows the badge in the Claude Code footer. Codex has no badge. |

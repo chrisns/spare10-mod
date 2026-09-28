@@ -27,7 +27,7 @@ Three hooks see every step of work.
 `turn.step` sees each model request, also in turns that make no tool call.
 `prompt.submit` sees your prompts.
 Below the trip point, each hook lets the step through at once.
-While a reserve is open, it does the same.
+While a reserve is open, it does the same, until 100% used.
 
 **Hold.**
 At the trip point, the hook does not return.
@@ -76,6 +76,7 @@ The table compares spare10 and spare10-mod in Claude Code.
 | Ask | Its own panel, after Claude Code exits | Claude Code's own question dialog |
 | Continue | Start `claude --resume` again | The held step runs |
 | After the reset | You run `claude --resume` yourself | spare10 continues held and stopped work, unless you switch this off |
+| At the quota limit | The host refuses, and the loops fail | Holds all work, asks once, and continues after the reset |
 | Pre-flight | A panel before the process starts | The same question at your prompt |
 | Consent for the window | `disarmedUntil` in `state.json` | `SPARE10_CONSENT` and `SPARE10_WEEKLY_CONSENT` in the process environment, with the floor point |
 | Pause prompt | `PreToolUse` additional context | `tool.call` result context, once per loop at the reserve and once at the floor |
@@ -107,7 +108,7 @@ For Codex, see [Differences in Codex](codex.md#differences-in-codex).
 7. **A long hold expires the prompt cache.** The first request after a long hold caches the context again.
 8. **Consent is per session.** Another terminal, a new session and each `--bg` session ask on their own. After `/clear` or `/resume` in the same process, your consent stays.
 9. **Desktop and IDE hosts are unattended** in this version. By default spare10 only watches there. The vscode and mobile surfaces show no badge.
-10. **Some setups turn every question into Stop.** These are `dontAsk` mode and a disallowed AskUserQuestion tool. A question time limit turns an unanswered question into Stop. With **Continue at the reset** on, the work then continues at the time that the question names. Use `/spare10 resume` to continue before that.
+10. **Some setups turn every question into Stop.** These are `dontAsk` mode and a disallowed AskUserQuestion tool. A question time limit turns an unanswered question into Stop. With **Continue at the reset** on, the work then continues at the time that the question names. Use `/spare10 resume` to continue before that. At the quota limit, these setups turn the question into **Continue at the reset**.
 11. **You cannot type `/spare10` while the dialog is on the screen.** Answer the dialog, or use a remote surface.
 12. **A reload while a question is open** can show a second question for new work. One answer releases both within 10 s. On a test reading, each copy asks on its own.
 13. **The shared reading is not keyed by account.** After you change account on one machine, a new session can ask once too early.
@@ -135,11 +136,11 @@ For Codex, see [Differences in Codex](codex.md#differences-in-codex).
 35. **A reload while a prompt question is open in a stopped session can start two turns at the reset.** One turn is the message of spare10. The other is your released prompt.
 36. **A question that opens just before the reserve opens shows for a short time only.** spare10 does not hide it. A **Stop here** in that time does not stop the open window.
 37. **Agents that got the pause prompt do not get a message when the reserve opens.** Type a prompt to continue them.
-38. **You cannot stop at a reserve while it is open.** `/spare10 stop` stops nothing then. To keep a reserve until the reset, set its open time to 0.
+38. **You cannot stop at a reserve while it is open**, unless the quota limit is reached. `/spare10 stop` stops nothing then. To keep a reserve until the reset, set its open time to 0.
 39. **A stop from spare10 0.1 does not hold work while a reserve is open.**
 40. **With Continue at the reset off, new work can run while older work waits.** When the reserve opens, new work goes on with no question. Work that a question from before holds still waits for your answer.
 41. **The weekly open time spends the weekly reserve at the pace of the 5-hour window.** In the last 8 hours of the weekly window, only the 5-hour guard holds the work.
-42. **Unattended `stop` and `prompt` runs spend an open reserve.** Set `SPARE10_LAST_MINUTES=0` and `SPARE10_WEEKLY_LAST_HOURS=0` for runs that must never spend a reserve.
+42. **Unattended `stop` and `prompt` runs spend an open reserve**, until the quota limit. Set `SPARE10_LAST_MINUTES=0` and `SPARE10_WEEKLY_LAST_HOURS=0` for runs that must never spend a reserve.
 43. **The open time uses the clock of your computer.** A clock that runs fast opens the reserve early by the same amount. The work then still uses the reserve of the window that ends.
 44. **spare10 opens a reserve only when it knows the reset time.** A reading without a reset time keeps the guard until the reset.
 45. **With a pause prompt, a stop can end while a window is still in its reserve.** This can happen when a stop covers both windows, or a test window over the real quota. It can also happen after you lower an open time, or when a reset time moves. A quota read that fails as you type `/spare10 stop` can also end it. Without a pause prompt, spare10 then asks you again. With a pause prompt, spare10 tells Claude again to wind down, and the work continues.
@@ -155,3 +156,12 @@ For Codex, see [Differences in Codex](codex.md#differences-in-codex).
 55. **Claude can consent for you when it can write a settings file.** Claude Code can apply a changed `env` block of a settings file to a running session. spare10 then reads a `SPARE10_CONSENT` or `SPARE10_WEEKLY_CONSENT` value there as your **Resume**. This consent also wins over a **Stop here**. spare10 cannot see where a value came from. The Bash sandbox and the permission prompts block these writes. Without them, for example with `--dangerously-skip-permissions`, Claude can write the value.
 56. **Claude can answer for you when it can type into your terminal.** A tool can send keys to the terminal of the session, for example with `tmux send-keys`, `screen` or `osascript`. Claude Code takes these keys as your own. They can pick **Resume** in the dialog, or run `/spare10 resume`. spare10 cannot see where a key came from. A permission prompt asks you before such a command runs. It shows only the command, not the content of a script that Claude wrote. The Bash sandbox can also block it. Some modes and rules skip the prompt, for example auto mode, an allow rule for `tmux`, or `--dangerously-skip-permissions`.
 57. **A child run follows the environment that it starts with.** Claude can start a `claude -p` with an environment that lets it pass its trip. Examples are `SPARE10=off`, `SPARE10_HEADLESS=off`, no `SPARE10_HEADLESS` value, or `SPARE10_WEEKLY_RESERVE=0`. Other examples are a `SPARE10_CONSENT` value, or no `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` value. Such a run can spend the reserve with no question. A permission prompt shows you the command. If the command runs a script that Claude wrote, the prompt does not show the environment in that script. Some modes and rules skip the prompt, for example auto mode, an allow rule for `claude`, or `--dangerously-skip-permissions`. A `claude -p` run also takes the consent that it inherits. A later **Stop here** or `/spare10 stop` in the parent does not reach a child run that started before it. That run can spend until the floor point of the consent, or until the reset after a second **Resume**.
+58. **A stale reading can hold work until the old reset.** A limit reset in the middle of a window shows only at the next response. At 100% used, spare10 holds all work, so no response comes. So the work waits until the reset of the old reading. To go on before that, switch off **Pause at the limit** in `/config`. Within about a minute, the held work decides again. With **Continue at the reset** off, choose **Continue at the reset** first. The next response then gives a new reading.
+59. **Claude Code does not tell spare10 about extra usage.** If you pay for extra usage, spare10 still pauses at 100% used by default. Switch off **Pause at the limit** in `/config`.
+60. **A hold at the weekly limit can use up its hook budget.** Such a hold can last days. Before the budget runs out, spare10 ends the hold as a stop until the reset. At that time, spare10 refuses the held subagents and workflow agents. After the reset, the message tells the model to run them again. A workflow does not always run its agents again.
+61. **With Continue at the reset off, the hook budget ends a pause at the limit as a stop.** This is also true after you chose **Continue at the reset**. spare10 does not continue that work after the reset. Type a prompt to continue it.
+62. **A reload asks new work again at the limit.** After a plugin reload, the next step asks the limit question again. Work that the old copy holds keeps your answer.
+63. **With Continue at the reset off, a question at the reserve can stay on the screen at the limit.** The limit question takes its place only at the next step. A **Resume** on the old question then asks the limit question. A **Stop here** on it stops the work. No work runs past 100% used.
+64. **Only the exact label Stop here stops at the limit.** Esc, `Chat about this` and any other typed text continue at the reset. A typed `stop` does not stop the work.
+65. **During an upgrade, an older copy follows its own rules.** A copy of an earlier version does not know the quota limit. Work that it holds can pass in an open reserve. It can also ask the question at the reserve. Answer that question once.
+66. **Some work is not paused at the limit.** The unattended policy `off` lets work through, and it is the default. This includes the desktop and IDE hosts. A reading with no reset time and a weekly reserve of 0 have no pause. Requests with no hook are not paused either (item 5). The first request of a `-p` run is not paused either (item 4). Under `wait`, a shared reading lets one step go. There Claude Code refuses the request at the limit.

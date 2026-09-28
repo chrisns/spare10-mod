@@ -19,6 +19,14 @@ The project uses [Semantic Versioning](https://semver.org/).
 - **Reset credits.** After a Codex reset credit, an earlier **Resume** does not cover the new window.
 - **Codex session cleanup.** spare10 removes the files of a Codex session 30 days after their last change. It does this only when the spare10 process of that session has stopped. This is also true while the Codex daemon runs. An open question of a stopped process does not keep the files. A cleanup that stops at 500 folders goes on 10 minutes later.
 - **Codex unsafe mode warning.** spare10 warns once per session when a Codex turn has no sandbox or uses auto review. It also warns when the agent can write the spare10 data folder. In these modes the agent can run `spare10 resume` for you. The status report shows the warning after the session showed it. A writable home folder alone does not count, because Codex keeps `~/.codex` read-only there.
+- **Pause at the limit.** At 100% used of a window, spare10 now holds all work at the next step. It does this also while a reserve is open, after a second **Resume**, and with a pause prompt. It asks one question: **Continue at the reset** or **Stop here**. **Continue at the reset** has the focus. With no answer, the work continues after the reset. Subagents, workflow agents and background agents wait too, and then continue.
+- **Stop here at the limit.** It stops the work until the reset. spare10 does not continue that work, also with **Continue at the reset** on. Only the exact label **Stop here** stops. Esc and all other answers continue at the reset.
+- **Pause at the limit option.** It is `limitPause` in `/config`, `SPARE10_LIMIT_PAUSE`, and `spare10 set limitPause` in Codex. It is on by default. Claude Code does not tell spare10 about extra usage. So switch the option off when you pay for extra usage.
+- **Unattended runs at the limit.** At 100% used, the `stop` policy refuses and the `wait` policy holds. They do this also while a reserve is open or a consent applies.
+- **Limit texts.** The badge has a new row `‖ spare10: at the limit until 15:00`. `/spare10` shows a `limit` phase. While the option is off, it shows an `at the limit` row. The texts for the model name the quota limit and the percent used.
+- **Codex limit.** In Codex, the limit form has **Continue at the reset** first. Esc on it continues at the reset. A turn that ends at the limit shows a new line. spare10 does not pause while Codex credits can pay past 100%. While `limitPause` is off, the report warns past 100% used.
+- **Codex variable.** The Codex MCP server now passes `SPARE10_LIMIT_PAUSE` to spare10. The Codex hooks did not change, so Codex does not ask you to trust them again.
+- **Known limitations 58 to 66.** New known limitations list the cases that the pause at the limit does not cover well. An example is a stale reading after an early limit reset.
 
 ### Changed
 

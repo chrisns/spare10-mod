@@ -160,6 +160,9 @@ Run `scripts/check.sh` on the branch of such an update before you merge it.
 The line names the Codex test for the same behaviour, or says why Codex has no such behaviour.
 `codex/test/kit-port.spec.ts` fails when a test in `tests/kit` has no line.
 So when you add a test to `tests/kit`, add its line too.
+A line with `none:<reason>` says that Codex has no form of the behaviour.
+A `! <reason> = <text>` line at the top of the file gives each reason.
+For example, `limitNoun` says that Codex has no `$.spare10.limit()`, because each Codex step reads `config.json`.
 
 No Codex test uses your `~/.codex` or makes a request to a real model.
 `SPARE10_E2E=smoke scripts/check.sh` also runs the short end-to-end set.

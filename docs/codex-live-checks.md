@@ -15,8 +15,9 @@ They must also pass before each release and after each update of Codex.
 LCX9, LCX10, LCX12 to LCX16, and LCX18 to LCX20 belong to the P1 features.
 Run each one when its feature ships.
 LCX14 and LCX19 are optional.
+For the pause at the limit, LCX21 to LCX23 must also pass. LCX24 and LCX25 belong to P1.
 
-Run the checks in the order of this file: LCX1, LCX2, LCX17, then LCX3 to LCX8 and LCX11.
+Run the checks in the order of this file: LCX1, LCX2, LCX17, LCX3 to LCX8, LCX11, then LCX21 to LCX23.
 Each check states the state that it starts from and the state that it leaves.
 Record each result in the [results table](#results), with the date and the Codex version.
 
@@ -36,7 +37,7 @@ Do not run them again for spare10.
 
 ## Safety
 
-- Never use your real `~/.codex` for LCX1 to LCX20.
+- Never use your real `~/.codex` for LCX1 to LCX25.
 - Never type a test prompt in a real Codex session. If a gate fails, Codex sends the prompt to the model.
 - The isolated home has no `auth.json`. Its model provider is the mock.
 - Every command below sets `HOME` and `CODEX_HOME` to the isolated home.
@@ -408,6 +409,93 @@ It spends no quota.
 Installing the plugin into the real `~/.codex` is the choice of the owner, after the P0 checks pass.
 Until then, no check runs the plugin on the real home.
 
+## Quota limit checks
+
+These checks test the pause at the limit in Codex.
+LCX21 to LCX23 must pass before the release of the pause at the limit.
+LCX24 and LCX25 are in the [P1 checks](#p1-checks).
+LCX21 to LCX23 use a test reading at 100%, so the mock needs no change.
+The 5-hour test window is shorter than the open time of 20 minutes, so a reserve would be open.
+The checks show that the limit holds all the same.
+spare10 releases held work about one minute after the end of the test window.
+
+### LCX21 The limit form
+
+**Mode:** embedded.
+
+**Start:** a new session from the embedded start command, with no test reading.
+
+**Steps:**
+
+1. Type `spare10 simulate 100 in 2m`.
+2. Send `TOOL`.
+3. When the form shows, press Esc.
+4. Wait until about 2 minutes after HH:MM. Do not type in the TUI.
+5. Type `spare10 simulate off`.
+
+**Pass when:**
+
+- Step 1 replies `spare10: test reading set to 100% used, resets HH:MM. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run spare10 simulate off to clear it.`
+- The form shows the limit question, then the field `spare10`, then `› 1. Continue at the reset` and `2. Stop here`.
+- **Continue at the reset** is first, and it is selected.
+- The question is the prompt question. Its text ends with `Stop here drops your prompt and stops other work. After the reset, type a prompt to continue.`
+- After Esc, the form closes, and the work stays on hold. No second form shows.
+- About one minute after HH:MM, the prompt goes in, and the tool runs.
+- `↳ Hook · spare10: the test window ended. Held work continues.` shows.
+
+**Record:** when the line `↳ Hook · spare10: held work waits until HH:MM. ...` shows.
+
+**Leaves:** the session runs, with no test reading.
+
+### LCX22 Stop here at the limit
+
+**Mode:** daemon.
+
+**Start:** a new session from the daemon start command, with no test reading.
+
+**Steps:**
+
+1. Send `LONG`.
+2. While the command sleeps, type `!spare10 simulate 100 in 1m`, and press Enter.
+3. When the form shows, choose **Stop here**.
+4. Send the status command.
+5. Wait 3 minutes. Do not type in the TUI.
+6. Send `hello`.
+7. Type `spare10 simulate off`.
+
+**Pass when:**
+
+- `↳ Hook · spare10: stopped at the quota limit until HH:MM. After the reset, type a prompt to continue.` shows above `■ Conversation interrupted`.
+- After the interrupt, the mock log gets no new request.
+- The report of step 4 shows the phase `stopped`.
+- During step 5, no new turn starts.
+- In step 6, no form shows, and the mock replies `ok`.
+
+**Leaves:** the session runs, with no test reading.
+
+### LCX23 Pause at the limit off
+
+**Mode:** embedded.
+
+**Start:** a new session from the embedded start command, with no test reading.
+
+**Steps:**
+
+1. Type `spare10 set limitPause off`.
+2. Type `spare10 simulate 100 in 2m`.
+3. Send `TOOL`.
+4. Type `spare10`.
+5. Type `spare10 set limitPause default`, then `spare10 simulate off`.
+
+**Pass when:**
+
+- The reply of step 2 has the sentence `The test window ends within 20 min, so the reserve is open at once.`
+- In step 3, no form shows, and the tool runs.
+- The report of step 4 has the row `at the limit   off. spare10 does not pause at the limit (from spare10 set)`.
+- The report of step 4 has the warning `⚠ past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.`
+
+**Leaves:** the session runs, with the default options and no test reading.
+
 ## P1 checks
 
 These checks belong to the P1 features.
@@ -425,6 +513,8 @@ Their steps can change when those features ship.
 | LCX18 | embedded | Hold at a tool call. Then change `/permissions`. In a second run, change the folder. In a third run, update the plugin to a new version. | Record whether the held hook call stays, lets the work through, or refuses the work. Update docs/codex.md when a case lets the work through. |
 | LCX19 | desktop app or IDE, optional | Start a thread from a host whose `PATH` has no `node`, with Node.js in `/opt/homebrew/bin` or in nvm. | `codex/bin/broker.sh` finds Node.js, and the thread starts. With no Node.js at all, the thread fails with the error line of `broker.sh`. |
 | LCX20 | embedded, with `--sandbox danger-full-access` | Send the embedded start command with `--sandbox danger-full-access` after `--no-daemon`. Send `hello`. Then type `spare10`. | `↳ Hook · spare10: the agent can send prompts for you in this mode, ...` shows one time. The report shows the same text as a warning. The other checks use the read-only sandbox of the test home, so they do not show this line. |
+| LCX24 | embedded | Add the credit headers to `limits.json`, with credits and the balance `12.50`, such as `"x-codex-credits-has-credits": "true"` and `"x-codex-credits-balance": "12.50"`. Send `hello`. Then type `spare10 simulate 100 in 1h`, and send `TOOL`. | No limit form shows. The form at the reserve shows `› 1. Stop here` first. Its text ends with `Past 100% used, Codex spends your credits. The balance is 12.50.` The reply of `spare10 simulate` has no sentence about the quota limit. Record the header names that Codex reads. |
+| LCX25 | embedded | Send `SLOW`. While the turn runs, type `!spare10 simulate 100 in 1h`. Then send `hello`. | The turn ends with `spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.` (CX55). The prompt `hello` asks the limit form. |
 
 ## Clean up
 
@@ -464,3 +554,8 @@ Keep the old rows.
 | LCX18 Broker replaced during a hold (P1) | | | | Record what each of the three runs did. |
 | LCX19 A host with no `node` on `PATH` (P1, optional) | | | | Record the host. |
 | LCX20 An unsafe mode (P1) | | | | |
+| LCX21 The limit form | | | | Record when the line `held work waits until HH:MM` shows. |
+| LCX22 Stop here at the limit | | | | |
+| LCX23 Pause at the limit off | | | | |
+| LCX24 Credits at the limit (P1) | | | | Record the credit header names. |
+| LCX25 The Stop gate at the limit (P1) | | | | |
