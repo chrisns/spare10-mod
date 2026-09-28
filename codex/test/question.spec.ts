@@ -6,7 +6,7 @@ import { codexText, elicitParams } from '../../hooks/core/codex.ts'
 import { formatConsent, formatStopped, parseStopped } from '../../hooks/core/decide.ts'
 import { questionOf, refusalText, resumeNotice } from '../../hooks/core/flow.ts'
 import type { Acted } from '../../hooks/core/flow.ts'
-import { debugLine, notice, questionText } from '../../hooks/core/text.ts'
+import { VERSION, debugLine, notice, questionText } from '../../hooks/core/text.ts'
 import { readJson } from '../src/files.ts'
 import type { QuestionRecord } from '../src/question.ts'
 import type { CodexSensed } from '../src/sense.ts'
@@ -602,6 +602,45 @@ test('question: a Resume answers only the window of its question, so a later win
   )
 })
 
+test('question: after a reset credit, a Resume of the earlier window does not pass the new one (B50, A22)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const first = T0 + 4 * HOUR
+  const { s, a } = await tripped(w, b, 96, first) // at the floor: a full Resume
+  const { key, out } = hold(b, heldCall(), s, a)
+  await w.settle()
+  b.mcp.answer('resume')
+  assert.equal(await out, 'resume')
+  const resumed = b.questions.answeredOf(b.sx, key)
+  assert.deepEqual(resumed, [{ kind: 'five_hour', test: false, end: first }])
+  // A reset credit: a new window ends 61 min after the old one, less than half a window, and is at 99%.
+  await w.advance(MIN)
+  w.reading(SID, 99, { reset: T0 + 5 * HOUR + MIN })
+  const credit = await b.sense.sense(b.sx, 'tool')
+  const acted = await b.sense.act(b.sx, credit, { site: 'tool', resumed })
+  assert.deepEqual(acted.verdict, { kind: 'hold' })
+  assert.deepEqual(
+    acted.gating.map((k) => k.kind),
+    ['five_hour'],
+  )
+})
+
+test('question: an answer dated later than the clock is never joined, so the step asks (B50)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const { s, a } = await tripped(w, b, 99)
+  // A future answer: a clock that moved back, or a file that an agent wrote. Its Resume answers any reading.
+  const planted = { v: 1, by: VERSION, key: 'planted', outcome: 'resume', via: 'dialog', at: T0 + 1000 * HOUR, answered: [{ kind: 'five_hour', test: false }] }
+  writeFileSync(w.file('answer.json'), JSON.stringify(planted))
+  const { key, out } = hold(b, heldCall(), s, a)
+  assert.notEqual(key, 'planted')
+  await w.settle()
+  assert.equal(questionFile(w)?.key, key)
+  assert.equal(b.mcp.requests.length, 1, 'one form goes out')
+  b.mcp.answer('stop')
+  assert.equal(await out, 'stop')
+})
+
 test('question: a step that sensed before the answer joins it at once, and no second form goes out', async (t) => {
   for (const choice of ['resume', 'stop'] as const) {
     const w = logicWorld(t)
@@ -633,6 +672,26 @@ test('question: a late step does not join a Resume that does not answer its read
   const first = hold(root, heldCall({ turn: 'U1' }), r.s, r.a)
   await w.settle()
   const c = await tripped(w, child, 96) // the child sees the floor
+  await w.advance(SEC)
+  root.mcp.answer('resume')
+  assert.equal(await first.out, 'resume')
+  const late = hold(child, heldCall({ turn: 'C1' }), c.s, c.a)
+  assert.notEqual(late.key, first.key)
+  await w.settle()
+  assert.equal(questionFile(w)?.key, late.key)
+  assert.equal(child.mcp.requests.length, 1)
+})
+
+test('question: a late step that read a reset credit does not join the Resume of the earlier window (B50, A22)', async (t) => {
+  const w = logicWorld(t)
+  const root = w.broker()
+  const child = w.broker({ thread: CHILD })
+  const r = await tripped(w, root, 96, T0 + 4 * HOUR) // at the floor: a full Resume
+  const first = hold(root, heldCall({ turn: 'U1' }), r.s, r.a)
+  await w.settle()
+  await w.advance(MIN)
+  const c = await tripped(w, child, 99, T0 + 5 * HOUR + MIN) // the child reads the new window of a reset credit
+  assert.deepEqual(c.a.verdict, { kind: 'hold' })
   await w.advance(SEC)
   root.mcp.answer('resume')
   assert.equal(await first.out, 'resume')

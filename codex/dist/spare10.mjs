@@ -1608,12 +1608,11 @@ function bury(tombs, t, now) {
   return [...live.filter((x) => !(x.until === t.until && x.to <= t.to)), t];
 }
 var unbury = (tombs, c) => (tombs ?? []).filter((t) => !buried([t], c));
-var answers = (named, k) => named.some(
-  (a) => a.kind === k.kind && a.test === k.test && sameWindow(k.kind, a.end ?? null, k.end ?? null) && (a.to === void 0 || k.pct < a.to)
-);
-function joinableAt(outcome, named, gating) {
+var answerWindow = (a, k, jitter) => sameWindow(k.kind, a.end ?? null, k.end ?? null) && (jitter <= 0 || k.test || a.end === void 0 || k.end === void 0 || k.end - a.end <= jitter);
+var answers = (named, k, jitter = 0) => named.some((a) => a.kind === k.kind && a.test === k.test && answerWindow(a, k, jitter) && (a.to === void 0 || k.pct < a.to));
+function joinableAt(outcome, named, gating, jitter = 0) {
   if (outcome === void 0 || outcome === "stop") return true;
-  return outcome === "resume" && gating.every((k) => answers(named, k));
+  return outcome === "resume" && gating.every((k) => answers(named, k, jitter));
 }
 var answersQuestion = (c, end, now) => consentCovers(c.until, now, end.end) && (c.to === void 0 || end.to !== void 0 && c.to >= end.to);
 var isoMs = (text3) => /^\d{4}-\d{2}-\d{2}T/.test(text3) ? Date.parse(text3) : Number.NaN;
@@ -2732,13 +2731,13 @@ function holdersFrom(kinds, gating, realLists, now) {
   }
   return out;
 }
-var unansweredGating = (resumed, gating) => gating.filter((k) => !answers(resumed, viewedOf(k)));
-function unansweredHolders(s, resumed, holders) {
+var unansweredGating = (resumed, gating, jitter = 0) => gating.filter((k) => !answers(resumed, viewedOf(k), jitter));
+function unansweredHolders(s, resumed, holders, jitter = 0) {
   const viewOfKind = (kind) => {
     const k = s.kinds.find((x) => x.kind === kind);
     return k === void 0 ? { kind, pct: 0, test: false } : viewedOf(k);
   };
-  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind)));
+  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind), jitter));
 }
 var consentedOf = (s, gating) => s.cfg.enabled && s.tripped && gating.length === 0;
 var checksStop = (s, gating) => s.cfg.enabled && s.attended && !consentedOf(s, gating);
@@ -4097,8 +4096,8 @@ function createSense(d) {
     holders,
     async act(sx, s, c) {
       const resumed = c.resumed ?? [];
-      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating) : [];
-      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating)) : [];
+      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating, RESET_JITTER_MS) : [];
+      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating), RESET_JITTER_MS) : [];
       let stopped = false;
       if (checksStop(s, gating)) {
         try {
@@ -5988,12 +5987,12 @@ function createQuestions(d) {
       return void 0;
     }
   };
-  const lateAnswer = (tx, s, a, now) => {
+  const lateAnswer = (tx, s, a) => {
     const ans = lastAnswer(tx);
     if (ans === void 0 || typeof ans.key !== "string" || typeof ans.at !== "number" || !Array.isArray(ans.answered)) return void 0;
     if (ans.outcome !== "resume" && ans.outcome !== "stop") return void 0;
-    if (!(s.now < ans.at && ans.at <= now)) return void 0;
-    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf)) ? ans.key : void 0;
+    if (!(s.now < ans.at && ans.at <= d.clock.now())) return void 0;
+    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf), RESET_JITTER_MS) ? ans.key : void 0;
   };
   const ensureQuestion = (sx, call, opener, s, a) => {
     const now = d.clock.now();
@@ -6007,12 +6006,12 @@ function createQuestions(d) {
       if (q !== void 0) {
         const ans = tx.answer();
         const outcome = ans?.key === q.key ? ans.outcome : void 0;
-        if (joinableAt(outcome, answeredOf(q), namedKinds(s, a).map(viewedOf))) {
+        if (joinableAt(outcome, answeredOf(q), namedKinds(s, a).map(viewedOf), RESET_JITTER_MS)) {
           if (opener === "loop") tx.setQuestion({ ...q, loops: q.loops + 1 });
           key = q.key;
         }
       } else {
-        key = lateAnswer(tx, s, a, now);
+        key = lateAnswer(tx, s, a);
       }
       if (key === void 0) {
         const core = questionOf(opener, s, a, s.now);

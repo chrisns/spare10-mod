@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
-import { answerOf as elicitAnswer, codexDebug, elicitParams } from '../../hooks/core/codex.ts'
+import { RESET_JITTER_MS, answerOf as elicitAnswer, codexDebug, elicitParams } from '../../hooks/core/codex.ts'
 import { joinableAt, parseStopped } from '../../hooks/core/decide.ts'
 import type { Answered, Outcome } from '../../hooks/core/decide.ts'
 import {
@@ -137,15 +137,17 @@ export function createQuestions(d: QuestionDeps): Questions {
   /**
    * B50: a step that sensed before a settle, and now finds no open question, joins that answer as
    * register.tsx joins a question settled during its writes: a Stop here, or a Resume that answers every
-   * kind that gates in the step's sense. The answer must be newer than the sense (strictly: at the same
-   * time the sense may have seen it). Else the step opens a new question.
+   * kind that gates in the step's sense (A22: in its window). The answer must be newer than the sense
+   * (strictly: at the same time the sense may have seen it), and no later than the clock under the lock:
+   * a future answer (a clock that moved back, or a planted file) is never a standing Resume. Else the step
+   * opens a new question.
    */
-  const lateAnswer = (tx: Tx, s: Sensed, a: Pick<Acted, 'gating' | 'holders'>, now: number): string | undefined => {
+  const lateAnswer = (tx: Tx, s: Sensed, a: Pick<Acted, 'gating' | 'holders'>): string | undefined => {
     const ans = lastAnswer(tx)
     if (ans === undefined || typeof ans.key !== 'string' || typeof ans.at !== 'number' || !Array.isArray(ans.answered)) return undefined
     if (ans.outcome !== 'resume' && ans.outcome !== 'stop') return undefined
-    if (!(s.now < ans.at && ans.at <= now)) return undefined
-    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf)) ? ans.key : undefined
+    if (!(s.now < ans.at && ans.at <= d.clock.now())) return undefined
+    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf), RESET_JITTER_MS) ? ans.key : undefined
   }
 
   const ensureQuestion: Questions['ensureQuestion'] = (sx, call, opener, s, a) => {
@@ -160,12 +162,12 @@ export function createQuestions(d: QuestionDeps): Questions {
       if (q !== undefined) {
         const ans = tx.answer()
         const outcome = ans?.key === q.key ? ans.outcome : undefined
-        if (joinableAt(outcome, answeredOfCore(q), namedKinds(s, a).map(viewedOf))) {
+        if (joinableAt(outcome, answeredOfCore(q), namedKinds(s, a).map(viewedOf), RESET_JITTER_MS)) {
           if (opener === 'loop') tx.setQuestion({ ...q, loops: q.loops + 1 })
           key = q.key
         }
       } else {
-        key = lateAnswer(tx, s, a, now) // the wait then returns its outcome at once, with no form
+        key = lateAnswer(tx, s, a) // the wait then returns its outcome at once, with no form
       }
       if (key === undefined) {
         const core: QuestionCore = questionOf(opener, s, a, s.now)

@@ -74,3 +74,20 @@ test('tell: a reset that moves within its jitter keeps each loop told, and a tol
   assert.deepEqual(w.notices(), [])
   assert.deepEqual(w.state().told, { five_hour: { windowEnd: RESET, keys: [`${SID}:main`] } })
 })
+
+test('tell: a subagent that reads a reset within its jitter is told, and the told line does not come again (3.6)', async (t) => {
+  const w = world(t, { config: { pausePrompt: 'Wind down now.' } })
+  const root = await w.broker()
+  const child = await w.broker({ thread: CHILD })
+  w.reading(SID, 92, { reset: RESET })
+  const first = parsed(await root.gate('tool'))
+  assert.match(first['systemMessage'] as string, /^spare10: your 10% reserve is reached\./)
+  // The child's first tool reads a reset 30 s earlier: a new loop in the same window.
+  await w.advance(1000)
+  w.reading(CHILD, 92.5, { reset: RESET - 30_000 })
+  const c = parsed(await child.gate('tool'))
+  assert.match((c['hookSpecificOutput'] as Record<string, unknown>)['additionalContext'] as string, TELL)
+  assert.equal(c['systemMessage'], undefined)
+  assert.deepEqual(w.notices(), [], 'no second told line is queued')
+  assert.deepEqual(w.state().told, { five_hour: { windowEnd: RESET, keys: [`${SID}:main`, `${SID}:${CHILD}`] } })
+})

@@ -435,17 +435,20 @@ export function holdersFrom(
 
 // ---- The verdict and the told keys (register.tsx 5.2, 5, B38, B50, B51) ----
 
-/** B38, B50: the round after a Resume leaves out the kinds it answered, on its basis and below its end point. */
-export const unansweredGating = (resumed: readonly Answered[], gating: readonly KindSense[]): KindSense[] =>
-  gating.filter((k) => !answers(resumed, viewedOf(k)))
+/**
+ * B38, B50: the round after a Resume leaves out the kinds it answered, on its basis, in its window and
+ * below its end point. `jitter`: Codex passes RESET_JITTER_MS (A22, `answers`). Claude passes none.
+ */
+export const unansweredGating = (resumed: readonly Answered[], gating: readonly KindSense[], jitter = 0): KindSense[] =>
+  gating.filter((k) => !answers(resumed, viewedOf(k), jitter))
 
-/** B50: the holders that a Resume did not answer. A kind the sense does not list reads as 0% on the real basis. */
-export function unansweredHolders(s: Pick<Sensed, 'kinds'>, resumed: readonly Answered[], holders: readonly Holder[]): Holder[] {
+/** B50: the holders that a Resume did not answer. A kind the sense does not list reads as 0% on the real basis. `jitter`: as above. */
+export function unansweredHolders(s: Pick<Sensed, 'kinds'>, resumed: readonly Answered[], holders: readonly Holder[], jitter = 0): Holder[] {
   const viewOfKind = (kind: Kind): Viewed => {
     const k = s.kinds.find((x) => x.kind === kind)
     return k === undefined ? { kind, pct: 0, test: false } : viewedOf(k)
   }
-  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind)))
+  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind), jitter))
 }
 
 /** Decide row 3: tripped, and no kind gates. */
