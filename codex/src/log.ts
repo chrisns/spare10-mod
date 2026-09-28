@@ -6,7 +6,7 @@ import type { Clock } from './clock.ts'
 // 'debug' }). One file per UTC day, `<data dir>/log/broker-<yyyy-mm-dd>.log`, only with SPARE10_CODEX_DEBUG=1.
 // Debug lines keep their own `spare10: `. A log never throws: a full disk must not change a gate answer.
 // A flag that stays on must not fill the disk: the day files go after LOG_KEEP_DAYS, and a day file stops at
-// LOG_DAY_MAX_BYTES.
+// LOG_DAY_MAX_BYTES (50 MiB). The old day files also go when the flag is off, so they do not stay for good.
 
 export type Log = { debug(line: string): void }
 
@@ -38,10 +38,11 @@ export const logFileOf = (dataDir: string, at: number): string => join(dataDir, 
  * a folder, and each failure is ignored, also when another broker removed the file first.
  */
 function pruneLogs(dataDir: string, at: number): void {
-  const oldest = dayOf(at - (LOG_KEEP_DAYS - 1) * DAY_MS)
   const dir = join(dataDir, 'log')
+  let oldest: string
   let names: string[]
   try {
+    oldest = dayOf(at - (LOG_KEEP_DAYS - 1) * DAY_MS)
     names = readdirSync(dir)
   } catch {
     return
@@ -60,11 +61,16 @@ function pruneLogs(dataDir: string, at: number): void {
 /**
  * The file log. Each line is `<ISO time> [<tag>] <line>`, where the tag (for example `pid 4242`) tells
  * apart the brokers that share the file. A line with newlines stays one entry: its newlines become `\n`.
- * With `on` false, the log writes nothing and makes no folder. The first line of each UTC day removes the old
- * day files (pruneLogs). A line that finds its day file at LOG_DAY_MAX_BYTES or more is dropped.
+ * With `on` false, the log writes nothing and makes no folder, but it removes the old day files once
+ * (pruneLogs). With `on` true, the first line of each UTC day removes them. A line that finds its day file at
+ * LOG_DAY_MAX_BYTES or more is dropped.
  */
 export function fileLog(dataDir: string, on: boolean, clock: Clock, o: { tag?: string } = {}): Log {
-  if (!on) return noLog
+  if (!on) {
+    // The flag can go off with day files left: they still go after LOG_KEEP_DAYS.
+    pruneLogs(dataDir, clock.now())
+    return noLog
+  }
   const tag = o.tag === undefined ? '' : ` [${o.tag}]`
   /** The UTC day of the last prune of this log. */
   let pruned = ''

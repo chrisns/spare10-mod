@@ -26,6 +26,16 @@ test('log: off writes nothing and makes no folder', (t) => {
   assert.equal(existsSync(data), false)
 })
 
+test('log: off still removes the day files older than 7 days, so they do not stay after the flag goes off', (t) => {
+  const data = tempDir(t)
+  const dir = join(data, 'log')
+  mkdirSync(dir)
+  for (const name of ['broker-2026-09-19.log', 'broker-2026-09-20.log', 'notes.txt']) writeFileSync(join(dir, name), 'x\n')
+  const log = fileLog(data, false, fakeClock(DAY1))
+  assert.equal(log, noLog)
+  assert.deepEqual(readdirSync(dir).sort(), ['broker-2026-09-20.log', 'notes.txt'])
+})
+
 test('log: one file per UTC day, each line with its ISO time and tag', async (t) => {
   const data = join(tempDir(t), 'data')
   const clock = fakeClock(DAY1)
@@ -65,7 +75,8 @@ test('log: the first line of each UTC day removes the day files older than 7 day
   const data = tempDir(t)
   const dir = join(data, 'log')
   mkdirSync(dir)
-  const keep = ['broker-2026-09-20.log', 'broker-2026-09-27.log', 'broker-2026-09-26.log.bak', 'notes.txt', 'broker-2026-09-01.txt']
+  // Names like an old day file that are not one stay: only the anchored day file pattern keeps them.
+  const keep = ['broker-2026-09-20.log', 'broker-2026-09-27.log', 'broker-2026-09-03.log.bak', 'notes.txt', 'broker-2026-09-01.txt']
   for (const name of ['broker-2026-09-19.log', 'broker-2025-12-31.log', ...keep]) writeFileSync(join(dir, name), 'x\n')
   // A folder with the name of an old day file stays. A link with such a name goes, but the file behind it stays.
   mkdirSync(join(dir, 'broker-2026-09-01.log'))
@@ -76,7 +87,7 @@ test('log: the first line of each UTC day removes the day files older than 7 day
   const log = fileLog(data, true, clock)
   log.debug('spare10: one')
   const after = readdirSync(dir).sort()
-  assert.deepEqual(after, ['broker-2026-09-01.log', 'broker-2026-09-20.log', 'broker-2026-09-26.log', 'broker-2026-09-26.log.bak', 'broker-2026-09-27.log', 'broker-2026-09-01.txt', 'notes.txt'].sort())
+  assert.deepEqual(after, ['broker-2026-09-01.log', 'broker-2026-09-20.log', 'broker-2026-09-03.log.bak', 'broker-2026-09-26.log', 'broker-2026-09-27.log', 'broker-2026-09-01.txt', 'notes.txt'].sort())
   assert.equal(readFileSync(target, 'utf8'), 'keep\n', 'the file behind the link stays')
   // An old file that comes later on the same day stays until the first line of the next day.
   writeFileSync(join(dir, 'broker-2026-09-18.log'), 'x\n')
@@ -90,7 +101,7 @@ test('log: the first line of each UTC day removes the day files older than 7 day
   assert.equal(readFileSync(logFileOf(data, DAY1 + 3_000), 'utf8'), 'x\n2026-09-27T00:00:01.000Z spare10: three\n')
 })
 
-test('log: a day file at 50 MB takes no more lines, and the next day starts a new file', async (t) => {
+test('log: a day file at 50 MiB takes no more lines, and the next day starts a new file', async (t) => {
   assert.equal(LOG_DAY_MAX_BYTES, 50 * 1024 * 1024)
   const data = tempDir(t)
   const clock = fakeClock(DAY1)
