@@ -97,7 +97,8 @@ You can switch each of these off.
 ### Codex CLI
 
 You need Node.js 20 or later.
-spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin`, in Volta and in nvm, and then on your `PATH`.
+spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin` and in Volta.
+Then it tries the versions of nvm, mise, asdf and fnm, and last your `PATH`.
 
 1. Install the plugin:
 

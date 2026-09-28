@@ -39,8 +39,8 @@ Child processes inherit `SPARE10`.
 A guarded session also protects the `claude -p` runs that it starts.
 It sets `SPARE10_HEADLESS=stop` for its child processes.
 So a nested `claude -p` stops at its own trip.
-Item 57 of the [Known limitations](how-it-works.md#known-limitations) names the exceptions.
 spare10 does this only when the `headless` option is `off` or `wait`, and `SPARE10_HEADLESS` is not set.
+Item 57 of the [Known limitations](how-it-works.md#known-limitations) names the cases where a nested `claude -p` does not stop at its trip.
 A `claude -p` that the Bash tool starts ends when the Bash call times out.
 That is 2 minutes by default, and 10 minutes at most.
 So a child run must not wait for a reset.
