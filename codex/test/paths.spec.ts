@@ -47,6 +47,28 @@ test('findPaths: CODEX_HOME from the env, and every path below it', (t) => {
   assert.equal(findPaths({ ...GUARD, CODEX_HOME: home }, self).home, resolve(homedir()))
 })
 
+test('findPaths: with no HOME and no user record, the home folder is unknown, and the other ways still start', (t) => {
+  // os.homedir() throws (uv_os_homedir ENOENT) with no HOME and no user record, such as a uid with no passwd entry.
+  const noHome = (): string => {
+    throw new Error('A system error occurred: uv_os_homedir returned ENOENT')
+  }
+  const home = tempDir(t)
+  const self = join(home, 'repo', 'codex', 'dist', 'spare10.mjs')
+  const p = findPaths({ ...GUARD, CODEX_HOME: home }, self, noHome)
+  assert.equal(p.home, undefined)
+  assert.equal(p.codexHome, home)
+  // The texts then show the full path.
+  assert.equal(codexText.cliHint(p.launcher, p.bin, p.home).includes(p.bin), true)
+  // The arg0 folder on PATH and the plugin root need no home folder either.
+  assert.equal(findPaths({ ...GUARD, PATH: join(home, 'tmp', 'arg0', 'codex-arg0x') }, self, noHome).codexHome, home)
+  const root = join(home, 'plugins', 'cache', 'spare10', 'spare10', '0.3.0')
+  assert.equal(findPaths({ ...GUARD, PATH: '/usr/bin' }, join(root, 'codex', 'dist', 'spare10.mjs'), noHome).codexHome, home)
+  // A set HOME wins, and os.homedir() is not asked.
+  assert.equal(findPaths({ ...GUARD, CODEX_HOME: home, HOME: join(home, 'me') }, self, noHome).home, join(home, 'me'))
+  // Only the last fallback, $HOME/.codex, needs the home folder: with none, it still throws.
+  assert.throws(() => findPaths({ ...GUARD, PATH: '/usr/bin' }, self, noHome), /uv_os_homedir/)
+})
+
 test('findPaths: CODEX_HOME from the arg0 folder on PATH, three folders up, also when it is not first', (t) => {
   const home = tempDir(t)
   const arg0 = join(home, 'tmp', 'arg0', 'codex-arg0Ab12Cd')
@@ -160,6 +182,21 @@ test('parentArgs: the command line of a process, and an empty line when ps finds
   assert.equal(parentArgs(0), '')
   assert.equal(parentArgs(-5), '')
   assert.equal(parentArgs(99_999_999), '')
+})
+
+test('parentArgs: never runs a ps from PATH, which the agent can write outside the Codex sandbox', (t) => {
+  const dir = tempDir(t)
+  const marker = join(dir, 'ran')
+  writeFileSync(join(dir, 'ps'), `#!/bin/sh\n: > '${marker}'\necho 'codex exec --json hi'\n`, { mode: 0o755 })
+  const before = process.env.PATH
+  process.env.PATH = `${dir}${delimiter}${before ?? ''}`
+  try {
+    assert.match(parentArgs(process.pid), /node/)
+  } finally {
+    if (before === undefined) delete process.env.PATH
+    else process.env.PATH = before
+  }
+  assert.equal(existsSync(marker), false, 'the ps on PATH did not run')
 })
 
 test('launcher: single quotes around both paths, with each quote escaped', () => {
