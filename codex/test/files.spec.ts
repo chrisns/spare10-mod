@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   appendFileSync,
@@ -35,10 +35,11 @@ import { tempDir } from './helpers/tmp.ts'
 
 const DEAD_PID = 99_999_999
 
-/** Runs one lock-worker.ts with `job`, and resolves its message. */
-function contender(job: object): Promise<{ owner: string; overlaps: number }> {
+/** Runs one lock-worker.ts with `job`, and resolves its message. The end of the test stops a worker that still runs. */
+function contender(t: TestContext, job: object): Promise<{ owner: string; overlaps: number }> {
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL('./helpers/lock-worker.ts', import.meta.url), { workerData: job })
+    t.after(() => w.terminate())
     w.once('message', resolve)
     w.once('error', reject)
     w.once('exit', (code) => {
@@ -144,7 +145,7 @@ test('files: an atomic write is never seen half done by a reader', async (t) => 
 test('files: two withLock callers in worker threads both finish, and never hold the lock at once', async (t) => {
   const dir = tempDir(t)
   const job = { lock: join(dir, 'state.lock'), marker: join(dir, 'marker'), journal: join(dir, 'journal'), rounds: 25, holdMs: 2 }
-  const results = await Promise.all([contender({ ...job, owner: 'A' }), contender({ ...job, owner: 'B' })])
+  const results = await Promise.all([contender(t, { ...job, owner: 'A' }), contender(t, { ...job, owner: 'B' })])
   assert.deepEqual(results.map((r) => r.overlaps), [0, 0])
   const lines = readFileSync(job.journal, 'utf8').trim().split('\n')
   assert.equal(lines.length, 100)
@@ -164,7 +165,7 @@ test('files: six waiters that find one stale lock at the same ms never hold the 
   const n = 6
   const stale = { sab: new SharedArrayBuffer(16), n, deadPid: DEAD_PID }
   const job = { lock: join(dir, 'state.lock'), marker: join(dir, 'marker'), rounds: 40, holdMs: 1, stale }
-  const results = await Promise.all(Array.from({ length: n }, (_, i) => contender({ ...job, owner: `W${i}` })))
+  const results = await Promise.all(Array.from({ length: n }, (_, i) => contender(t, { ...job, owner: `W${i}` })))
   assert.deepEqual(results.map((r) => r.overlaps), Array.from({ length: n }, () => 0))
   assert.equal(existsSync(job.lock), false)
   assert.equal(existsSync(`${job.lock}.break`), false, 'no guard is left')

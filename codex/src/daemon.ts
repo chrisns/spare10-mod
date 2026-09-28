@@ -253,8 +253,11 @@ type Rpc = {
   notify(method: string, params?: unknown): void
 }
 
-/** `uid`: the user that must own the socket and its folder, or undefined on a host with no POSIX uids. */
-type Opts = { connectMs: number; maxMessage: number; uid: number | undefined }
+/**
+ * `uid`: the user that must own the socket and its folder, or undefined on a host with no POSIX uids.
+ * `stat`: the stat of the socket check (socketAt), the real one or a fake one in the specs.
+ */
+type Opts = { connectMs: number; maxMessage: number; uid: number | undefined; stat: StatOf }
 
 /** Where the daemon socket alias leads: the real socket, no socket at all, or a socket that is not safe to dial. */
 export type SocketAt = { real: string } | { missing: string } | { unsafe: string }
@@ -354,7 +357,7 @@ function upgrade(socketPath: string, clock: Clock, o: Opts): Promise<{ socket: D
 async function withConnection<T>(socketAlias: string, version: string, clock: Clock, timeoutMs: number, o: Opts, fn: (rpc: Rpc) => Promise<T>): Promise<T> {
   guardTestPath({}, 'daemon socket', socketAlias)
   // The check again at each connect: the socket can change after udsDaemon made the client.
-  const at = socketAt(socketAlias, o.uid)
+  const at = socketAt(socketAlias, o.uid, o.stat)
   if ('missing' in at) throw new DaemonError('connect', `no daemon socket: ${at.missing}`, undefined, true)
   if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
   const { socket, head } = await upgrade(at.real, clock, o)
@@ -482,16 +485,17 @@ export const NOT_MATERIALIZED = /is not materialized yet/
 /**
  * The daemon client of `paths.socket`, or undefined when no socket file exists (no daemon). A socket that is
  * not safe to dial (socketAt) throws a DaemonError: the link counts it as no daemon, with a debug line. With
- * SPARE10_CODEX_TEST=1, a socket under ~/.codex throws (3.9). `o` sets the handshake timeout, the size cap
- * and the owner uid (default: this process's uid), for the specs.
+ * SPARE10_CODEX_TEST=1, a socket under ~/.codex throws (3.9). `o` sets the handshake timeout, the size cap,
+ * the owner uid (default: this process's uid) and the stat of the socket check, for the specs.
  */
 export function udsDaemon(paths: Pick<Paths, 'socket'>, version: string, clock: Clock, o: Partial<Opts> = {}): Daemon | undefined {
   guardTestPath({}, 'daemon socket', paths.socket)
   const uid = 'uid' in o ? o.uid : process.getuid?.()
-  const at = socketAt(paths.socket, uid)
+  const stat = o.stat ?? statSync
+  const at = socketAt(paths.socket, uid, stat)
   if ('missing' in at) return undefined
   if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
-  const opts: Opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid }
+  const opts: Opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid, stat }
   const op = <T>(timeoutMs: number, fn: (rpc: Rpc) => Promise<T>): Promise<T> =>
     withConnection(paths.socket, version, clock, timeoutMs, opts, fn)
   return {

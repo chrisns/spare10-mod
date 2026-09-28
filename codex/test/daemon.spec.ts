@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { codexDebug, codexText, withPrefix } from '../../hooks/core/codex.ts'
@@ -306,6 +306,24 @@ test('a call on a socket that went away rejects as a connect error that found no
   const d = client(fake)
   await fake.close()
   await assert.rejects(d.loaded(), isConnect(true))
+})
+
+test('a socket file that goes after the check and before the connect is a connect error that found no daemon (the stat seam)', async (t) => {
+  const fake = await fakeDaemon(t)
+  const real = realpathSync(fake.real)
+  let armed = false
+  // The real stats. When armed, the last step of the check (the stat of the folder) removes the socket file.
+  // So the check passes, and the connect finds no file (ENOENT).
+  const stat = (p: string) => {
+    const s = statSync(p)
+    if (armed && p === dirname(real)) rmSync(real)
+    return s
+  }
+  const d = udsDaemon({ socket: fake.alias }, VERSION, realClock, { stat })
+  assert.ok(d !== undefined, 'the fake socket exists')
+  armed = true
+  await assert.rejects(d.loaded(), (e: unknown) => isConnect(true)(e) && /ENOENT/.test(String(e)))
+  assert.equal(fake.conns.length, 0, 'no connection reached the daemon')
 })
 
 test('a socket file that nothing listens on (a daemon that crashed) is no daemon: known() and hosted() are false', async (t) => {

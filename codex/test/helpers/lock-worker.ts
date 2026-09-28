@@ -7,7 +7,9 @@ import { withLock } from '../../src/files.ts'
 // marker, so an overlap shows as a failed create.
 //
 // With `stale`, the contenders meet before each round. The last one to arrive writes a lock of a dead pid,
-// and they all start at the same ms, so they all find that stale lock at once.
+// and they all start at the same ms, so they all find that stale lock at once. A contender that failed
+// never comes to the meeting. The others then stop after MEET_MS, so the worker threads cannot keep the
+// spec process alive.
 
 type Stale = {
   /** 16 shared bytes: the arrivals (int32), the round (int32), then the start ms (int64). */
@@ -23,6 +25,9 @@ type Job = { lock: string; marker: string; journal?: string; owner: string; roun
 const job = workerData as Job
 const pause = new Int32Array(new SharedArrayBuffer(4))
 
+/** The longest wait for the other contenders at one meeting. */
+const MEET_MS = 10_000
+
 /** Waits for every contender. The last one writes the stale lock and sets the start, 3 ms from now. */
 function meet(s: Stale): void {
   const ctrl = new Int32Array(s.sab, 0, 2)
@@ -35,7 +40,12 @@ function meet(s: Stale): void {
     Atomics.add(ctrl, 1, 1)
     Atomics.notify(ctrl, 1)
   } else {
-    while (Atomics.load(ctrl, 1) === round) Atomics.wait(ctrl, 1, round)
+    const until = Date.now() + MEET_MS
+    while (Atomics.load(ctrl, 1) === round) {
+      const left = until - Date.now()
+      if (left <= 0) throw new Error(`${job.owner}: the other contenders did not come to round ${round} within ${MEET_MS} ms`)
+      Atomics.wait(ctrl, 1, round, left)
+    }
   }
   const at = Number(Atomics.load(start, 0))
   while (Date.now() < at) {
