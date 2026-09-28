@@ -1,4 +1,4 @@
-import { codexDebug } from '../../hooks/core/codex.ts'
+import { RESET_JITTER_MS, codexDebug } from '../../hooks/core/codex.ts'
 import type { CodexCredits, GateSite } from '../../hooks/core/codex.ts'
 import { floorOf, reserveOf, watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective, Spans } from '../../hooks/core/config.ts'
@@ -310,13 +310,13 @@ export function createSense(d: SenseDeps): SenseApi {
     )
   }
 
-  /** B15, skip 2.5: the debug lines of an unattended run, once per kind and window. The marks live in the state. */
+  /** B15, skip 2.5: the debug lines of an unattended run, once per kind and window (within the reset jitter, 3.6). The marks live in the state. */
   const noteUnattended = (sx: SessionCtx, s: Sensed): void => {
     try {
-      if (unattendedLines(s, unattendedMarksOf(sx.store.read())).length === 0) return
+      if (unattendedLines(s, unattendedMarksOf(sx.store.read()), RESET_JITTER_MS).length === 0) return
       const lines = sx.store.locked((tx) => {
         const m = unattendedMarksOf(tx.state)
-        const ls = unattendedLines(s, m)
+        const ls = unattendedLines(s, m, RESET_JITTER_MS)
         if (ls.length > 0) {
           tx.state.unattendedNote = m.reserve
           tx.state.openNote = m.open
@@ -349,7 +349,7 @@ export function createSense(d: SenseDeps): SenseApi {
       }
       let toldMain = false
       try {
-        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid)
+        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid, RESET_JITTER_MS) // 3.6: a reset that moves a little is the same window
       } catch (e) {
         d.log.debug(codexDebug.readFailed('the told loops', errText(e)))
       }
@@ -362,10 +362,10 @@ export function createSense(d: SenseDeps): SenseApi {
       try {
         const fresh = sx.store.locked((tx) => {
           const told = toldOf(tx.state)
-          if (!claimToldCore(told, namedKinds(s, a), key)) return false
+          if (!claimToldCore(told, namedKinds(s, a), key, RESET_JITTER_MS)) return false
           tx.state.told = toldBack(told)
           const marks = marksOf(tx.state.toldNotice)
-          const text = toldNotice(s, a, marks)
+          const text = toldNotice(s, a, marks, RESET_JITTER_MS)
           tx.state.toldNotice = marks
           if (text !== undefined) noticeIn(tx.state, text, s.now)
           return true

@@ -12,7 +12,7 @@ import type { QuestionRecord } from '../src/question.ts'
 import type { CodexSensed } from '../src/sense.ts'
 import type { AnswerFile, ThreadState } from '../src/store.ts'
 import { BEAT_STALE_MS, HOLD_LIMIT_MS } from '../src/timing.ts'
-import { CHILD, HOUR, MIN, SEC, SID, T0, heldCall, logicWorld } from './helpers/logic.ts'
+import { CHILD, HOST_PID, HOUR, MIN, SEC, SID, T0, heldCall, logicWorld } from './helpers/logic.ts'
 import type { LogicWorld, TestCall } from './helpers/logic.ts'
 
 // One question per session (Codex design 4.3, 2.2, 7.2 question.ts, 8.2 question.spec): open or join in one
@@ -91,10 +91,10 @@ test('question: Resume releases the call, writes the consent at its tier, and qu
   assert.equal(await out, 'resume')
   assert.equal(w.state().consent, formatConsent(SID, RESET, 95), 'B49: to the floor point')
   assert.deepEqual(texts(w), [resumeNotice(q, T0)])
-  assert.deepEqual(answerFile(w), { v: 1, by: answerFile(w)?.by, key, outcome: 'resume', via: 'dialog', at: T0, answered: [{ kind: 'five_hour', test: false, to: 95 }] })
+  assert.deepEqual(answerFile(w), { v: 1, by: answerFile(w)?.by, key, outcome: 'resume', via: 'dialog', at: T0, answered: [{ kind: 'five_hour', test: false, to: 95, end: RESET }] })
   assert.equal(existsSync(w.file('question.json')), false)
   assert.deepEqual(threadFile(w)?.held, [])
-  assert.deepEqual(b.questions.answeredOf(b.sx, key), [{ kind: 'five_hour', test: false, to: 95 }])
+  assert.deepEqual(b.questions.answeredOf(b.sx, key), [{ kind: 'five_hour', test: false, to: 95, end: RESET }])
   // The round after the Resume passes this kind (B38, B50).
   const again = await b.sense.sense(b.sx, 'tool')
   assert.deepEqual((await b.sense.act(b.sx, again, { site: 'tool', resumed: b.questions.answeredOf(b.sx, key) })).verdict, { kind: 'pass', trip: true })
@@ -574,4 +574,160 @@ test('question: a Stop here after the skip start with Continue at the reset off 
   const lines = (w.state().notices ?? []).filter((n) => n.tag === 'stop').map((n) => n.text)
   assert.equal(lines.length, 1)
   assert.match(lines[0] ?? '', /^stopped\. Held work is refused\. .*, so new work goes on with no question\.$/)
+})
+
+test('question: a Resume answers only the window of its question, so a later window asks again (B50)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const { s, a } = await tripped(w, b, 96) // at the floor: a full Resume
+  const { key, out } = hold(b, heldCall(), s, a)
+  await w.settle()
+  b.mcp.answer('resume')
+  assert.equal(await out, 'resume')
+  const resumed = b.questions.answeredOf(b.sx, key)
+  assert.deepEqual(resumed, [{ kind: 'five_hour', test: false, end: RESET }])
+  // The same window, its reset 30 s later: the round after the Resume passes (B38, B50).
+  w.reading(SID, 99, { reset: RESET + 30 * SEC })
+  const same = await b.sense.sense(b.sx, 'tool')
+  assert.deepEqual((await b.sense.act(b.sx, same, { site: 'tool', resumed })).verdict, { kind: 'pass', trip: true })
+  // The window reset, and the next one is at 99%: the Resume of the earlier window does not pass it.
+  await w.advance(RESET - T0 + HOUR)
+  w.reading(SID, 99, { reset: RESET + 5 * HOUR })
+  const next = await b.sense.sense(b.sx, 'tool')
+  const acted = await b.sense.act(b.sx, next, { site: 'tool', resumed })
+  assert.deepEqual(acted.verdict, { kind: 'hold' })
+  assert.deepEqual(
+    acted.gating.map((k) => k.kind),
+    ['five_hour'],
+  )
+})
+
+test('question: a step that sensed before the answer joins it at once, and no second form goes out', async (t) => {
+  for (const choice of ['resume', 'stop'] as const) {
+    const w = logicWorld(t)
+    const root = w.broker()
+    const child = w.broker({ thread: CHILD })
+    const r = await tripped(w, root)
+    const first = hold(root, heldCall({ turn: 'U1' }), r.s, r.a)
+    await w.settle()
+    const c = await tripped(w, child) // the child acts before the answer: it holds
+    assert.deepEqual(c.a.verdict, { kind: 'hold' })
+    await w.advance(SEC)
+    root.mcp.answer(choice)
+    assert.equal(await first.out, choice)
+    const late = hold(child, heldCall({ turn: 'C1' }), c.s, c.a)
+    assert.equal(late.key, first.key, choice)
+    assert.equal(await late.out, choice)
+    assert.equal(child.mcp.requests.length, 0, choice)
+    assert.equal(answerFile(w)?.key, first.key)
+    assert.equal(questionFile(w), undefined)
+    assert.deepEqual(threadFile(w, CHILD)?.held ?? [], [], 'its held entry goes')
+  }
+})
+
+test('question: a late step does not join a Resume that does not answer its reading', async (t) => {
+  const w = logicWorld(t)
+  const root = w.broker()
+  const child = w.broker({ thread: CHILD })
+  const r = await tripped(w, root) // at the reserve: a Resume to the floor
+  const first = hold(root, heldCall({ turn: 'U1' }), r.s, r.a)
+  await w.settle()
+  const c = await tripped(w, child, 96) // the child sees the floor
+  await w.advance(SEC)
+  root.mcp.answer('resume')
+  assert.equal(await first.out, 'resume')
+  const late = hold(child, heldCall({ turn: 'C1' }), c.s, c.a)
+  assert.notEqual(late.key, first.key)
+  await w.settle()
+  assert.equal(questionFile(w)?.key, late.key)
+  assert.equal(child.mcp.requests.length, 1)
+})
+
+test('question: a question decided elsewhere before its first cycle sends no form', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const { s, a } = await tripped(w, b)
+  const key = b.questions.ensureQuestion(b.sx, heldCall(), 'loop', s, a)
+  w.setState({ consent: formatConsent(SID, RESET) })
+  assert.equal(await b.questions.waitQuestion(b.sx, heldCall(), key), 'resume')
+  assert.deepEqual(b.mcp.requests, [])
+  assert.equal(answerFile(w)?.via, 'elsewhere')
+})
+
+test('question: an answer older than the sense, or of the same time, is never joined', async (t) => {
+  for (const gap of [SEC, 0]) {
+    const w = logicWorld(t)
+    const b = w.broker()
+    const r = await tripped(w, b)
+    const first = hold(b, heldCall(), r.s, r.a)
+    await w.settle()
+    b.mcp.answer('stop')
+    assert.equal(await first.out, 'stop')
+    w.setState({ stopped: undefined })
+    await w.advance(gap) // at the same time, the sense may have seen the answer
+    const again = await tripped(w, b)
+    const next = hold(b, heldCall(), again.s, again.a)
+    assert.notEqual(next.key, first.key, `gap ${gap}`)
+    await w.settle()
+    assert.equal(b.mcp.requests.length, 2, `gap ${gap}`)
+  }
+})
+
+test('question: a consent of an earlier window does not decide the question elsewhere (A22)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const { s, a } = await tripped(w, b)
+  const { key, out } = hold(b, heldCall(), s, a)
+  await w.settle()
+  // A reset credit: the old window ended at T0 + 30 min, the question's window ends at RESET.
+  w.setState({ consent: formatConsent(SID, T0 + 30 * MIN) })
+  await w.settle()
+  assert.equal(answerFile(w), undefined, 'the old consent is void')
+  assert.equal(w.state().consent, undefined, 'and it goes from state.json')
+  assert.equal(questionFile(w)?.key, key)
+  b.mcp.answer('stop')
+  assert.equal(await out, 'stop')
+})
+
+test('question: a parent consent of an earlier window does not settle a nested silent question (A22, 3.10)', async (t) => {
+  const w = logicWorld(t)
+  const NESTED = '01a0da08-0000-7000-8000-0000000000e1'
+  const b = w.broker({ sid: NESTED, hostKind: 'exec', parent: SID, env: { SPARE10_HEADLESS: 'wait' }, originator: 'codex_exec', source: 'exec' })
+  w.reading(NESTED, 92, { reset: RESET })
+  const s = await b.sense.sense(b.sx, 'tool')
+  const a = await b.sense.act(b.sx, s, { site: 'tool' })
+  assert.deepEqual(a.verdict, { kind: 'hold' })
+  const { out } = hold(b, heldCall(), s, a)
+  await w.settle()
+  const old = formatConsent(SID, T0 + 30 * MIN)
+  w.setState({ consent: old }, SID)
+  await w.advance(30 * SEC) // the parent state.json does not wake the child: the next cycle reads it
+  assert.equal(readJson<AnswerFile>(w.file('answer.json', NESTED)), undefined)
+  assert.equal(w.state(SID).consent, old, 'a parent value is never removed by the child')
+  w.setState({ consent: formatConsent(SID, RESET) }, SID)
+  await w.advance(30 * SEC)
+  assert.equal(await out, 'resume', 'a parent consent of this window settles it')
+})
+
+test('question: with no reading at all at the due time, the question stays open and the held work waits (3.6)', async (t) => {
+  const w = logicWorld(t, { daemon: true, config: { lastMinutes: 0 } })
+  const b = w.broker()
+  // A test reading trips, and no real reading ever comes: no rollout reading, no seed, and the daemon read fails.
+  const end = T0 + HOUR
+  w.setState({ test: { hostPid: HOST_PID, kinds: { five_hour: { pct: 92, resetsAtMs: end } }, consent: {}, envDone: true } })
+  const s = await b.sense.sense(b.sx, 'tool')
+  const a = await b.sense.act(b.sx, s, { site: 'tool' })
+  assert.equal(a.verdict.kind, 'hold')
+  const { key, out } = hold(b, heldCall(), s, a)
+  const box: { r?: string } = {}
+  void out.then((r) => {
+    box.r = r
+  })
+  await w.settle()
+  assert.equal(questionFile(w)?.due, end + 60 * SEC, 'the test margin')
+  await w.advance(end + 60 * SEC - T0 + 5 * MIN)
+  assert.equal(box.r, undefined, 'the held work still waits')
+  assert.equal(questionFile(w)?.key, key, 'the question stays open')
+  assert.equal(answerFile(w), undefined)
+  assert.ok(w.daemon.callsOf('rateLimits').length > 0, 'the due check read the daemon')
 })

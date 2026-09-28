@@ -292,6 +292,30 @@ test('sense: an unattended run has no floor, passes with policy off, and logs it
   assert.deepEqual(w.state().unattendedNote, { five_hour: RESET, seven_day: 0 })
 })
 
+test('sense: an unattended debug line does not come again while the reset moves within its jitter (B15, 3.6)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker({ hostKind: 'exec', originator: 'codex_exec', source: 'exec' })
+  w.reading(SID, 92, { reset: RESET })
+  const s = await b.sense.sense(b.sx, 'tool')
+  await b.sense.act(b.sx, s, { site: 'tool' })
+  await w.advance(MIN)
+  w.reading(SID, 92.5, { reset: RESET - 30_000 })
+  const moved = await b.sense.sense(b.sx, 'tool')
+  assert.equal(moved.kinds[0]?.windowEnd, RESET - 30_000)
+  await b.sense.act(b.sx, moved, { site: 'tool' })
+  assert.deepEqual(
+    w.log.lines.filter((l) => l.startsWith('spare10: unattended')),
+    [debugLine.unattended(factsFrom([s.kinds[0]!], s.now), 'off')],
+  )
+  assert.deepEqual(w.state().unattendedNote, { five_hour: RESET, seven_day: 0 }, 'the first end stays')
+  // A new window logs it again.
+  await w.advance(RESET - T0)
+  w.reading(SID, 91, { reset: RESET + 5 * HOUR })
+  const next = await b.sense.sense(b.sx, 'tool')
+  await b.sense.act(b.sx, next, { site: 'tool' })
+  assert.equal(w.log.lines.filter((l) => l.startsWith('spare10: unattended')).length, 2)
+})
+
 test('sense: an unattended run with policy stop refuses a tool and a step, and lets a prompt through', async (t) => {
   const w = logicWorld(t)
   const b = w.broker({ hostKind: 'exec', env: { SPARE10_HEADLESS: 'stop' }, originator: 'codex_exec', source: 'exec' })

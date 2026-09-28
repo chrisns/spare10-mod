@@ -189,8 +189,16 @@ export const realHolder = (k: KindSense): Holder => ({ kind: k.kind, resetsAtMs:
  */
 export const commandHolders = (kinds: readonly KindSense[]): Holder[] => kinds.filter((k) => k.realIn).map(realHolder)
 
-/** B50: a kind as the gate sees it: its view percentage and basis. */
-export const viewedOf = (k: KindSense): Viewed => ({ kind: k.kind, pct: pctOf(k.basis) ?? 0, test: k.test })
+/**
+ * B50: a kind as the gate sees it: its view percentage, basis and window. A reading with no reset time
+ * has no known window: its fallback end is no window of its own (R11).
+ */
+export const viewedOf = (k: KindSense): Viewed => ({
+  kind: k.kind,
+  pct: pctOf(k.basis) ?? 0,
+  test: k.test,
+  ...(k.basis.kind === 'none' || k.basis.resetsAtMs === null ? {} : { end: k.windowEnd }),
+})
 
 /** The consent bound of a kind's real reading: the view window, or beneath a test reading the real reset (TS1). */
 export const realBound = (k: KindSense, now: number): number => (k.test ? (k.realReset ?? now + FALLBACK_MS) : k.windowEnd)
@@ -298,13 +306,16 @@ export type QuestionCore = {
 /** The kinds of a question, with their basis, for {reset}. */
 export const namedOf = (q: Pick<QuestionCore, 'kinds' | 'ends'>): Named[] => q.kinds.map((kind) => ({ kind, test: q.ends[kind]?.test === true }))
 
-/** B50: what a Resume of this question answers per kind: its basis, and its end point when asked at the reserve. */
+/**
+ * B50: what a Resume of this question answers per kind: its basis, its end point when asked at the
+ * reserve, and its consent bound, so a later window is not answered.
+ */
 export const answeredOf = (q: Pick<QuestionCore, 'kinds' | 'ends'> | undefined): Answered[] =>
   q === undefined
     ? []
     : q.kinds.map((kind) => {
         const end = q.ends[kind]
-        return { kind, test: end?.test === true, ...(end?.to === undefined ? {} : { to: end.to }) }
+        return { kind, test: end?.test === true, ...(end?.to === undefined ? {} : { to: end.to }), ...(end === undefined ? {} : { end: end.end }) }
       })
 
 /** The kinds of a stop, with its basis, for {reset}. A 0.1 value names the 5-hour window. */
@@ -451,15 +462,23 @@ export type Told = Record<Kind, { windowEnd: number; keys: Set<string> }>
 /** Told sets with no key. */
 export const newTold = (): Told => ({ five_hour: { windowEnd: 0, keys: new Set<string>() }, seven_day: { windowEnd: 0, keys: new Set<string>() } })
 
+/**
+ * B51: a told window end is the window of `k`. `jitter`: Codex passes RESET_JITTER_MS, because its
+ * `resets_at` moves a little from one reading to the next (3.6). A test reading keeps its end exactly.
+ * Claude passes none, so the ends must be equal.
+ */
+export const toldWindow = (end: number, k: Pick<KindSense, 'windowEnd' | 'test'>, jitter = 0): boolean =>
+  end === k.windowEnd || (jitter > 0 && !k.test && Math.abs(end - k.windowEnd) <= jitter)
+
 /** B51: a loop's told key carries the stage of the kind: a second tell at the floor. */
-export function toldHas(told: Told, k: KindSense, key: string): boolean {
+export function toldHas(told: Told, k: KindSense, key: string, jitter = 0): boolean {
   const t = told[k.kind]
-  return t.windowEnd === k.windowEnd && t.keys.has(stageKey(key, k.atFloor))
+  return toldWindow(t.windowEnd, k, jitter) && t.keys.has(stageKey(key, k.atFloor))
 }
 
 /** Decide `mainTold`: every gating kind told the main loop of this session at its stage. */
-export const toldMainOf = (told: Told, gating: readonly KindSense[], sessionId: string): boolean =>
-  gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`))
+export const toldMainOf = (told: Told, gating: readonly KindSense[], sessionId: string, jitter = 0): boolean =>
+  gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`, jitter))
 
 /**
  * The verdict (5.2) from what the host read: the gating kinds and the holders, both already without the
@@ -495,12 +514,13 @@ export function verdictOf(i: {
 
 /**
  * A loop is told when some gating kind lacks its key of the kind's stage (B51). The claim adds the key
- * of its stage to every gating kind. So each loop is told once at the reserve and once at the floor.
+ * of its stage to every gating kind. So each loop is told once at the reserve and once at the floor. A
+ * kind in its told window (`toldWindow`) keeps the stored end, so a reset that moves never drifts.
  */
-export function claimTold(told: Told, gating: readonly KindSense[], key: string): boolean {
+export function claimTold(told: Told, gating: readonly KindSense[], key: string, jitter = 0): boolean {
   let fresh = false
   for (const k of gating) {
-    if (told[k.kind].windowEnd !== k.windowEnd) told[k.kind] = { windowEnd: k.windowEnd, keys: new Set() }
+    if (!toldWindow(told[k.kind].windowEnd, k, jitter)) told[k.kind] = { windowEnd: k.windowEnd, keys: new Set() }
     const staged = stageKey(key, k.atFloor)
     if (told[k.kind].keys.has(staged)) continue
     told[k.kind].keys.add(staged)
@@ -512,26 +532,39 @@ export function claimTold(told: Told, gating: readonly KindSense[], key: string)
 /** B51: the mark of the B12 notice per kind: its window and stage. */
 export const toldMark = (k: KindSense): string => `${k.windowEnd}:${k.atFloor ? 'floor' : 'reserve'}`
 
-/** B12, B51: the told notice, once per kind, window and stage. It updates `marks`. Undefined: shown already. */
-export function toldNotice(s: Pick<Sensed, 'kinds' | 'now'>, a: Pick<Acted, 'gating'>, marks: Record<Kind, string>): string | undefined {
+/**
+ * B12, B51: the told notice, once per kind, window (`toldWindow`) and stage. It updates `marks`, and
+ * keeps the mark of a kind already shown. Undefined: shown already. A mark that is not text is not shown.
+ */
+export function toldNotice(s: Pick<Sensed, 'kinds' | 'now'>, a: Pick<Acted, 'gating'>, marks: Record<Kind, string>, jitter = 0): string | undefined {
   const ks = namedKinds(s, a)
-  if (ks.every((k) => marks[k.kind] === toldMark(k))) return undefined
-  for (const k of ks) marks[k.kind] = toldMark(k)
+  const shown = (k: KindSense): boolean => {
+    const m: unknown = marks[k.kind]
+    if (typeof m !== 'string') return false
+    const mine = toldMark(k)
+    if (m === mine) return true
+    const cut = m.lastIndexOf(':')
+    const end = Number(m.slice(0, cut))
+    return cut > 0 && m.slice(cut) === mine.slice(mine.lastIndexOf(':')) && Number.isFinite(end) && toldWindow(end, k, jitter)
+  }
+  const fresh = ks.filter((k) => !shown(k))
+  if (fresh.length === 0) return undefined
+  for (const k of fresh) marks[k.kind] = toldMark(k)
   return notice.told(factsFrom(ks, s.now))
 }
 
 /** The window end of the last B15 debug line per kind, in the reserve and open (skip 2.5). */
 export type UnattendedMarks = { reserve: Record<Kind, number>; open: Record<Kind, number> }
 
-/** B15, skip 2.5: the debug lines of an unattended run, once per kind and window. It updates `marks`. */
-export function unattendedLines(s: Pick<Sensed, 'kinds' | 'now' | 'cfg'>, marks: UnattendedMarks): string[] {
+/** B15, skip 2.5: the debug lines of an unattended run, once per kind and window (`toldWindow`). It updates `marks`. */
+export function unattendedLines(s: Pick<Sensed, 'kinds' | 'now' | 'cfg'>, marks: UnattendedMarks, jitter = 0): string[] {
   const out: string[] = []
-  const fresh = s.kinds.filter((k) => k.tripped && !k.open && marks.reserve[k.kind] !== k.windowEnd)
+  const fresh = s.kinds.filter((k) => k.tripped && !k.open && !toldWindow(marks.reserve[k.kind], k, jitter))
   if (fresh.length > 0) {
     for (const k of fresh) marks.reserve[k.kind] = k.windowEnd
     out.push(debugLine.unattended(factsFrom(fresh, s.now), s.cfg.headless)) // R9: every policy
   }
-  const opened = s.kinds.filter((k) => k.open && marks.open[k.kind] !== k.windowEnd)
+  const opened = s.kinds.filter((k) => k.open && !toldWindow(marks.open[k.kind], k, jitter))
   if (opened.length > 0) {
     for (const k of opened) marks.open[k.kind] = k.windowEnd
     out.push(debugLine.unattendedOpen(factsFrom(opened, s.now))) // skip 2.5: every policy lets it through
@@ -1027,8 +1060,8 @@ export function stopAskingIdle(q: Pick<QuestionCore, 'skip' | 'facts' | 'loops' 
  * or every tripped kind open (B44: a stop never holds an open kind). Else `ks`, the kinds that gate after
  * the stop (the stop clears every consent, so each tripped kind that is not open), the facts of every
  * tripped kind, and `real` (TS1: each kind of `ks` whose real reading is in the reserve). `absent` (Codex
- * design 2.1, CX17): the kinds the host reports no window for, so a weekly-only plan names no 5-hour trip.
- * Claude passes none.
+ * design 2.1, CX17): the kinds the host reports no window for, so a weekly-only plan names no 5-hour trip,
+ * and a plan with no weekly window names no weekly trip, as the report does. Claude passes none.
  */
 export function stopCase(
   s: Pick<Sensed, 'kinds' | 'now' | 'tripped'>,
@@ -1036,7 +1069,7 @@ export function stopCase(
   absent?: readonly Kind[],
 ): { reply: string } | { ks: KindSense[]; facts: Facts[]; real: Holder[] } {
   const trip = tripOf(cfg.reserve)
-  const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : undefined
+  const weeklyTrip = cfg.weeklyReserve > 0 && absent?.includes('seven_day') !== true ? tripOf(cfg.weeklyReserve) : undefined
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
   if (read.length === 0) return { reply: stopReply('none', undefined, trip, undefined, weeklyTrip, undefined, absent) }
   if (!s.tripped) return { reply: stopReply('below', factsFrom(read, s.now), trip, undefined, weeklyTrip, undefined, absent) }
@@ -1231,13 +1264,15 @@ export function seenOf(i: {
   sessionId: string
   /** Codex design 4.15: the kinds the host reports. The phase then reads their bases, so a weekly-only plan is armed. Claude passes none. */
   present?: readonly Kind[]
+  /** Codex 3.6: the reset jitter of `toldWindow`. Claude passes none. */
+  jitter?: number
 }): Seen {
   const { cfg, tripped, split, stop, question } = i
   const prefix = `${i.sessionId}:`
   const toldKeys = new Set<string>()
   for (const k of split.gating) {
     const t = i.told[k.kind]
-    if (t.windowEnd !== k.windowEnd) continue
+    if (!toldWindow(t.windowEnd, k, i.jitter)) continue
     for (const key of t.keys) {
       const ks = keyStage(key)
       if (key.startsWith(prefix) && ks.atFloor === k.atFloor) toldKeys.add(ks.base)

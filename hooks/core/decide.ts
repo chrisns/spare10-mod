@@ -183,15 +183,21 @@ export function bury(tombs: readonly Tomb[] | undefined, t: Tomb, now: number): 
  */
 export const unbury = (tombs: readonly Tomb[] | undefined, c: Consent): Tomb[] => (tombs ?? []).filter((t) => !buried([t], c))
 
-/** B50: a kind as the gate sees it now. */
-export type Viewed = { kind: Kind; pct: number; test: boolean }
+/** B50: a kind as the gate sees it now. `end`: its consent bound, the identity of its window. None: no reset time is known. */
+export type Viewed = { kind: Kind; pct: number; test: boolean; end?: number }
 
-/** B50: what a settled Resume answered for one kind: its basis and its end point. */
-export type Answered = { kind: Kind; test: boolean; to?: number }
+/** B50: what a settled Resume answered for one kind: its basis, its end point, and the consent bound of the question. */
+export type Answered = { kind: Kind; test: boolean; to?: number; end?: number }
 
-/** B50: a Resume answers a kind on the same basis while its reading is below the Resume's end point for it. */
+/**
+ * B50: a Resume answers a kind on the same basis and in the same window (`sameWindow`) while its reading
+ * is below the Resume's end point for it. A window that reset after the question asks again, also past
+ * its floor. An unknown end (no reset time, or an older answer) matches, as in TS1.
+ */
 export const answers = (named: readonly Answered[], k: Viewed): boolean =>
-  named.some((a) => a.kind === k.kind && a.test === k.test && (a.to === undefined || k.pct < a.to))
+  named.some(
+    (a) => a.kind === k.kind && a.test === k.test && sameWindow(k.kind, a.end ?? null, k.end ?? null) && (a.to === undefined || k.pct < a.to),
+  )
 
 /**
  * B50: joinable with the floor and the basis. A loop joins an open question, or one settled as Stop
@@ -348,11 +354,18 @@ function perKind(entries: readonly Holder[], kinds: readonly Kind[] = KINDS): Ho
   return out
 }
 
-/** SPARE10_STOPPED is `${sessionId} ${untilMs} ${atMs} ${tags}`, or the 0.1 `${sessionId} ${windowEndMs} ${atMs}`. Anything else is not stopped. */
+/** The latest time that a Date can hold. A later until or at is junk: every clock text of it throws. */
+const DATE_MAX_MS = 8.64e15
+
+/**
+ * SPARE10_STOPPED is `${sessionId} ${untilMs} ${atMs} ${tags}`, or the 0.1 `${sessionId} ${windowEndMs} ${atMs}`.
+ * Anything else is not stopped, also a time that no Date can hold.
+ */
 export function parseStopped(raw: string | undefined): StoppedRecord | undefined {
   const m = /^(\S+) (\d+) (\d+)(?: (\S+))?$/.exec(raw ?? '')
   if (m === null) return undefined
   const rec = { sessionId: m[1] ?? '', windowEnd: Number(m[2]), at: Number(m[3]) }
+  if (rec.windowEnd > DATE_MAX_MS || rec.at > DATE_MAX_MS) return undefined // also Infinity: a digit string is never NaN or below 0
   if (m[4] === undefined) return rec
   const tags = m[4].split(',')
   if (tags.some((t) => !TAGS.has(t) && realOf(t) === undefined)) return undefined
