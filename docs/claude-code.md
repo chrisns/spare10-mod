@@ -413,8 +413,9 @@ The vscode and mobile surfaces have no footer, so there the dialog is the only s
 
 `/spare10` runs at once, also while a turn runs.
 Only you can run `resume` and `stop`, from the prompt box or a remote surface.
-Claude cannot run them. It can still consent for you when it can write a settings file.
-See item 55 of the [Known limitations](how-it-works.md#known-limitations).
+Claude cannot run them through a tool.
+It can still consent for you when it can write a settings file or type into your terminal.
+See items 55 and 56 of the [Known limitations](how-it-works.md#known-limitations).
 You cannot type `/spare10` while the dialog is on the screen, because the dialog holds the keys.
 Use `/spare10 resume` or `/spare10 stop` when no dialog shows, or from a remote surface.
 
@@ -554,6 +555,8 @@ To stop that work too, run `/spare10 stop`.
 - **Resume** at the reserve lasts until the floor, by default 95% used.
   If the window resets first, it lasts until the reset.
   A second **Resume** at the floor lasts until the window resets.
+  A limit reset in the middle of a window also ends a **Resume**.
+  Then spare10 asks you again at the reserve of the new window.
   A **Resume** on a weekly trip does the same with the weekly floor and the weekly reset.
   When the question names both windows, **Resume** covers each window on its own.
   It applies to this process and to the `claude -p` runs that it starts.
@@ -583,14 +586,14 @@ Each `claude --bg` session runs its own copy of spare10.
 No question time limit applies to its question.
 With **Continue at the reset** on, held work continues as in a terminal, when the reserve opens or after the reset.
 `claude agents` shows the job as `blocked`, with the question and both labels.
-Type `resume` in the agent view to answer **Resume**.
-Any other reply is **Stop here**.
+Type `Resume`, with a capital R, in the agent view to answer **Resume**.
+Any other reply is **Stop here**, also `resume` in lower case.
 
 A background session does not take the consent of another session.
 It asks on its own.
 A background session gets its environment from the `claude daemon`, not from your terminal.
 The daemon can start from a session that you started with one of these variables:
-`SPARE10=off`, `SPARE10_RESERVE`, `SPARE10_WEEKLY_RESERVE`, `SPARE10_LAST_MINUTES`, `SPARE10_WEEKLY_LAST_HOURS`, `SPARE10_RESUME_FLOOR`, `SPARE10_WEEKLY_RESUME_FLOOR`, `SPARE10_PAUSE_PROMPT` or `SPARE10_AUTO_RESUME`.
+`SPARE10=off`, `SPARE10_RESERVE`, `SPARE10_WEEKLY_RESERVE`, `SPARE10_LAST_MINUTES`, `SPARE10_WEEKLY_LAST_HOURS`, `SPARE10_RESUME_FLOOR`, `SPARE10_WEEKLY_RESUME_FLOOR`, `SPARE10_PAUSE_PROMPT`, `SPARE10_AUTO_RESUME` or `SPARE10_SIMULATE`.
 Then every background session that the daemon starts gets these values.
 spare10 shows a warning in each background session that has them.
 
@@ -632,6 +635,10 @@ The command takes this form:
 - `SPARE10_SIMULATE` at launch takes the same words for a `-p` run, such as `92`, `92 weekly` or `92 weekly in 2m`.
   There, `in` counts from the first gated event.
   spare10 reads it once per load, so it never raises a test reading in place.
+  spare10 ignores a bad value and logs a warning at the start of the session.
+  It does the same for a weekly value while the weekly reserve is 0.
+  A background session can get the variable from the `claude daemon` or a settings file.
+  Then spare10 shows the background warning in that session.
 
 A test reading can only raise the real reading.
 It never releases a hold that the real reading causes, because spare10 reads the real quota before each release.

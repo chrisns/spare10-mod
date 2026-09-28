@@ -39,6 +39,7 @@ Child processes inherit `SPARE10`.
 A guarded session also protects the `claude -p` runs that it starts.
 It sets `SPARE10_HEADLESS=stop` for its child processes.
 So a nested `claude -p` stops at its own trip.
+Item 57 of the [Known limitations](how-it-works.md#known-limitations) names the exceptions.
 spare10 does this only when the `headless` option is `off` or `wait`, and `SPARE10_HEADLESS` is not set.
 A `claude -p` that the Bash tool starts ends when the Bash call times out.
 That is 2 minutes by default, and 10 minutes at most.
@@ -105,6 +106,7 @@ spare10 also writes some variables into the process environment:
   It starts with the id of the session that wrote it.
   An interactive session takes only its own value.
   A `claude -p` run takes any value that it inherits, for the current window only.
+  A later `/spare10 stop` in the parent does not reach a run that started before it.
   After a **Resume** at the reserve, the value ends with the floor point, such as `to:95`.
   Then the consent ends at 95% used, and spare10 removes the value.
   A value without it, such as a value from spare10-mod 0.2, lasts until the reset.
