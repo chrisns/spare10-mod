@@ -107,6 +107,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
   ['simulateReply bad', () => simulateReply('bad'), 'simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'],
   ['simulateReply set', () => simulateReply('set', F), 'test reading set to 92% used, resets 15:00. It can only raise the real reading. Run spare10 simulate off to clear it.'],
   ['simulateReply raised', () => simulateReply('raised', F), 'test reading raised to 92% used, resets 15:00. Your earlier answers stay. It can only raise the real reading. Run spare10 simulate off to clear it.'],
+  ['simulateReply replaced', () => simulateReply('replaced', F), 'test reading set to 92% used, resets 15:00. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. Run spare10 simulate off to clear it.'],
   ['commandFailed', () => commandFailed('boom'), 'the command failed: boom'],
   ['report: armed, the claude -p row and both help lines', () => statusReport(status()), [
       'version 0.3.0',
@@ -711,7 +712,7 @@ function corePrefixed(): string[] {
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off', 'overdue', 'overdue-open', 'overdue-skip', 'open'] as const) {
       out.push(stopReply(c, f, 90, { at: 'Mon 09:00' }, 90), stopReply(c, f), stopReply(c, f, 90, undefined, 90, undefined, ['five_hour']))
     }
-    if (!Array.isArray(f)) out.push(simulateReply('set', f), simulateReply('raised', f))
+    if (!Array.isArray(f)) out.push(simulateReply('set', f), simulateReply('raised', f), simulateReply('replaced', f))
   }
   return out
 }

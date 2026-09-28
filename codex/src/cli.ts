@@ -236,7 +236,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
       const sid = named ?? listSessions(paths, d.clock.now() - RECENT_MS)[0]?.sid
       const p = partsFor(sid)
       if (fromBang && !a.full) print(`spare10: ${await p.cmds.phaseLine(p.sx)}`)
-      else print(`spare10: ${await p.cmds.statusText(p.sx, { cli: true, full: true })}`)
+      else print(`spare10: ${await p.cmds.statusText(p.sx, { cli: true })}`)
       return 0
     }
     const p = partsFor(named)

@@ -40,6 +40,7 @@ import {
   unsafeMode,
   usableCredits,
   voidedByReset,
+  withInterruptedNote,
   withPrefix,
 } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot, GateResult, GateSite, HostKind, LiveRead, OptionName, Presence } from '../../hooks/core/codex.ts'
@@ -258,12 +259,23 @@ test('voidedByReset: the same window with jitter keeps a consent, a reset credit
   const R = Date.parse(RESET_ISO)
   assert.equal(voidedByReset({ until: R }, R + 30_000), false)
   assert.equal(voidedByReset({ until: R }, R - 30_000), false)
-  assert.equal(voidedByReset({ until: R, to: 95 }, R + RESET_JITTER_MS), false)
+  const toFloor = { until: R, to: 95 } // a consent to the floor
+  assert.equal(voidedByReset(toFloor, R + RESET_JITTER_MS), false)
   // A reset credit: the new weekly window ends 7 days from now.
   assert.equal(voidedByReset({ until: R }, NOW + 7 * DAY), true)
   // A consent with the one-hour fallback end (no reset known), then a real reset 4 h later.
   assert.equal(voidedByReset({ until: NOW + HOUR }, NOW + 5 * HOUR), true)
   assert.equal(voidedByReset({ until: R }, R + RESET_JITTER_MS + 1), true)
+})
+
+test('withInterruptedNote: CX39 comes first only after an interrupt mark of this stop', () => {
+  const note = 'B34 text.'
+  const cx39 = `${codexText.interruptedNote} ${note}`
+  assert.equal(withInterruptedNote({ t1: NOW }, NOW, note), cx39, 'a mark at the stop time')
+  assert.equal(withInterruptedNote({ t0: NOW - HOUR, t1: NOW + MIN }, NOW, note), cx39, 'a newer mark wins over an older one')
+  assert.equal(withInterruptedNote({ t0: NOW - MIN }, NOW, note), note, 'a mark of an earlier stop')
+  assert.equal(withInterruptedNote(undefined, NOW, note), note, 'no marks')
+  assert.equal(withInterruptedNote({ t1: NOW }, undefined, note), note, 'no stop time')
 })
 
 // ---- Rollout lines ----

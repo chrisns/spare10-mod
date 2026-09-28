@@ -67,7 +67,11 @@ export const isTorn = (text: string): boolean => text.trim() === '' || text.incl
 /**
  * readJson for a file that only spare10 writes (the session files, 3.7): a torn file (isTorn) is absent too.
  * So the next write replaces it, and a lost stop or consent only makes spare10 ask again. Other bad JSON
- * still throws.
+ * still throws. config.json is not such a file, because a person can edit it. The broker's readConfig
+ * (settings.ts) reads it with readJson, not with readOwnJson. So a torn config.json does not parse: CX12
+ * shows and tells how to repair it, and each span that no variable sets is 0, so each reserve holds until
+ * its reset. Only setOption reads config.json with readOwnJson: `spare10 set` counts a torn file as empty,
+ * writes a new one with only its own key, and reports the repair (CX54).
  */
 export function readOwnJson<T>(file: string): T | undefined {
   const text = readText(file)

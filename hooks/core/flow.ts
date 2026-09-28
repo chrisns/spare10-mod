@@ -1180,12 +1180,15 @@ export function simulateOpens(
 
 /**
  * 2.9, B53, floor 2.9: the reply of a test reading that is now set. `spans`: the spans of the host that
- * runs the command. `mem`: what the host remembers of the kind, for the real reading beneath.
+ * runs the command. `mem`: what the host remembers of the kind, for the real reading beneath. `replaces`:
+ * the reading replaced a test reading of the kind (not in place), so the host cleared the consents of both
+ * windows and the stop (3.5), and the reply says so.
  */
 export function simulateText(i: {
   spec: TestSpec
   reading: Anchored
   inPlace: boolean
+  replaces: boolean
   cfg: Pick<Effective, 'reserve' | 'weeklyReserve' | 'resumeFloor' | 'weeklyResumeFloor'>
   spans: Spans
   live: SessionRateLimit | undefined
@@ -1204,7 +1207,7 @@ export function simulateText(i: {
   const pastFloor = floor > 0 && spec.pct >= pointOf(floor) && opens !== 'now' ? floor : undefined
   const rv = viewOf(realBasis, realBasis, reserve, span, now)
   const realIn = rv.tripped && !rv.open && (pctOf(realBasis) ?? 100) < spec.pct
-  return simulateReply(i.inPlace ? 'raised' : 'set', f, opens, pastFloor, realIn)
+  return simulateReply(i.inPlace ? 'raised' : i.replaces ? 'replaced' : 'set', f, opens, pastFloor, realIn)
 }
 
 // ---- The report (register.tsx 2.6, 2.7, 3.1, 3.5) ----

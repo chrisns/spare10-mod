@@ -102,6 +102,10 @@ test('floor: a stop after a Resume clears both consents, and the next tool call 
   assert.equal(h.box.done, false, 'the stop holds the next tool call')
 })
 
+/** 3.5: the reply of a value that replaces a test reading says that it starts a new test, and what that clears. */
+const newTest = (pct: string): RegExp =>
+  new RegExp(`^spare10: test reading set to ${pct}% used, resets [^.]+\\. This starts a new test\\. Your consents for both windows and any stop are cleared\\. `)
+
 test('floor: the same value, a lower value or in starts a new test, and no answer of the old test carries over (3.5)', async (t) => {
   const w = world(t, { daemon: true })
   const b = await w.broker({ hosted: true })
@@ -114,17 +118,17 @@ test('floor: the same value, a lower value or in starts a new test, and no answe
   assert.equal(await b.gate('tool'), '', 'it covers its test')
   // The same value: a new test. A real consent of the session goes too, as in register.tsx clearConsent.
   w.setState({ consent: formatConsent(SID, RESET, 95) })
-  assert.match(await sim('91'), /^spare10: test reading set to 91% used/)
+  assert.match(await sim('91'), newTest('91'))
   assert.deepEqual(w.state().test?.consent, {})
   assert.equal(w.state().consent, undefined)
   await askAndAnswer(w, b, 'stop')
   assert.notEqual(w.state().stopped, undefined, 'Stop here on the new test')
   // A lower value: a new test. The stop of the old test goes, and the next call asks again.
-  assert.match(await sim('90'), /^spare10: test reading set to 90% used/)
+  assert.match(await sim('90'), newTest('90'))
   assert.equal(w.state().stopped, undefined)
   await askAndAnswer(w, b, 'resume')
   // With in: a new test, although the value is higher.
-  assert.match(await sim('92 in 1h'), /^spare10: test reading set to 92% used/)
+  assert.match(await sim('92 in 1h'), newTest('92'))
   assert.deepEqual(w.state().test?.consent, {})
   const { q } = await askAndAnswer(w, b, 'resume')
   assert.equal(q.facts[0]?.test, true)
@@ -168,16 +172,15 @@ test('floor: after a reset credit, a consent of the old window is void and the n
   assert.equal(b.forms().length, 1)
 })
 
-test('floor: the A22 rule of Claude Code (reading.ts) and of Codex (codex.ts) agree', () => {
-  // Two copies until codex.ts re-exports the one in reading.ts: they must never drift apart.
-  assert.equal(reading.RESET_JITTER_MS, codexCore.RESET_JITTER_MS)
+test('floor: Codex (codex.ts) uses the one A22 rule of Claude Code (reading.ts)', () => {
+  // codex.ts re-exports the rule of reading.ts, so the two hosts can never drift apart.
+  assert.equal(codexCore.RESET_JITTER_MS, reading.RESET_JITTER_MS)
+  assert.equal(codexCore.voidedByReset, reading.voidedByReset)
   const J = reading.RESET_JITTER_MS
-  for (const end of [RESET - HOUR, RESET, RESET + 30_000, RESET + J, RESET + J + 1, RESET + 4 * HOUR]) {
-    for (const c of [{ until: RESET }, { until: RESET, to: 95 }]) {
-      assert.equal(reading.voidedByReset(c, end), codexCore.voidedByReset(c, end), `until ${c.until}, window end ${end}`)
-    }
-  }
-  assert.equal(reading.voidedByReset({ until: RESET }, RESET + J + 1), true)
+  assert.equal(codexCore.voidedByReset({ until: RESET }, RESET + J), false)
+  const toFloor = { until: RESET, to: 95 } // a consent to the floor
+  assert.equal(codexCore.voidedByReset(toFloor, RESET + J), false)
+  assert.equal(codexCore.voidedByReset({ until: RESET }, RESET + J + 1), true)
 })
 
 test('floor: a real consent to the floor survives a Stop here on a test reading, and the stop ends on it with one continuation (TS1)', async (t) => {

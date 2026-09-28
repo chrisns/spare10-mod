@@ -1217,11 +1217,13 @@ const commandCases: FlowCase[] = [
   {
     name: 'simulateText: the reply of a test reading, past the floor, and over a real reading in the reserve',
     run: (eq) => {
-      const base = { inPlace: false, cfg: cfgOf(), spans: SPANS, live: undefined, mem: initialMemory(), now: NOW }
+      const base = { inPlace: false, replaces: false, cfg: cfgOf(), spans: SPANS, live: undefined, mem: initialMemory(), now: NOW }
       const reading = { pct: 92, resetsAtMs: R }
       const f: Facts = { ...factsOf(testB(92, R), 10, undefined, 'five_hour', NOW), test: true, span: 20 * MIN }
       const opens = { at: clockText(SKIP5, 'five_hour', undefined, NOW), lead: leadText(f) ?? '' }
       eq(simulateText({ ...base, spec: { pct: 92, kind: 'five_hour' }, reading }), simulateReply('set', f, opens, undefined, false))
+      // A new test over a test reading of the kind: the reply says that the consents and the stop are cleared (3.5).
+      eq(simulateText({ ...base, replaces: true, spec: { pct: 92, kind: 'five_hour' }, reading }), simulateReply('replaced', f, opens, undefined, false))
       const r96 = { pct: 96, resetsAtMs: R }
       const f96: Facts = { ...factsOf(testB(96, R), 10, undefined, 'five_hour', NOW), test: true, span: 20 * MIN }
       eq(simulateText({ ...base, inPlace: true, spec: { pct: 96, kind: 'five_hour' }, reading: r96 }), simulateReply('raised', f96, { at: opens.at, lead: leadText(f96) ?? '' }, 5, false))

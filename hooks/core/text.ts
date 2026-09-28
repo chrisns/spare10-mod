@@ -1015,11 +1015,13 @@ export const unknownVerb = (verb: string): string =>
  * Section 12.1, 2.9. `opens` (skip 2.9), for a test reading at or above the trip point with a span:
  * when its reserve opens ({at} and {lead}), 'now' when it is open at once (`f.span` gives {span}), or
  * 'real' when the real reading beneath is in the reserve too and keeps the hold (B45). Floor 2.9:
- * 'raised' is a raise in place (B53). `pastFloor`: the floor of the kind when the test reading is past
- * it. `realIn`: the real reading beneath is in the reserve, so a Resume on the test reading covers it.
+ * 'raised' is a raise in place (B53). 'replaced' replaces a test reading of the kind: a new test (3.5),
+ * so the consents of both windows and the stop are cleared. `pastFloor`: the floor of the kind when the
+ * test reading is past it. `realIn`: the real reading beneath is in the reserve, so a Resume on the test
+ * reading covers it.
  */
 export function simulateReply(
-  kind: 'set' | 'raised' | 'off' | 'bad' | 'weekly-off',
+  kind: 'set' | 'raised' | 'replaced' | 'off' | 'bad' | 'weekly-off',
   f?: Facts,
   opens?: { at: string; lead: string } | 'now' | 'real',
   pastFloor?: number,
@@ -1048,7 +1050,12 @@ export function simulateReply(
   const floorText = pastFloor === undefined ? '' : ` This is past your ${fmtPct(pastFloor)}% ${weekly ? 'weekly floor' : 'floor'}.`
   const realText = realIn === true ? ` A Resume on the test reading also lets real work use the ${weekly ? 'weekly reserve' : 'reserve'}.` : ''
   const verb = kind === 'raised' ? 'raised' : 'set'
-  const stays = kind === 'raised' ? ' Your earlier answers stay.' : ''
+  const stays =
+    kind === 'raised'
+      ? ' Your earlier answers stay.'
+      : kind === 'replaced'
+        ? ' This starts a new test. Your consents for both windows and any stop are cleared.'
+        : ''
   return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run ${HOST.command} simulate off to clear it.`
 }
 

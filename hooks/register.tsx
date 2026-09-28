@@ -1654,7 +1654,7 @@ async function simulateCommand($: EngineInterface, words: readonly string[]): Pr
   }
   redraw($)
   // This copy's spans: the newest copy's (a command runs there).
-  return simulateText({ spec, reading, inPlace, cfg, spans: cfg, live, mem: mem[spec.kind], now })
+  return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: mem[spec.kind], now })
 }
 
 // ---- Registrations (10.9.6) ----

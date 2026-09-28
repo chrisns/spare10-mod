@@ -1,6 +1,6 @@
 import { closeSync, openSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, unsafeMode, withPrefix } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, unsafeMode, withInterruptedNote, withPrefix } from '../../hooks/core/codex.ts'
 import type { Command, GateResult, GateSite, HostKind, LiveRead } from '../../hooks/core/codex.ts'
 import { childHeadless } from '../../hooks/core/config.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
@@ -244,7 +244,9 @@ export function createGate(d: GateDeps): Gate {
     const cfg = d.settings.get()
     const att = d.attendance.attended({ transcript: sx.transcript }, input.mode)
     const guarded = att.attended && cfg.enabled
-    // A failed read is unknown: it records no lasting CX6 or CX7.
+    // 2.5: whether the daemon hosts this thread. No daemon socket, or a stale socket that no daemon listens
+    // on (a crashed daemon left it), counts as no daemon: `known` is false, and CX6 or CX7 shows once. A
+    // failed read (a timeout or a bad reply) is unknown (undefined): it records no lasting CX6 or CX7.
     const hosted = guarded ? await d.daemon.known(sx.thread).catch(() => undefined) : false
     const now = d.clock.now()
     sx.store.locked((tx) => {
@@ -386,17 +388,15 @@ export function createGate(d: GateDeps): Gate {
     }
   }
 
-  /** CX39 (2.6): spare10 interrupted a turn of the stop that began at `stopAt`. */
-  const interruptedSince = (sx: SessionCtx, stopAt: number | undefined): boolean => {
-    if (stopAt === undefined) return false
+  /** CX39 (2.6): `note` after the CX39 note when spare10 interrupted a turn of the stop that began at `stopAt`. A read that fails is no interrupt. */
+  const withInterrupted = (sx: SessionCtx, stopAt: number | undefined, note: string): string => {
+    if (stopAt === undefined) return note
     try {
-      return Object.values(sx.store.read().interrupts ?? {}).some((at) => at >= stopAt)
+      return withInterruptedNote(sx.store.read().interrupts, stopAt, note)
     } catch {
-      return false
+      return note
     }
   }
-  const withInterrupted = (sx: SessionCtx, stopAt: number | undefined, note: string): string =>
-    interruptedSince(sx, stopAt) ? `${codexText.interruptedNote} ${note}` : note
 
   /** The facts of the open question of `key`, read right after the open or join (for the B9 note). */
   const factsOfOpen = (sx: SessionCtx, key: string): Facts[] | undefined => {

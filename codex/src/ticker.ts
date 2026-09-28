@@ -1,4 +1,4 @@
-import { codexDebug, codexText } from '../../hooks/core/codex.ts'
+import { codexDebug, withInterruptedNote } from '../../hooks/core/codex.ts'
 import { formatStopped, parseStopped, stopAction, stopDue } from '../../hooks/core/decide.ts'
 import { endedFor, extendNotice, extended, namedStop, tickPlan } from '../../hooks/core/flow.ts'
 import { debugLine, notice, resumePrompt } from '../../hooks/core/text.ts'
@@ -44,10 +44,6 @@ export type Ticker = {
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
-
-/** CX39: spare10 interrupted a turn of the stop that began at `at`. */
-const interruptedSince = (interrupts: Record<string, number> | undefined, at: number): boolean =>
-  Object.values(interrupts ?? {}).some((t) => t >= at)
 
 export function createTicker(d: TickerDeps): Ticker {
   const alive = d.pidAlive ?? ((): boolean => true)
@@ -136,7 +132,7 @@ export function createTicker(d: TickerDeps): Ticker {
         return undefined
       }
       const prompt = resumePrompt(ended.reset, ended.open)
-      const t = interruptedSince(tx.state.interrupts, r.at) ? `${codexText.interruptedNote} ${prompt}` : prompt
+      const t = withInterruptedNote(tx.state.interrupts, r.at, prompt) // CX39
       tx.state.continuation = { text: t, expiresAt: at + CONTINUATION_TTL_MS, notice: notice.resetResumes(ended.reset, ended.open) }
       return t
     })

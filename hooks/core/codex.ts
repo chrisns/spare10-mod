@@ -11,8 +11,7 @@ import {
   parseWeeklyLastHours,
   parseWeeklyReserve,
 } from './config.ts'
-import type { Consent } from './decide.ts'
-import { BLIND_AFTER, KINDS, parseSimulate, windowMs } from './reading.ts'
+import { BLIND_AFTER, KINDS, RESET_JITTER_MS, parseSimulate, windowMs } from './reading.ts'
 import type { Anchored, Kind } from './reading.ts'
 import { HEADER, HEADLESS_GENERIC, HELD_WAITS, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilPhrase, untilText, yourReserves } from './text.ts'
 import type { Facts } from './text.ts'
@@ -29,8 +28,11 @@ import type { Facts } from './text.ts'
 /** How close to a trip or floor point counts as near (A19). */
 export const NEAR_TRIP_POINTS = 5
 
-/** Two resets this close are one window (3.6, A22): `resets_at` jitters by about 30 s. */
-export const RESET_JITTER_MS = 600_000
+/**
+ * Two resets this close are one window (3.6, A22): `resets_at` jitters by about 30 s. The A22 rule is the
+ * one of reading.ts, so Claude Code and Codex share one copy.
+ */
+export { RESET_JITTER_MS, voidedByReset } from './reading.ts'
 
 /** The Luna rule needs a live read this young (A7). */
 export const LIVE_LUNA_MAX_AGE_MS = 60_000
@@ -185,9 +187,6 @@ export const usableCredits = (c: CodexCredits | null | undefined): boolean =>
 /** Near a trip point (A19): at or above the trip point, or a floor point, minus NEAR_TRIP_POINTS. */
 export const nearTrip = (pct: number | undefined, trip: number, floorPoint?: number): boolean =>
   pct !== undefined && (pct >= trip - NEAR_TRIP_POINTS || (floorPoint !== undefined && pct >= floorPoint - NEAR_TRIP_POINTS))
-
-/** A22: a real consent is void when the kind's current window ends more than RESET_JITTER_MS after the consent's end. */
-export const voidedByReset = (c: Consent, windowEnd: number): boolean => windowEnd - c.until > RESET_JITTER_MS
 
 // ---- Rollout lines ----
 
@@ -939,6 +938,15 @@ export const codexText = {
   /** CX38 (P1): the CLI row `hooks`. */
   hooksRow: (trusted: number, total: number): string =>
     trusted >= total ? `all ${total} trusted` : `${trusted} of ${total} trusted. Start codex and trust the spare10 hooks, or run /hooks.`,
+}
+
+/**
+ * CX39 (2.6): `note` (B34, B9 or B35), after interruptedNote when spare10 interrupted a turn of the stop
+ * that began at `stopAt`: an interrupt mark of the session at or after it. No stop time is no interrupt.
+ */
+export function withInterruptedNote(interrupts: Readonly<Record<string, number>> | undefined, stopAt: number | undefined, note: string): string {
+  const interrupted = stopAt !== undefined && Object.values(interrupts ?? {}).some((at) => at >= stopAt)
+  return interrupted ? `${codexText.interruptedNote} ${note}` : note
 }
 
 /** Debug lines of the broker log. They keep their own `spare10: `. */

@@ -68,8 +68,10 @@ const nothingToStop = (trip: string): string => `nothing to stop. spare10 steps 
 const notPerson = (verb: string): string => `only you can run /spare10 ${verb}. Nothing changed.`
 const unknownVerb = (verb: string): string => `unknown command "${verb}". Use /spare10, /spare10 resume or /spare10 stop.`
 // Skip 2.9: a test reading at or above the trip point says when its reserve opens (`opens`: the skip start).
-const simulateSet = (used: string, at: string, opens?: string): string =>
-  `test reading set to ${used}% used, resets ${at}. It can only raise the real reading.${opens === undefined ? '' : ` The reserve opens at ${opens}, ${TEST_LEAD}.`} Run /spare10 simulate off to clear it.`
+/** 3.5: a value that replaces a test reading of the kind starts a new test, and the reply says what it clears. */
+const NEW_TEST = ' This starts a new test. Your consents for both windows and any stop are cleared.'
+const simulateSet = (used: string, at: string, opens?: string, replaced = false): string =>
+  `test reading set to ${used}% used, resets ${at}.${replaced ? NEW_TEST : ''} It can only raise the real reading.${opens === undefined ? '' : ` The reserve opens at ${opens}, ${TEST_LEAD}.`} Run /spare10 simulate off to clear it.`
 const SIMULATE_OFF = 'test readings cleared. Your consents for both windows and any stop are cleared too.'
 const SIMULATE_BAD =
   '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'
@@ -487,7 +489,7 @@ test('/spare10 simulate without a live reading resets five hours from now, and b
   const opens = hhmm(T0 + 5 * HOUR - 20 * 60_000)
   expect(await run($, 'simulate 95.5')).toBe(simulateSet('95.5', at, opens))
   expect(field(await report($), 'reading')?.startsWith(`  · reading        test reading · ${pf('95.5', '4.5', at)} (in `)).toBe(true)
-  expect(await run($, 'simulate 95')).toBe(simulateSet('95', at, opens))
+  expect(await run($, 'simulate 95')).toBe(simulateSet('95', at, opens, true))
   const lines = await report($)
   expect(phaseLine(lines)).toBe(PHASE.trippedHold)
   expect(field(lines, 'reading')?.startsWith(`  · reading        test reading · ${pf('95', '5', at)} (in `)).toBe(true)
@@ -818,7 +820,7 @@ test('a Resume on a test reading stays in this copy: the env keeps no consent, a
   expect(field(await report($), 'consent')).toBe(`  · consent        ${UNTIL} (you chose to continue)`)
   // A new test reading replaces the old one, and the answer given under the old one goes with it. A
   // strictly higher value raises in place (floor B53), so the new value here is lower.
-  expect(await run($, 'simulate 94')).toBe(simulateSet('94', AT, OPEN_AT))
+  expect(await run($, 'simulate 94')).toBe(simulateSet('94', AT, OPEN_AT, true))
   expect(field(await report($), 'consent')).toBe('  · consent        none')
   w.answer = 'Stop here'
   expect((await bash($)).deny).toBe(`spare10: the user stopped work at the quota reserve (${mf('10', '6')}). Stop now and wait for the user. Do not call any further tools.`)
@@ -826,7 +828,7 @@ test('a Resume on a test reading stays in this copy: the env keeps no consent, a
   await w.clock.settle()
   expect(w.env.get('SPARE10_STOPPED')).toMatch(stoppedRe('S1'))
   // The stop given under that test goes with it too, and a real trip then asks.
-  expect(await run($, 'simulate 0')).toBe(simulateSet('0', AT))
+  expect(await run($, 'simulate 0')).toBe(simulateSet('0', AT, undefined, true))
   await w.clock.settle()
   nothingDecided(w)
   w.pct = 93
