@@ -4423,7 +4423,7 @@ function upgrade(socketPath, clock, o) {
 }
 async function withConnection(socketAlias, version, clock, timeoutMs, o, fn) {
   guardTestPath({}, "daemon socket", socketAlias);
-  const at = socketAt(socketAlias, o.uid);
+  const at = socketAt(socketAlias, o.uid, o.stat);
   if ("missing" in at) throw new DaemonError("connect", `no daemon socket: ${at.missing}`, void 0, true);
   if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
   const { socket, head } = await upgrade(at.real, clock, o);
@@ -4539,10 +4539,11 @@ var NOT_MATERIALIZED = /is not materialized yet/;
 function udsDaemon(paths, version, clock, o = {}) {
   guardTestPath({}, "daemon socket", paths.socket);
   const uid = "uid" in o ? o.uid : process.getuid?.();
-  const at = socketAt(paths.socket, uid);
+  const stat = o.stat ?? statSync3;
+  const at = socketAt(paths.socket, uid, stat);
   if ("missing" in at) return void 0;
   if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
-  const opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid };
+  const opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid, stat };
   const op = (timeoutMs, fn) => withConnection(paths.socket, version, clock, timeoutMs, opts, fn);
   return {
     rateLimits: (timeoutMs = A_READ_MS) => op(timeoutMs, (c) => c.request("account/rateLimits/read", { excludeResetCreditDetails: true })),
