@@ -161,7 +161,7 @@ test('settings: setOption never overwrites a config.json that does not parse or 
   assert.equal(readFileSync(path, 'utf8'), '[1]')
 })
 
-test('settings: setOption repairs a torn config.json (empty, only white space, or with a NUL byte), which the broker reads as CX12', (t) => {
+test('settings: setOption repairs a torn config.json (empty, only white space, or with a NUL byte), which the broker reads as CX12, and says so (CX54)', (t) => {
   for (const torn of ['', '  \n', '{"reserve": 15\0\0\0']) {
     const { settings, data, path } = setup(t, { config: torn })
     // The broker still fails closed on the torn file: CX12, and both spans 0.
@@ -169,8 +169,10 @@ test('settings: setOption repairs a torn config.json (empty, only white space, o
     assert.equal(before.lastMinutes, 0, JSON.stringify(torn))
     assert.equal(before.from.lastMinutes, 'unread')
     assert.equal(before.warnings.length, 1)
-    assert.deepEqual(setOption({ data }, 'cli', 'lastMinutes', 20), { old: undefined }, JSON.stringify(torn))
+    // CX54: the result says that the torn file was replaced, so the reply names the lost options.
+    assert.deepEqual(setOption({ data }, 'cli', 'lastMinutes', 20), { old: undefined, repaired: true }, JSON.stringify(torn))
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { lastMinutes: 20 })
+    assert.deepEqual(setOption({ data }, 'cli', 'reserve', 15), { old: undefined }, 'a file that reads needs no repair')
     const after = settings.get()
     assert.equal(after.lastMinutes, 20)
     assert.equal(after.weeklyLastHours, DEFAULTS.weeklyLastHours, 'the file reads again, so the other span is back to its default')

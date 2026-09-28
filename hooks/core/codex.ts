@@ -19,7 +19,7 @@ import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX53, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX54, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -758,7 +758,7 @@ const pathLine = (dir: string, home: string | undefined): string => {
   return `export PATH="${rest === undefined ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`
 }
 
-// ---- Texts (CX1 to CX53) and debug lines ----
+// ---- Texts (CX1 to CX54) and debug lines ----
 
 /** CX5 {Rs} and {quiet}: five_hour first, as the core texts read a list of Facts. */
 const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
@@ -869,6 +869,11 @@ export const codexText = {
   setDefault: (name: string, value: string): string => `${name} is back to its default, ${value}. It applies from the next step.`,
   /** CX29: appended to CX27 or CX28, so it starts with a space. */
   setEnvWins: (env: string): string => ` ${env} is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.`,
+  /**
+   * CX54: appended to CX27 or CX28, so it starts with a space. The set found a torn config.json (an OS
+   * crash after a write) and wrote a new file, so each other option of that file is lost.
+   */
+  setRepaired: (path: string): string => ` spare10 could not read ${path}, so it wrote a new file. The other options are back to their defaults. Run spare10 set to check them.`,
   /** CX30 */
   setBad: (name: string, range: string): string => `${name} takes ${range}. Nothing changed.`,
   /** CX52: `spare10 set pausePrompt` with no text. */
@@ -879,8 +884,8 @@ export const codexText = {
   /** CX49: a typed `spare10 <word>` that is no command. */
   unknown: (word: string): string => `unknown command "${word}". Nothing changed. Run spare10 help to list the commands.`,
   /**
-   * CX50: `spare10 resume` after a stop that ended, while held work still waits under it. spare10 cleared
-   * the stop, so each held call decides again. A kind that gates still asks.
+   * CX50: `spare10 resume` with nothing to resume, while held work still waits under a stop that no longer
+   * applies. spare10 cleared the stop, so each held call decides again. A kind that gates still asks.
    */
   heldStopOver: 'the stop is over. Held work continues now.',
   /**
@@ -892,8 +897,10 @@ export const codexText = {
     until === undefined
       ? `stopped. ${HELD_WAITS}`
       : `stopped. Held work waits. spare10 continues it ${until.lead === undefined ? `after ${until.at}` : `at ${untilPhrase(until)}`}. Run !spare10 resume to continue it now.`,
-  /** CX53 (report only): a stop that spare10 does not end by itself is over, and held work still waits under it. */
+  /** CX53, a warning of the report: a stop no longer applies, and held work still waits under it until a resume. */
   heldStopEnded: `the stop is over. ${HELD_WAITS}`,
+  /** CX53 at the end of the phase line of `!spare10 status` (2.9), so it starts with a space. */
+  heldStopEndedTail: ` The stop is over. ${HELD_WAITS}`,
   /** CX32. `unread`: config.json does not parse, or is not an object, so the text says how to repair it. */
   setFailed: (path: string, err: string, unread = false): string => `could not write ${path}: ${err}. Nothing changed.${unread ? ` ${CONFIG_FIX}` : ''}`,
   /** CX33: rows of [name, value, source]. */

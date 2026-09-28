@@ -3,8 +3,8 @@ import { codexText, defaultText, initialPresence, nextPresence, optionText, OPTI
 import type { CodexSnapshot, Command, OptionName } from '../../hooks/core/codex.ts'
 import { watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective } from '../../hooks/core/config.ts'
-import { formatStopped, parseStopped } from '../../hooks/core/decide.ts'
-import type { Holder, Phase } from '../../hooks/core/decide.ts'
+import { formatStopped, heldPast, parseStopped } from '../../hooks/core/decide.ts'
+import type { Holder, Phase, StoppedRecord } from '../../hooks/core/decide.ts'
 import {
   commandHolders,
   consentPastWindow,
@@ -20,7 +20,6 @@ import {
   stopAskingIdle,
   stopAskingReply,
   stopCase,
-  stopInForce,
   stopKept,
   stopKeptReply,
   stopOverdueReply,
@@ -60,7 +59,7 @@ import { A_NEAR_MS, LIVE_RELEASE_MAX_AGE_MS } from './timing.ts'
 // CLI add `spare10: `. Codex adds four things to register.tsx: the replies say what happens to held work
 // (resume `asking`, and stop `asking` when it refuses held work or HELD_WAITS when held work waits under the
 // stop), a stop clears the held stop, a stop that writes a stop runs the stop sweep, and a resume ends a
-// stop that is over while held work still waits under it (CX50).
+// stop that no longer applies while held work still waits under it (CX50).
 
 export type CommandDeps = Pick<Deps, 'paths' | 'clock' | 'log' | 'owner'> & {
   /** The env of the broker, or of the CLI: `SPARE10_HEADLESS` and the variables that win over an option. */
@@ -212,28 +211,37 @@ export function createCommands(d: CommandDeps): Commands {
   }
 
   /**
-   * CX53: a stop of this session that is over, while held work still waits under it and spare10 does not
-   * end the stop by itself. holdStopped keeps a held call while the record stands (4.4), and only an auto
-   * stop with Continue at the reset on ends in place. So only a resume or Esc ends that wait.
+   * CX50: a stop record of this session that a resume ends when no kind gates. holdStopped keeps a held
+   * call while the record stands (4.4), also when the record no longer applies: its time is over, or an
+   * open kind, a consent or a lower reading means that nothing gates. A new call then passes, so only the
+   * held work waits. The record stays only while TS1 holds it: a kind whose real reading gates keeps it
+   * (commandHolders, the safe side).
    */
-  const endedHeld = (sx: SessionCtx, state: SessionState, p: Seen, autoResume: boolean): boolean => {
+  const endable = (sx: SessionCtx, r: StoppedRecord | undefined, s: Pick<CodexSensed, 'kinds'>): r is StoppedRecord =>
+    r !== undefined && r.sessionId === sx.sid && !heldPast(r, commandHolders(s.kinds))
+
+  /**
+   * CX53: held work waits under a stop record that does not show as the stopped phase, and a resume would
+   * end it (endable). The stopped phase says so itself (heldInPlace). An auto stop past its time with
+   * Continue at the reset on ends in place at its due time (releaseInPlace), so it needs no hint.
+   */
+  const endedHeld = (sx: SessionCtx, state: SessionState, p: Seen, s: CodexSensed): boolean => {
+    if (p.phase === 'stopped' || p.question !== undefined || !p.attended || !p.cfg.enabled) return false
     const r = parseStopped(state.stopped)
-    if (r === undefined || r.sessionId !== sx.sid || p.stop !== undefined || p.question !== undefined || !p.attended || !p.cfg.enabled) return false
-    if (r.kinds !== undefined && r.auto === true && autoResume) return false
+    if (!endable(sx, r, s)) return false
+    if (r.kinds !== undefined && r.auto === true && p.cfg.autoResume && p.now >= r.windowEnd) return false
     return heldLive(sx)
   }
 
   /**
-   * CX50 (4.4): a resume ends a stop of this session that is over while held work still waits under it.
-   * Nothing else ends such a stop, because only an auto stop is taken over or ends in place. A stop that
-   * still applies stays (TS1 too). It writes no consent: each held call decides again, and a kind that
-   * gates asks. The clear is a compare-and-set on the value it read.
+   * CX50 (4.4): on a resume that has nothing to resume (no kind gates), end the stop record of this
+   * session while held work still waits under it (endable). Nothing else ends such a wait: only an auto
+   * stop is taken over or ends in place, and only at its due time. It writes no consent: each held call
+   * decides again, and a kind that gates asks. The clear is a compare-and-set on the value it read.
    */
   const endHeldStop = (sx: SessionCtx, s: CodexSensed): boolean => {
     const raw = sx.store.read().stopped
-    const r = parseStopped(raw)
-    if (raw === undefined || r?.sessionId !== sx.sid || !heldLive(sx)) return false
-    if (stopInForce(r, sx.sid, undefined, s.now, [], commandHolders(s.kinds)) !== undefined) return false
+    if (raw === undefined || !endable(sx, parseStopped(raw), s) || !heldLive(sx)) return false
     return sx.store.locked((tx) => {
       if (tx.state.stopped !== raw) return false
       clearStopped(tx.state)
@@ -293,7 +301,7 @@ export function createCommands(d: CommandDeps): Commands {
     const now = p.now
     const hosted = sx0 === undefined ? false : await d.daemon.hosted(sx.sid).catch(() => false)
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)]
-    if (sx0 !== undefined && endedHeld(sx, state, p, cfg.autoResume)) warnings.push(codexText.heldStopEnded) // CX53
+    if (sx0 !== undefined && endedHeld(sx, state, p, s)) warnings.push(codexText.heldStopEnded) // CX53
     for (const k of p.kinds) {
       // R13: a consent that lies beyond this window is ignored, and the report says so (B30). Codex keeps it in the session state (CX48).
       const c = consentPastWindow(k, state[consentField(k.kind)], now)
@@ -503,8 +511,11 @@ export function createCommands(d: CommandDeps): Commands {
       value = v.value
     }
     let old: unknown
+    let repaired = ''
     try {
-      old = setOption(d.paths, d.owner, name, value).old
+      const r = setOption(d.paths, d.owner, name, value)
+      old = r.old
+      if (r.repaired === true) repaired = codexText.setRepaired(shownPath(path, d.paths.home)) // CX54
     } catch (e) {
       // CX32: a config.json that does not parse, or is not an object, gets the hint to repair it.
       return codexText.setFailed(shownPath(path, d.paths.home), errText(e), e instanceof SyntaxError || e instanceof ConfigUnreadError)
@@ -512,11 +523,11 @@ export function createCommands(d: CommandDeps): Commands {
     // A15: only a variable that parses wins (withEnv). The variable must be set here: a nested run gets its
     // parent's child policy as `headless` from the env source with no SPARE10_HEADLESS.
     const wins = envWins(eff, name) && d.env[option.env] !== undefined ? codexText.setEnvWins(option.env) : ''
-    if (value === undefined) return `${codexText.setDefault(name, defaultText(name))}${wins}`
+    if (value === undefined) return `${codexText.setDefault(name, defaultText(name))}${wins}${repaired}`
     const was = old === undefined ? undefined : option.parse(old)
     // A torn config.json counts as empty (setOption): a span it held at 0 was 0, not its default.
     const oldText = was !== undefined ? optionText(name, was) : spanUnread(eff, name) ? optionText(name, valueOf(eff, name)) : defaultText(name)
-    return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}`
+    return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}${repaired}`
   }
 
   const exec: Commands['exec'] = async (sx, cmd, o) => {
@@ -554,10 +565,12 @@ export function createCommands(d: CommandDeps): Commands {
       // The phase line reads only the view: no daemon, broker or cli row, and no warning (2.9).
       await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS)
       const sx = sx0 ?? scratchCtx()
-      const { p, s } = await seen(sx)
+      const { p, s, state } = await seen(sx)
       const report = statusReport(inputOf(sx, p, s, { childPolicy: '', warnings: [], tickerStale: false }))
       // statusReport: the version, a blank line, then the phase line.
-      return (report.split('\n')[2] ?? '').replace(/^ {2}/, '')
+      const line = (report.split('\n')[2] ?? '').replace(/^ {2}/, '')
+      // CX53: the phase line is all that `!spare10 status` shows, so it carries the hint of the report.
+      return sx0 !== undefined && endedHeld(sx, state, p, s) ? `${line}${codexText.heldStopEndedTail}` : line
     },
     async phase(sx) {
       return (await seen(sx)).p.phase

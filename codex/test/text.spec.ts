@@ -514,6 +514,10 @@ test('the CX texts read as in the design', () => {
     codexText.setOk('reserve', '15', '10') + codexText.setEnvWins('SPARE10_RESERVE'),
     'reserve is now 15. It was 10. It applies from the next step. SPARE10_RESERVE is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.',
   )
+  assert.equal(
+    codexText.setOk('reserve', '15', '10') + codexText.setRepaired(CFG),
+    `reserve is now 15. It was 10. It applies from the next step. spare10 could not read ${CFG}, so it wrote a new file. The other options are back to their defaults. Run spare10 set to check them.`,
+  )
   assert.equal(codexText.setBad('reserve', '1 to 99'), 'reserve takes 1 to 99. Nothing changed.')
   assert.equal(codexText.setBlankPause, 'pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.')
   assert.equal(
@@ -528,6 +532,7 @@ test('the CX texts read as in the design', () => {
   assert.equal(codexText.unknown('pause'), 'unknown command "pause". Nothing changed. Run spare10 help to list the commands.')
   assert.equal(codexText.heldStopOver, 'the stop is over. Held work continues now.')
   assert.equal(codexText.heldStopEnded, 'the stop is over. Held work waits. Run !spare10 resume to continue it now.')
+  assert.equal(codexText.heldStopEndedTail, ' The stop is over. Held work waits. Run !spare10 resume to continue it now.')
   assert.equal(codexText.stopAskingWaits(), 'stopped. Held work waits. Run !spare10 resume to continue it now.')
   assert.equal(
     codexText.stopAskingWaits({ at: '15:00' }),
@@ -646,7 +651,9 @@ function codexPrefixed(): string[] {
     codexText.consentBeyond('seven_day', Date.UTC(2026, 9, 9, 16), Date.UTC(2026, 8, 26, 10), TZ),
     codexText.setOk('reserve', '15', '10'),
     codexText.setOk('reserve', '15', '10') + codexText.setEnvWins('SPARE10_RESERVE'),
+    codexText.setOk('reserve', '15', '10') + codexText.setRepaired(CFG),
     codexText.setDefault('pausePrompt', 'an empty text'),
+    codexText.setDefault('reserve', '10') + codexText.setRepaired(CFG),
     codexText.setBad('headless', 'off, prompt, stop or wait'),
     codexText.setBlankPause,
     codexText.setUnknown('foo'),
@@ -783,6 +790,7 @@ function everyCodexText(): string[] {
     codexText.liveRow({ agoMs: 1 }),
     codexText.liveRow({ error: 'x' }),
     codexText.liveRow({}),
+    `● armed          spare10 steps in at 90% used.${codexText.heldStopEndedTail}`,
     ...DEBUG,
   ]
   return texts

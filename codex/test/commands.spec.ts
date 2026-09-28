@@ -6,7 +6,7 @@ import { codexDebug, codexText } from '../../hooks/core/codex.ts'
 import type { Command } from '../../hooks/core/codex.ts'
 import { formatConsent, formatStopped } from '../../hooks/core/decide.ts'
 import type { StoppedRecord } from '../../hooks/core/decide.ts'
-import { VERSION, notPerson, resumeReply, simulateReply } from '../../hooks/core/text.ts'
+import { HELD_WAITS, VERSION, notPerson, resumeReply, simulateReply } from '../../hooks/core/text.ts'
 import { createAttendance } from '../src/attend.ts'
 import { createCommands } from '../src/commands.ts'
 import { readJson } from '../src/files.ts'
@@ -28,6 +28,9 @@ import type { World, WorldBroker } from './helpers/world.ts'
 process.env.TZ = 'UTC' // the clock texts of the sample report
 
 const RESET = T0 + 2 * HOUR
+
+/** The env of `!spare10 ...` in the root thread: the CLI prints only the phase line for `status` (2.9). */
+const BANG = { CODEX_THREAD_ID: SID, CODEX_SESSION_ID: SID }
 
 /** A typed command: its block reason, without the `spare10: ` of the first line. */
 async function typed(b: WorldBroker, prompt: string): Promise<string> {
@@ -478,6 +481,9 @@ test('commands: a resume ends a stop that is over while held work still waits un
       assert.equal(h.box.done, false, `${at}: the stop is over, and the call still waits for the person`)
       const report = await typed(b, 'spare10')
       assert.ok(report.includes(`\n  ⚠ ${codexText.heldStopEnded}\n`), `${at}: ${report}`)
+      // `!spare10 status` shows only the phase line, so the line carries the hint (2.9).
+      const bang = (await w.cli(['status'], BANG)).out
+      assert.ok(bang.endsWith(`.${codexText.heldStopEndedTail}`), `${at}: ${bang}`)
       assert.equal(await typed(b, 'spare10 resume'), codexText.heldStopOver, at)
       assert.equal(w.state().stopped, undefined, at)
       assert.equal(w.state().stopMeta, undefined, at)
@@ -487,26 +493,60 @@ test('commands: a resume ends a stop that is over while held work still waits un
       assert.equal(h.box.done, true, `${at}: the held call decides again`)
       assert.equal(parsed(h.box.text)['hookSpecificOutput'], undefined, `${at}: the held tool runs`)
       assert.ok(!(await typed(b, 'spare10')).includes(codexText.heldStopEnded), `${at}: no warning after the resume`)
+      assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail), `${at}: no hint after the resume`)
     }
   }
 })
 
-test('commands: a resume keeps a stop that still applies, and a stop that is over with no held work', async (t) => {
-  // In force: the stop ends at 11:40, and the reading is below the reserve now.
+test('commands: a resume ends a stop in force that no longer gates while held work waits under it (CX50)', async (t) => {
+  // An open kind never gates, and no stop holds it: a new call passes, so the held call must not wait on.
+  for (const change of ['the reading drops', 'spare10 set lastMinutes 180', 'spare10 set reserve 5'] as const) {
+    const w = world(t, { config: { autoResume: false } })
+    const b = await w.broker()
+    w.reading(SID, 92, { reset: RESET })
+    w.setState({ stopped: stopOf({ auto: false }), stopMeta: { noDialog: true } })
+    const h = b.call('tool', { turn: 'U1' })
+    await w.settle()
+    assert.equal(h.box.done, false, `${change}: the call holds`)
+    if (change === 'the reading drops') w.reading(SID, 40, { reset: RESET })
+    else assert.match(await typed(b, change), / is now /)
+    await w.advance(MIN)
+    assert.equal(h.box.done, false, `${change}: the stop until 11:40 still stands`)
+    assert.equal(parsed(await b.gate('tool', { turn: 'U1' }))['hookSpecificOutput'], undefined, `${change}: a new call passes`)
+    const report = await typed(b, 'spare10')
+    assert.notEqual(phaseOf(report), '■ stopped', change)
+    assert.ok(report.includes(`\n  ⚠ ${codexText.heldStopEnded}\n`), `${change}: ${report}`)
+    assert.ok((await w.cli(['status'], BANG)).out.endsWith(codexText.heldStopEndedTail), change)
+    assert.equal(await typed(b, 'spare10 resume'), codexText.heldStopOver, change)
+    assert.equal(w.state().stopped, undefined, change)
+    assert.equal(w.state().consent, undefined, `${change}: no consent`)
+    await w.advance(10 * SEC)
+    assert.equal(h.box.done, true, `${change}: the held call decides again`)
+    assert.equal(parsed(h.box.text)['hookSpecificOutput'], undefined, `${change}: the held tool runs`)
+  }
+})
+
+test('commands: a resume keeps a stop that TS1 holds, a stop that is over with no held work, and a stop that gates', async (t) => {
+  // TS1: the real reading of the stop's kind is in the reserve in the window of its real entry. A command
+  // counts a consented kind as a holder too (commandHolders), so the stop stays: the safe side.
   const w = world(t, { config: { autoResume: false } })
   const b = await w.broker()
   w.reading(SID, 92, { reset: RESET })
-  w.setState({ stopped: stopOf({ auto: false }), stopMeta: { noDialog: true } })
+  const held = stopOf({ auto: false, windowEnd: T0 + 30 * MIN, real: [{ kind: 'five_hour', resetsAtMs: RESET }] })
+  w.setState({ stopped: held, stopMeta: { noDialog: true } })
   const h = b.call('tool', { turn: 'U1' })
   await w.settle()
   assert.equal(h.box.done, false)
-  w.reading(SID, 40, { reset: RESET })
-  const report = await typed(b, 'spare10')
-  assert.ok(!report.includes(codexText.heldStopEnded), report)
-  assert.match(await typed(b, 'spare10 resume'), /^nothing to resume\. 40% used · 60% left · resets /)
-  assert.equal(w.state().stopped, stopOf({ auto: false }))
+  w.setState({ consent: formatConsent(SID, RESET) })
   await w.advance(MIN)
-  assert.equal(h.box.done, false, 'the stop in force still holds the call')
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '⨯ consented')
+  assert.ok(!report.includes(codexText.heldStopEnded), report)
+  assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail))
+  assert.match(await typed(b, 'spare10 resume'), /^already resumed until /)
+  assert.equal(w.state().stopped, held)
+  await w.advance(MIN)
+  assert.equal(h.box.done, false, 'the stop that TS1 holds still holds the call')
   // Over, but no held work: the resume changes nothing.
   const w2 = world(t, { config: { autoResume: false } })
   const b2 = await w2.broker()
@@ -517,6 +557,55 @@ test('commands: a resume keeps a stop that still applies, and a stop that is ove
   assert.ok(!(await typed(b2, 'spare10')).includes(codexText.heldStopEnded))
   assert.match(await typed(b2, 'spare10 resume'), /^nothing to resume\. 3% used · 97% left · resets /)
   assert.equal(w2.state().stopped, stopOf({ auto: false }))
+  // A stop that gates shows as the stopped phase, which names the held work itself (heldInPlace).
+  const w3 = world(t, { config: { autoResume: false } })
+  const b3 = await w3.broker()
+  w3.reading(SID, 92, { reset: RESET })
+  w3.setState({ stopped: stopOf({ auto: false }), stopMeta: { noDialog: true } })
+  const h3 = b3.call('tool', { turn: 'U1' })
+  await w3.settle()
+  assert.equal(h3.box.done, false)
+  const stopped = await typed(b3, 'spare10')
+  assert.equal(phaseOf(stopped), '■ stopped')
+  assert.ok(!stopped.includes(codexText.heldStopEnded), stopped)
+  assert.equal((await w3.cli(['status'], BANG)).out, `spare10: ■ stopped        you chose Stop here, until 11:40. ${HELD_WAITS}`)
+})
+
+test('commands: an auto stop past its time with Continue at the reset on shows no CX53, because it ends in place', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  w.setState({ stopped: stopOf({ windowEnd: RESET, skip: false }) })
+  const h = b.call('tool', { turn: 'U1' })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call holds in place')
+  await w.advance(RESET + MIN - T0)
+  w.reading(SID, 3, { reset: RESET + 5 * HOUR })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call waits for the margin after the reset')
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '● armed')
+  assert.ok(!report.includes(codexText.heldStopEnded), report)
+  assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail))
+  await w.advance(5 * MIN)
+  assert.equal(h.box.done, true, 'spare10 continues the held call at the due time')
+  assert.equal(w.state().stopped, undefined)
+})
+
+test('commands: an old stop record with held work under a new open question shows no CX53', async (t) => {
+  // A non-auto stop that is over stays in state.json. A later trip opens a question that holds a tool call.
+  const w = world(t, { config: { autoResume: false } })
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  w.setState({ stopped: stopOf({ auto: false, windowEnd: T0 - MIN }) })
+  b.script('hang')
+  const h = b.call('tool', { turn: 'U1' })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call holds on the question')
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '? asking')
+  assert.ok(!report.includes(codexText.heldStopEnded), report)
+  assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail))
 })
 
 test('commands: without the daemon, a stop on an open question says that held tool calls wait in place (CX51)', async (t) => {
@@ -570,11 +659,24 @@ test('commands: the set list marks the spans of an unread config.json, CX32 says
   const failed = await typed(b, 'spare10 set lastMinutes 20')
   assert.match(failed, /^could not write .+config\.json: .+\. Nothing changed\. Correct the file, or remove it to use the defaults\.$/)
   assert.equal(readFileSync(path, 'utf8'), '{"reserve": 15,', 'bad JSON that a person wrote is never overwritten')
-  // An OS crash after a write left the file empty: the next set repairs it, and names the 0 that was in force.
+  // An OS crash after a write left the file empty: the next set repairs it, names the 0 that was in force,
+  // and says that the other options of the file are lost (CX54).
   writeFileSync(path, '')
-  assert.equal(await typed(b, 'spare10 set lastMinutes 20'), codexText.setOk('lastMinutes', '20', '0'))
+  assert.equal(await typed(b, 'spare10 set lastMinutes 20'), `${codexText.setOk('lastMinutes', '20', '0')}${codexText.setRepaired(path)}`)
   assert.deepEqual(readJson(path), { lastMinutes: 20 })
   assert.match(await typed(b, 'spare10 set'), /\n {2}· weeklyLastHours {3}8 \(default\)\n/)
+  // A set of another option on a torn file: both spans that the file held at 0 are back to their defaults.
+  writeFileSync(path, '{"weeklyLastHours": 0, "lastMinutes": 0}\0\0')
+  assert.equal(await typed(b, 'spare10 set reserve 15'), `${codexText.setOk('reserve', '15', '10')}${codexText.setRepaired(path)}`)
+  assert.deepEqual(readJson(path), { reserve: 15 })
+  const after = await typed(b, 'spare10 set')
+  assert.match(after, /\n {2}· lastMinutes {7}20 \(default\)\n/)
+  assert.match(after, /\n {2}· weeklyLastHours {3}8 \(default\)\n/)
+  writeFileSync(path, '\0')
+  assert.equal(await typed(b, 'spare10 set reserve default'), `${codexText.setDefault('reserve', '10')}${codexText.setRepaired(path)}`)
+  assert.deepEqual(readJson(path), {})
+  // A file that reads needs no repair, so the reply does not name one.
+  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setOk('reserve', '15', '10'))
 })
 
 test('commands: the phase line reads only the view, with no daemon read (2.9)', async (t) => {
