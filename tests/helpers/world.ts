@@ -91,6 +91,8 @@ import type {
 // a noun that another step added, so it hooks the noun's event, as the world hooks spare10.park.
 // `newerLimit` (prepend) does the same for $.spare10.limit() with NEWER_COPY_LIMIT (`on` or `off`).
 // `noDialog` (prepend) refuses every AskUserQuestion at once, so no spare10 dialog can show.
+// `askCounter` (prepend) counts each AskUserQuestion on its way down in the env ASKS_RAISED, also one
+// that spare10 withdraws before it draws.
 //
 // Timing idiom: start a gated call without awaiting it, then `await w.clock.settle()`, then answer,
 // release, cap or advance. Lessons from the kit:
@@ -683,6 +685,22 @@ export const newerLimit: Plugin = {
     on('spare10.limit', async ($, e, next) => {
       const raw = await $.env.get('NEWER_COPY_LIMIT')
       return raw === undefined ? next(e) : { value: raw === 'on' }
+    })
+  },
+}
+
+/**
+ * A prepend plugin that counts each AskUserQuestion on its way down, in the world env ASKS_RAISED: also one
+ * that spare10's own withdrawal hook denies before it draws. As newerCopy, it reports through the env.
+ */
+export const askCounter: Plugin = {
+  name: 'ask-counter',
+  tier: 'prepend',
+  register: (on) => {
+    on('tool.call', { tool: /^AskUserQuestion$/ }, async ($, e, next) => {
+      const n = Number((await $.env.get('ASKS_RAISED')) ?? '0')
+      await $.env.set('ASKS_RAISED', String(n + 1))
+      return next(e)
     })
   },
 }

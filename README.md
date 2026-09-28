@@ -238,7 +238,7 @@ During a turn, put `!` in front of it.
 | `weeklyResumeFloor` | `5` | The same for the weekly window. |
 | `pausePrompt` | empty | Text here tells the agents to wind down, and spare10 stops nothing. |
 | `autoResume` | on | spare10 continues held and stopped work when the reserve opens, or after the reset. |
-| `limitPause` | on | At 100% used, spare10 holds all work and continues it after the reset. Switch it off when you pay for extra usage. |
+| `limitPause` | on | At 100% used, spare10 holds all work and asks you once. With no answer, it continues the work after the reset, unless `autoResume` is off. Switch it off when you pay for extra usage. |
 | `headless` | `off` | What spare10 does in unattended runs: `off`, `prompt`, `stop` or `wait`. |
 | `scope` | `all` | `all` guards every interactive session. `opt-in` guards only runs started with `SPARE10=on`. |
 | `badge` | on | Shows the badge in the Claude Code footer. Codex has no badge. |

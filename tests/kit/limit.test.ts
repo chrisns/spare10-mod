@@ -11,6 +11,7 @@ import {
   TEST_MARGIN,
   TICK,
   above,
+  askCounter,
   bash,
   begin,
   cmd,
@@ -21,6 +22,7 @@ import {
   noDialog,
   pastDue,
   pastOpen,
+  slowAsk,
   step,
   stopRe,
   stopRec,
@@ -48,13 +50,16 @@ const hhmm = (ms: number): string =>
 const wk = (ms: number): string => `${new Intl.DateTimeFormat('en-GB', { weekday: 'short' }).format(ms)} ${hhmm(ms)}`
 const AT = hhmm(LIM_MS)
 
+// The way out of a pause at the limit: the question, the Continue line, the report and the resume reply name it.
+const LIMIT_OFF = 'To let work run past the limit, turn off Pause at the limit in /config.'
+
 // The limit question (3.2), and its options.
 const OPTIONS = ['Continue at the reset', 'Stop here']
 const pf = (at = AT): string => `100% used · 0% left · resets ${at}`
 const LOOP_Q = (at = AT): string =>
-  `The quota limit is reached: ${pf(at)}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue.`
-const LOOP_Q_OFF = `The quota limit is reached: ${pf()}. All work is on hold. Continue the work at the reset? Until you answer, the work waits. Stop here stops the work. After the reset, type a prompt to continue.`
-const PROMPT_Q = `The quota limit is reached: ${pf()}. spare10 holds your prompt and any other work. Continue the work at the reset? If you do not answer, all of it continues after ${AT}, unless a reserve is still reached. Stop here gives your prompt back and stops other work. After the reset, type a prompt to continue.`
+  `The quota limit is reached: ${pf(at)}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue. ${LIMIT_OFF}`
+const LOOP_Q_OFF = `The quota limit is reached: ${pf()}. All work is on hold. Continue the work at the reset? Until you answer, the work waits. Stop here stops the work. After the reset, type a prompt to continue. ${LIMIT_OFF}`
+const PROMPT_Q = `The quota limit is reached: ${pf()}. spare10 holds your prompt and any other work. Continue the work at the reset? If you do not answer, all of it continues after ${AT}, unless a reserve is still reached. Stop here gives your prompt back and stops other work. After the reset, type a prompt to continue. ${LIMIT_OFF}`
 
 // Texts the model reads (3.6).
 const STOP = (at = AT): string => `spare10: the user stopped work at the quota limit (100% of quota used · resets ${at}). Stop now and wait for the user. Do not call any further tools.`
@@ -63,12 +68,11 @@ const HEADLESS = `spare10 stopped this unattended run at the quota limit (100% o
 const NOT_STARTED = `spare10: not started. The quota limit is reached until ${AT}. Send the prompt again after the reset.`
 
 // Transcript lines and replies (3.3, 3.4), without the engine's prefix.
-const CONTINUES = (at = AT): string => `held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.`
+const CONTINUES = (at = AT): string => `held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`
 const STOPPED = (at = AT): string => `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`
 const REACHED = 'the quota limit is reached. spare10 asks you again.'
 const RESET_CONTINUES = 'the 5-hour window reset. Held work continues.'
 const RESET_WAITING = 'the 5-hour window reset. Held work still waits for your answer.'
-const LIMIT_OFF = 'To let work run past the limit, turn off Pause at the limit in /config.'
 const NOTHING_NOW = (at: string): string => `nothing to resume now. The quota limit is reached until ${at}. spare10 holds all work until then. ${LIMIT_OFF}`
 const PROMPT_WAITS = (at = AT): string => `your prompt waits with the held work until ${at}. Then spare10 continues all of it, unless a reserve is still reached.`
 
@@ -80,6 +84,7 @@ const PROMPT_WAITS = (at = AT): string => `your prompt waits with the held work 
 type Logs = Pick<World, 'logs'>
 const transcript = (w: Logs): string[] => w.logs.filter((l) => l.to !== 'debug').map((l) => l.text)
 const questions = (w: World): string[] => w.asked.map((a) => a.question)
+const debugLines = (w: Logs): string[] => w.logs.filter((l) => l.to === 'debug').map((l) => l.text)
 
 async function run($: Engine, args: string, kind: PromptOrigin['kind'] = 'composer'): Promise<string | undefined> {
   return (await $.command.run(cmd(args, kind))).text
@@ -185,6 +190,8 @@ test('Stop here at the limit refuses the held work, writes a stop with no auto, 
   expect(w.env.get('SPARE10_STOPPED')).toMatch(stopRe('S1', 'five_hour,work'))
   expect(w.env.get('SPARE10_STOPPED')?.split(' ')[1]).toBe(String(LIM_MS))
   expect(transcript(w)).toContain(STOPPED())
+  // The report names the reset and the way out: /spare10 resume changes nothing at the limit.
+  expect(phaseLine(await report($))).toBe(`  ■ stopped        you chose Stop here, until ${AT}. Type a prompt to be asked again. ${LIMIT_OFF}`)
   expect((await bash($)).deny).toBe(STOP()) // the stop refuses new work until the reset
   await pastDue(w, LIM)
   await w.clock.advance(2 * MIN)
@@ -290,7 +297,7 @@ test('both windows at the limit: the question names both, and the work waits for
   const five = `5-hour window 100% used · 0% left · resets ${AT}`
   const week = `weekly window 100% used · 0% left · resets ${wk(SOON_MS)}`
   expect(questions(w)).toEqual([
-    `The quota limits of both windows are reached: ${five}, ${week}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until ${wk(SOON_MS)}. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue.`,
+    `The quota limits of both windows are reached: ${five}, ${week}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until ${wk(SOON_MS)}. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue. ${LIMIT_OFF}`,
   ])
   w.release('Continue at the reset')
   await pastDue(w, LIM) // the 5-hour window reset: the weekly limit still holds
@@ -685,4 +692,92 @@ test('after Continue at the reset, when all held work goes away, the next step a
   expect(next.done()).toBe(false)
   w.release('Stop here')
   expect((await next.p).deny).toBe(STOP())
+})
+
+// ---- Continue at the reset before a dialog shows, and after the reset (review fixes) ----
+
+test('/spare10 resume while the limit dialog is on its way withdraws it, and the held call runs after the reset', { plugins: [slowAsk] }, async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM })
+  await begin($, w)
+  const held = tracked(bash($))
+  await w.clock.advance(100) // the dialog waits in a slow hook above spare10
+  expect(w.asked).toEqual([])
+  expect(await run($, 'resume')).toBe(CONTINUES())
+  await w.clock.advance(1000) // the dialog goes on, down to spare10's withdrawal hook, after Continue at the reset
+  await w.clock.settle()
+  expect(w.asked).toEqual([]) // withdrawn before it drew: no dialog stays up until the release
+  expect(held.done()).toBe(false)
+  await pastDue(w, LIM)
+  expect((await held.p).result).toBe('ran')
+  expect(w.asked).toEqual([])
+})
+
+test('/spare10 resume while a hand-off of the limit question waits for a new raiser shows no second dialog', { plugins: [above, askCounter] }, async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM, agents: ['bg-1'] })
+  await begin($, w)
+  const main = bash($, undefined, 'abandon me')
+  await w.clock.settle()
+  const bg = tracked(bash($, 'bg-1'))
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  await w.clock.advance(1000) // the hook above settles: the raiser's dispatch is abandoned
+  expect((await main).deny).toBe('a hook above settled first')
+  w.envGetDelayMs = { SPARE10_STOPPED: 500 } // bg-1's next env read stays in flight
+  w.cap() // one carrier cycle: bg-1 goes to read the env
+  await w.clock.settle()
+  w.release() // the host withdraws the abandoned raiser's dialog: the question is handed on
+  await w.clock.settle()
+  expect(debugLines(w)).toContain('spare10: the loop that asked went away. spare10 asks again (1).')
+  expect(await run($, 'resume')).toBe(CONTINUES()) // before bg-1 can raise the dialog again
+  w.envGetDelayMs = {}
+  await w.clock.advance(500) // bg-1's read returns
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1) // no second dialog
+  expect(w.env.get('ASKS_RAISED')).toBe('1') // and no second raise that the withdrawal hook would have to deny
+  expect(bg.done()).toBe(false)
+  await pastDue(w, LIM)
+  expect((await bg.p).result).toBe('ran')
+  expect(w.asked).toHaveLength(1)
+})
+
+test('autoResume off: Stop here after the reset names no passed time', async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM, env: { SPARE10_AUTO_RESUME: 'off' } })
+  await begin($, w)
+  const held = await heldAtLimit($, w)
+  await pastDue(w, LIM)
+  await w.clock.advance(10 * MIN)
+  expect(held.done()).toBe(false) // it waits for the answer
+  w.release('Stop here')
+  expect((await held.p).deny).toBe(STOP())
+  await w.clock.settle()
+  expect(transcript(w)).toContain('stopped at the quota limit. Type a prompt to continue.')
+  expect(transcript(w)).not.toContain(STOPPED())
+})
+
+test('autoResume off: /spare10 resume after the reset names no passed time, and the held call runs', async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM, env: { SPARE10_AUTO_RESUME: 'off' } })
+  await begin($, w)
+  const held = await heldAtLimit($, w)
+  await pastDue(w, LIM)
+  await w.clock.advance(10 * MIN)
+  expect(held.done()).toBe(false)
+  expect(await run($, 'resume')).toBe('resumed. Held work continues.')
+  expect((await held.p).result).toBe('ran')
+})
+
+test('Esc on the dialog at the reserve after the quota reached 100% stops until the reset, and spare10 continues the work then', SLOW, async ($, on) => {
+  const w = world(on, { pct: 92 })
+  await begin($, w)
+  const held = tracked(bash($))
+  await w.clock.settle()
+  expect(questions(w)[0]).toMatch(/^Your 10% reserve is reached: 92% used/)
+  w.pct = 100 // the quota reaches the limit before the next check
+  w.release() // Esc: the dialog ends with no answer
+  expect((await held.p).deny).toMatch(/^spare10: the user stopped work at the quota/)
+  await w.clock.settle()
+  // Until the reset, not the skip start: at 100% used the reserve does not open. The setting in force continues it.
+  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${R_MS} ${T0} five_hour,work,auto`)
+  expect(transcript(w)).toContain(`stopped at the quota limit until ${hhmm(R_MS)}. Then spare10 continues the work, unless a reserve is still reached.`)
+  await pastDue(w, RESETS)
+  expect(w.submitted).toHaveLength(1)
 })

@@ -261,6 +261,7 @@ The `headless` option works as in [Unattended runs](configure.md#unattended-runs
 22. A question at the reserve can give way to the limit question while its form is on the screen. A form cannot be withdrawn, so the old form stays. Its answer changes nothing. Answer the limit form that follows.
 23. Codex tells spare10 when credits can pay past 100%. Then spare10 does not pause at the limit. Claude Code does not tell spare10 about extra usage.
 24. During an upgrade, an older spare10 process can show the question at the reserve for the limit question. Its **Resume** only asks again. Its **Stop here** can continue the work after the reset.
+25. Without the Codex daemon, spare10 does not see a reset credit or a plan change at the limit. Held work then waits until the old reset. Run `spare10 set limitPause off` to let it go on. With `autoResume` off, then also run `spare10 resume`.
 
 Codex also gives spare10 some things that Claude Code does not:
 

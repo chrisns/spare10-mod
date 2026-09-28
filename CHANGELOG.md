@@ -28,12 +28,17 @@ The project uses [Semantic Versioning](https://semver.org/).
 - **Codex limit.** In Codex, the limit form has **Continue at the reset** first. Esc on it continues at the reset. A turn that ends at the limit shows a new line. After **Stop here** or **Continue at the reset**, that line says so. spare10 does not pause while Codex credits can pay past 100%. While `limitPause` is off, the report warns when a real reading is past 100% used.
 - **Codex variable.** The Codex MCP server now passes `SPARE10_LIMIT_PAUSE` to spare10. The Codex hooks did not change, so Codex does not ask you to trust them again.
 - **Known limitations 58 to 66.** New known limitations list the cases that the pause at the limit does not cover well. An example is a stale reading after an early limit reset.
+- **The way out at the limit.** The limit question and the line of the answer **Continue at the reset** now name the option **Pause at the limit**. After **Stop here** at the limit, the report names the reset and this option, not `/spare10 resume`.
+- **Late answers at the limit.** With the option **Continue at the reset** off, the limit question can wait past the reset. A **Stop here** or `/spare10 resume` after the reset now shows no time that has passed.
+- **Codex difference 25.** Without the Codex daemon, spare10 does not see a reset credit or a plan change at the limit. The Codex page says how to let the held work go on.
 
 ### Changed
 
 - **Commands at the limit.** At 100% used, `/spare10 resume` writes no consent. On the limit question, it counts as **Continue at the reset**. At other times, it replies that nothing resumes. When a limit question is open but no window is at the limit now, it counts as **Resume**.
 - **Stop at the limit.** At 100% used, `/spare10 stop` stops the work until the reset, and spare10 does not continue it. This is also true on an open question at the reserve, and over a stop that spare10 would continue. A **Stop here** on a question at the reserve at 100% used does the same.
 - **Stops at the limit.** A stop that ends when the reserve opens now lasts until the reset at 100% used. Then spare10 continues the stopped work, as before.
+- **No answer at the limit.** Esc on a question at the reserve after the quota reached 100% now stops the work until the reset. Before, the stop ended when the reserve opened. The line names the quota limit. With the option **Continue at the reset** on, spare10 continues the work after the reset.
+- **Pause at the limit option text.** The `/config` text now says that the work continues after the reset only with **Continue at the reset** on. It also says what **Stop here** does.
 - **Simulate at the limit.** The reply of `/spare10 simulate 100` now says that 100% is the quota limit. It says that spare10 holds all work until the test window ends.
 - **Docs.** The README is much shorter. Its quick start covers Claude Code and Codex. It has Codex screenshots. The details moved to pages in `docs/`.
 - **Texts.** The texts take their host words, such as `/spare10` and `Claude Code`, from one place. The Claude Code texts do not change.

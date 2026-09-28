@@ -63,7 +63,7 @@ A change of option reloads the plugin.
 | Weekly resume floor (%) | `5` | 0 to 99, one decimal at most | The same for the weekly window. |
 | Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. |
 | Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". At 100% used, **Stop here** never continues by itself. Off: work waits for you. |
-| Pause at the limit | on | on, off | On: at 100% used, spare10 holds all work, also in an open reserve or after a **Resume**. It asks you once, and continues the work after the reset. Off: work runs into the limit. Switch it off when you pay for extra usage. See [At the quota limit](claude-code.md#at-the-quota-limit). |
+| Pause at the limit | on | on, off | On: at 100% used, spare10 holds all work, also in an open reserve or after a **Resume**. It asks you once. With no answer, the work continues after the reset, unless the option **Continue at the reset** is off. **Stop here** stops the work until you type a prompt after the reset. Off: work runs into the limit. Switch it off when you pay for extra usage. See [At the quota limit](claude-code.md#at-the-quota-limit). |
 | Unattended runs (-p, SDK) | `off` | `off`, `prompt`, `stop`, `wait` | What spare10 does inside the reserve when nobody can answer. See [Unattended runs](#unattended-runs). |
 | Guarded sessions | `all` | `all`, `opt-in` | `all`: every interactive session. `opt-in`: only runs started with `SPARE10=on`. |
 | Status badge | on | on, off | Shows the badge at the right of the prompt footer. |
@@ -150,10 +150,10 @@ Two settings make Claude Code continue a question by itself after a time:
 - the `CLAUDE_AFK_TIMEOUT_MS` variable
 
 With either one set, an unanswered spare10 question counts as **Stop here**.
-With **Continue at the reset** on, spare10 then continues the work at the time that the question names.
+With the option **Continue at the reset** on, spare10 then continues the work at the time that the question names.
 spare10 warns you about this at the start of a session.
 Run `/spare10 resume` to continue before that time.
-At the quota limit, an unanswered question counts as **Continue at the reset**.
+At the quota limit, an unanswered question counts as the answer **Continue at the reset**.
 Neither limit applies in a `--bg` session.
 
 ## Unattended runs

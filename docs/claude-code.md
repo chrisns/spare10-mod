@@ -314,7 +314,7 @@ Then it asks you one question:
 
 ```
  ☐ spare10
-The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue.
+The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue. To let work run past the limit, turn off Pause at the limit in /config.
 ❯ 1. Continue at the reset
   2. Stop here
   3. Type something.
@@ -334,7 +334,7 @@ The answer **Continue at the reset**:
 - The dialog closes.
 - Held work stays on hold. spare10 writes no consent.
 - New work waits too. spare10 does not ask again.
-- The transcript shows `spare10: held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.`
+- The transcript shows `spare10: held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. To let work run past the limit, turn off Pause at the limit in /config.`
 - A prompt that you send then waits with the held work, and asks nothing.
   The transcript shows `spare10: your prompt waits with the held work until 15:00. Then spare10 continues all of it, unless a reserve is still reached.`
 - The badge shows `‖ spare10: at the limit until 15:00`.
@@ -360,7 +360,10 @@ After the reset, the transcript then shows only `spare10: the 5-hour window rese
 - spare10 refuses all later steps until the reset.
 - spare10 does not continue the work after the reset, also with the option **Continue at the reset** on.
 - The transcript shows `spare10: stopped at the quota limit until 15:00. After the reset, type a prompt to continue.`
+  With the option **Continue at the reset** off, the question can wait past the reset.
+  A **Stop here** after the reset shows `spare10: stopped at the quota limit. Type a prompt to continue.`
 - The badge shows `■ spare10: stopped`.
+- The phase line of `/spare10` reads `you chose Stop here, until 15:00. Type a prompt to be asked again. To let work run past the limit, turn off Pause at the limit in /config.`
 
 The model reads one of these texts after a Stop:
 
@@ -399,6 +402,9 @@ With the option **Continue at the reset** on, this also happens at the next chec
 The transcript shows `spare10: the quota limit is reached. spare10 asks you again.`
 A **Stop here** on the old question, or `/spare10 stop`, before that time is a stop at the limit.
 It lasts until the reset, and spare10 does not continue the work.
+Esc on the old question also stops the work until the reset.
+With the option **Continue at the reset** on, spare10 then continues the work after the reset.
+The transcript shows `spare10: stopped at the quota limit until 15:00. Then spare10 continues the work, unless a reserve is still reached.`
 
 The pause at the limit wins over these:
 
@@ -434,8 +440,9 @@ Then spare10 treats 100% used as any other point in the reserve.
 Work in an open reserve or after a **Resume** then goes past 100% used.
 `/spare10` then shows the row `at the limit   off. spare10 does not pause at the limit (from /config)`.
 The change also ends a pause of held work, within about a minute.
-With the option **Continue at the reset** off, run `/spare10 resume` to let the held work go on.
-The limit question then counts as **Resume**.
+With the option **Continue at the reset** off, first answer the limit question.
+Choose **Continue at the reset**, or press Esc.
+The held work then decides again within about a minute after the change.
 While spare10 pauses at the limit, the report and the reply of `/spare10 resume` name this option.
 See items 58 and 59 of the [Known limitations](how-it-works.md#known-limitations).
 
@@ -531,16 +538,16 @@ The rows without a label, such as `⚠ Pausing at next step`, show no ` (test)`.
 |---|---|
 | `○ spare10 off` | spare10 is not enabled in this run. It only watches. |
 | `? spare10: waiting for you until 13:40` | A question is open. Held work waits for your answer, or until 13:40, when the reserve opens. |
-| `? spare10: waiting for you` | A question is open, and **Continue at the reset** is off. Held work waits for your answer. |
+| `? spare10: waiting for you` | A question is open, and the option **Continue at the reset** is off. Held work waits for your answer. |
 | `⚠ spare10 quota unavailable` | Claude Code reports no 5-hour quota. spare10 lets all work through. |
 | `⧗ spare10` | There is no reading yet. spare10 lets all work through. |
 | `● spare10` | Usage is below each reserve. |
-| `‖ spare10: at the limit until 15:00` | A window is at 100% used. spare10 holds all work until the reset, and asks you once. After **Continue at the reset**, held work continues about 5 minutes after 15:00. |
+| `‖ spare10: at the limit until 15:00` | A window is at 100% used. spare10 holds all work until the reset, and asks you once. After the answer **Continue at the reset**, held work continues about 5 minutes after 15:00. |
 | `⨯ spare10: resumed until 95% used` | You chose to continue at the reserve. At 95% used, spare10 asks you again. |
 | `⨯ spare10` | You chose to continue until the window resets. |
 | `↻ spare10: reserve open until 14:00` | The reset is near. spare10 lets all work use the reserve until 14:00. |
-| `■ spare10: stopped until 13:40` | You chose **Stop here**. The stop ends at 13:40, when the reserve opens. With **Continue at the reset** on, spare10 then continues any stopped work. |
-| `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself. **Continue at the reset** is off, or was off at the stop. Or you chose **Stop here** at the quota limit. The stop ends at the reset. |
+| `■ spare10: stopped until 13:40` | You chose **Stop here**. The stop ends at 13:40, when the reserve opens. With the option **Continue at the reset** on, spare10 then continues any stopped work. |
+| `■ spare10: stopped` | You chose **Stop here**. spare10 does not continue the work by itself. The option **Continue at the reset** is off, or was off at the stop. Or you chose **Stop here** at the quota limit. The stop ends at the reset. |
 | `⏸ spare10` | At least one agent got the pause prompt. |
 | `⚠ spare10: in the reserve` | An unattended run is inside the reserve. |
 | `⚠ Pausing at next step` | Usage reached a reserve. spare10 holds the next step and asks you. The glyph blinks. |
@@ -667,12 +674,13 @@ After the answer **Continue at the reset**, it reads like this:
 At the quota limit, the commands work like this:
 
 - `/spare10 resume` on the limit question counts as **Continue at the reset**.
-  It replies `spare10: held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.`
+  It replies `spare10: held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. To let work run past the limit, turn off Pause at the limit in /config.`
 - At other times at the limit, `/spare10 resume` changes nothing.
   It writes no consent, and a stop stays.
   It replies `spare10: nothing to resume now. The quota limit is reached until 15:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.`
 - When a limit question is open but no window is at the limit now, `/spare10 resume` counts as **Resume**.
-  This happens after you switch off **Pause at the limit**, or after the reset.
+  This happens after the reset, or after `/spare10 simulate off` ends a test limit.
+  After the reset, it replies `spare10: resumed. Held work continues.`
 - `/spare10 stop` stops until the reset, and spare10 does not continue the work.
   It replies `spare10: stopped at the quota limit until 15:00. After the reset, type a prompt to continue.`
   A stop that spare10 would continue by itself does not stay. The new stop lasts until the reset, and nothing continues it.

@@ -438,7 +438,7 @@ spare10 releases held work about one minute after the end of the test window.
 - Step 1 replies `spare10: test reading set to 100% used, resets HH:MM. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run spare10 simulate off to clear it.`
 - The form shows the limit question, then the field `spare10`, then `› 1. Continue at the reset` and `2. Stop here`.
 - **Continue at the reset** is first, and it is selected.
-- The question is the prompt question. Its text ends with `Stop here drops your prompt and stops other work. After the reset, type a prompt to continue.`
+- The question is the prompt question. Its text ends with `Stop here drops your prompt and stops other work. After the reset, type a prompt to continue. To let work run past the limit, run spare10 set limitPause off.`
 - After Esc, the form closes, and the work stays on hold. No second form shows.
 - About one minute after HH:MM, the prompt goes in, and the tool runs.
 - `↳ Hook · spare10: the test window ended. Held work continues.` shows.

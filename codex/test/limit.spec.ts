@@ -5,6 +5,7 @@ import { formatConsent, formatStopped, parseStopped } from '../../hooks/core/dec
 import { LIMIT_OFF, atText, debugLine, headlessText, limitQuestionText, notice, resumeReply, stopReply } from '../../hooks/core/text.ts'
 import { readJson } from '../src/files.ts'
 import type { QuestionRecord } from '../src/question.ts'
+import { BEAT_STALE_MS } from '../src/timing.ts'
 import type { AnswerFile } from '../src/store.ts'
 import { heldCall, logicWorld } from './helpers/logic.ts'
 import type { LogicWorld } from './helpers/logic.ts'
@@ -513,4 +514,74 @@ test('limit: past the hand-off limit the limit question is chosen, with no stop,
   await w.advance(LIM + MARGIN - T0 + MIN)
   assert.equal(await next.out, 'again')
   assert.equal(b.mcp.requests.length, 1)
+})
+
+test('limit: Stop here after the reset with autoResume off names no passed reset, and spare10 resume names none either', async (t) => {
+  const w = world(t, { config: { autoResume: false } })
+  const b = await w.broker()
+  const { h } = await heldAtLimit(w, b)
+  await w.advance(LIM + MARGIN - T0 + 2 * MIN)
+  assert.equal(h.box.done, false, 'autoResume off: the work waits for the answer')
+  w.reading(SID, 3, { reset: LIM + 5 * HOUR }) // the new window
+  b.host.answer(STOP)
+  await w.settle()
+  assert.equal(h.box.done, true)
+  const shown = [...w.notices(), lineOf(h.box.text) ?? '']
+  assert.ok(shown.some((l) => l.includes(notice.limitStopped())))
+  assert.equal(
+    shown.some((l) => l.includes(notice.limitStopped(AT))),
+    false,
+  )
+  const v = world(t, { config: { autoResume: false } })
+  const c = await v.broker()
+  const held = await heldAtLimit(v, c)
+  await v.advance(LIM + MARGIN - T0 + 2 * MIN)
+  v.reading(SID, 3, { reset: LIM + 5 * HOUR })
+  assert.equal(await typed(c, 'spare10 resume'), `spare10: ${resumeReply('limit-late')}`)
+  await v.settle()
+  assert.equal(held.h.box.done, true)
+})
+
+test('limit: spare10 resume while a hand-off waits for a new leader shows no second form', async (t) => {
+  const w = logicWorld(t)
+  const root = w.broker()
+  const child = w.broker({ thread: CHILD })
+  const first = await limitWait(w, root, 'U1')
+  const second = await limitWait(w, child, 'C1')
+  assert.equal(second.key, first.key)
+  await w.settle()
+  assert.equal(root.mcp.requests.length, 1)
+  // The leader went away, and the question waits for a new leader. spare10 resume chooses first.
+  root.sx.store.locked((tx) => tx.setQuestion({ ...(tx.question() as QuestionRecord), leader: null, handoffs: 1 }))
+  assert.equal(child.questions.choose(child.sx, first.key, 'command'), true)
+  await w.advance(2 * MIN)
+  assert.equal(question(w)?.chosen, true)
+  assert.deepEqual([root.mcp.requests.length, child.mcp.requests.length], [1, 0], 'no second form')
+  assert.equal(second.box.out, undefined, 'the call still holds')
+})
+
+test('limit: after Continue at the reset the chosen question outlives its held work for 90 s, and then the next call asks again', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const first = await limitWait(w, b)
+  await w.settle()
+  assert.equal(b.mcp.requests.length, 1)
+  b.mcp.answer('resume') // an accept that is not stop: Continue at the reset
+  await w.settle()
+  assert.equal(question(w)?.chosen, true)
+  first.call.drop()
+  assert.equal(await first.out, 'dropped')
+  // Unlike Claude Code, a question younger than 90 s stays for a new call of any broker (4.3).
+  const young = await limitWait(w, b)
+  assert.equal(young.key, first.key, 'younger than 90 s: a new call joins the chosen question')
+  await w.settle()
+  assert.equal(b.mcp.requests.length, 1, 'with no form')
+  await w.advance(BEAT_STALE_MS)
+  young.call.drop()
+  assert.equal(await young.out, 'dropped')
+  assert.equal(question(w), undefined, 'older than 90 s: the last call that leaves forgets it')
+  const next = await limitWait(w, b)
+  assert.notEqual(next.key, first.key)
+  await w.settle()
+  assert.equal(b.mcp.requests.length, 2, 'the next call asks the limit form again')
 })

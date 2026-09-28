@@ -129,6 +129,7 @@ import {
   raisesInPlace,
   refusalText,
   resetTooRecent,
+  resumeAskingReply,
   resumeAtLimit,
   resumeCase,
   resumeNotice,
@@ -1666,7 +1667,7 @@ async function resumeCommand($: EngineInterface): Promise<string> {
     const q = questions.get(open)
     if (q !== undefined && sNow !== undefined) raiseAtFloor(q, sNow)
     await settle($, open, 'resume', 'command')
-    return resumeReply('asking', q?.facts, undefined, undefined, q?.mode)
+    return resumeAskingReply(q, now)
   }
   const s = sNow ?? (await sense($))
   const mode = modeOf(cfg)

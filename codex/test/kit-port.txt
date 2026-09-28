@@ -27,6 +27,7 @@
 ! surfaces = Codex has no $.session.surfaces: attendance comes from the host kind and the session log (3.10).
 ! remote = Codex has no remote bridge surface.
 ! typing = The Codex ticker never reads the prompt box: it continues only an idle hosted thread (4.6, 7.3).
+! young = On Codex a question with no held call stays until it is 90 s old, for a new call of any broker (4.3). A step in that time joins a chosen limit question with no form.
 ! ticker = The Codex root ticker is a Node timer through the Clock seam, started at the first root gate: no refused timer to heal and no watch timer (3.8).
 ! edges = Codex has no badge, so the ticker keeps no redraw edges (7.3).
 ! sessionEnd = Codex needs no session.end: a thread unload or an exit ends its broker and its ticker (design 1.2).
@@ -586,7 +587,12 @@ Stop here on the dialog at the reserve after the quota reached 100% stops at the
 /spare10 stop at the limit over an auto stop drops its auto, and nothing continues the work after the reset => limit|spare10 stop over an auto stop at the limit
 a person prompt after Continue at the reset joins the held work with a line, and goes in after the reset => flow|continuesLine and promptWaitsLine ; limit|a typed prompt at the limit waits ; none:heldLine
 /spare10 resume on a limit question whose limit is gone settles it as Resume, and the held call runs => flow|resumeAtLimit: a limit question whose limit is gone
-after Continue at the reset, when all held work goes away, the next step asks the limit question again => question|the last waiter that leaves forgets a question older than 90 s
+after Continue at the reset, when all held work goes away, the next step asks the limit question again => limit|the chosen question outlives its held work for 90 s ; none:young
+/spare10 resume while the limit dialog is on its way withdraws it, and the held call runs after the reset => limit|spare10 resume chooses Continue ; none:withdraw
+/spare10 resume while a hand-off of the limit question waits for a new raiser shows no second dialog => limit|spare10 resume while a hand-off waits for a new leader
+autoResume off: Stop here after the reset names no passed time => limit|Stop here after the reset with autoResume off
+autoResume off: /spare10 resume after the reset names no passed time, and the held call runs => limit|Stop here after the reset with autoResume off
+Esc on the dialog at the reserve after the quota reached 100% stops until the reset, and spare10 continues the work then => flow|stopPlan: a question at the reserve that ends with no answer at the limit
 
 [headless.test.ts]
 -p default off: inside the reserve everything runs, nothing asks, the seed is still written => @hOff ; @qtSeedWrite

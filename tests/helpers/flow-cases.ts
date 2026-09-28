@@ -50,6 +50,7 @@ import {
   refusalText,
   resetOf,
   resetTooRecent,
+  resumeAskingReply,
   resumeAtLimit,
   resumeCase,
   resumeNotice,
@@ -1559,7 +1560,14 @@ const limitCases: FlowCase[] = [
       eq(vias.map((via) => stopAutoOf(q, via, true)), [false, false, false, true])
       eq([stopAutoOf(q, 'time limit', false), stopAutoOf(waitQ(), 'dialog', true)], [false, true])
       const plan = stopPlan(q, LNOW, stopAutoOf(q, 'dialog', true), sNow)
-      eq(plan, { kind: 'write', until: R, late: [], record: { kinds: ['five_hour'], windowEnd: R, work: true, auto: false, test: false, skip: false, real: [holder5] } })
+      // The kind at the limit that gates now is late, as on any stop while it gates: the same kind and reset here.
+      eq(plan, {
+        kind: 'write',
+        until: R,
+        late: [kindIn(s, 'five_hour')],
+        record: { kinds: ['five_hour'], windowEnd: R, work: true, auto: false, test: false, skip: false, real: [holder5] },
+        limit: true,
+      })
       if (plan.kind !== 'write') return
       const written = stopRecordOf(undefined, plan.record, 'S1', LNOW)
       const u = untilFor(q.facts, R, ['five_hour'], false, LNOW)
@@ -1597,6 +1605,48 @@ const limitCases: FlowCase[] = [
       eq(stopNotice(q, plan, written, 'dialog', NOW, false).text, notice.limitStopped(u.at))
       eq(stopNotice(q, plan, written, 'command', NOW, false).text, undefined)
       eq(stopAskingReply(stopNotice(q, plan, written, 'command', NOW, false).late), stopReply('asking'))
+    },
+  },
+  {
+    name: 'stopPlan: a question at the reserve that ends with no answer at the limit stops until the reset, keeps the setting, and has the limit texts',
+    run: (eq) => {
+      const q = question(s92()) // a skip owner at 92%, still open when the quota reaches 100%
+      const sNow = stopSense(sensed({ five: live(100, R), week: live(50, W) }))
+      for (const via of ['dialog ended without an answer', 'could not ask', 'time limit'] as const) {
+        const auto = stopAutoOf(q, via, true, sNow)
+        const plan = stopPlan(q, NOW, auto, sNow, stopsAtLimit(q, via, sNow))
+        if (plan.kind !== 'write') throw new Error('a kind at the limit gates, so the stop is written')
+        eq([via, plan.until, plan.limit, plan.late.map((k) => k.kind), plan.record.auto, plan.record.skip, plan.record.work], [via, R, true, ['five_hour'], true, false, true])
+        const written = stopRecordOf(undefined, plan.record, 'S1', NOW)
+        const at = untilFor(byKind(factsFrom(plan.late, NOW, false)), R, ['five_hour'], false, NOW).at
+        eq(stopNotice(q, plan, written, via, NOW, auto).text, via === 'time limit' ? notice.limitHoldLimit(at, true) : notice.limitStopped(at, true))
+      }
+      // With autoResume off: until the reset, and nothing continues it.
+      const off = stopPlan(q, NOW, stopAutoOf(q, 'dialog ended without an answer', false, sNow), sNow)
+      if (off.kind !== 'write') throw new Error('written')
+      const at = untilFor(byKind(factsFrom(off.late, NOW, false)), R, ['five_hour'], false, NOW).at
+      eq([off.until, off.record.auto], [R, false])
+      eq(stopNotice(q, off, stopRecordOf(undefined, off.record, 'S1', NOW), 'dialog ended without an answer', NOW, false).text, notice.limitStopped(at))
+    },
+  },
+  {
+    name: 'stopNotice: a stop at the limit whose reset has passed names no time, and neither does the resume reply',
+    run: (eq) => {
+      // autoResume off: the limit question waited past its reset for the answer, and the quota is new now.
+      const q = question(sensed({ five: live(100, R), now: LNOW }), { auto: false })
+      const late = R + 15 * MIN
+      const sNow = stopSense(sensed({ five: live(3, R + 5 * HOUR), now: late }))
+      const plan = stopPlan(q, late, stopAutoOf(q, 'dialog', false, sNow), sNow)
+      if (plan.kind !== 'write') throw new Error('Stop here writes')
+      eq([plan.until, plan.record.auto, plan.late], [R, false, []])
+      const written = stopRecordOf(undefined, plan.record, 'S1', late)
+      eq(stopNotice(q, plan, written, 'dialog', late, false).text, notice.limitStopped())
+      eq(stopNotice(q, plan, written, 'time limit', late, false).text, notice.limitHoldLimit(undefined, false))
+      // Before the reset the time shows.
+      eq(stopNotice(q, plan, written, 'dialog', LNOW, false).text, notice.limitStopped(atText(R, ['five_hour'], undefined, LNOW)))
+      eq([resumeAskingReply(q, late), resumeAskingReply(q, LNOW)], [resumeReply('limit-late'), resumeReply('asking', q.facts, undefined, undefined, q.mode)])
+      const reserveQ = question(s92())
+      eq(resumeAskingReply(reserveQ, R + HOUR), resumeReply('asking', reserveQ.facts, undefined, undefined, reserveQ.mode)) // a question at the reserve: as today
     },
   },
   {
@@ -1699,6 +1749,9 @@ const limitCases: FlowCase[] = [
       eq([chosen.phase, untilOf(chosen), statusInput(chosen, REPORT_IN).limit], ['limit', until, { ms: R, kinds: ['five_hour'], held: true }])
       // A stop wins. Unattended: the reserve phase. Off: the open phase in the last span, and the option row.
       eq([seenFor(w, { stop: stopRec({ auto: false }) }).phase, seenFor({ ...w, attended: false }).phase], ['stopped', 'reserve'])
+      // A stop at the limit: the report names the reset of the kinds at the limit (the stopped line names the way out).
+      eq(statusInput(seenFor(w, { stop: stopRec({ auto: false }) }), REPORT_IN).limit, { ms: R, kinds: ['five_hour'], held: false })
+      eq(statusInput(seenFor({ five: live(92, R) }, { stop: stopRec({ auto: false }) }), REPORT_IN).limit, undefined)
       const off = seenFor({ five: live(100, R), now: LNOW, cfg: cfgOf({ limitPause: 'off' }) })
       const oi = statusInput(off, REPORT_IN)
       eq([off.phase, oi.limitPause, oi.limit], ['open', { on: false, from: 'env' }, undefined])

@@ -80,7 +80,7 @@
     "limitPause": {
       "type": "boolean",
       "title": "Pause at the limit",
-      "description": "On: at 100% used, spare10 holds all work, also in an open reserve or after a Resume. It asks you once, and continues the work after the reset. Off: work runs into the limit, and Claude Code refuses it. Switch it off when you pay for extra usage. SPARE10_LIMIT_PAUSE overrides it for one run.",
+      "description": "On: at 100% used, spare10 holds all work, also in an open reserve or after a Resume. It asks you once. With no answer, the work continues after the reset, unless Continue at the reset is off. Stop here stops the work until you type a prompt after the reset. Off: work runs into the limit, and Claude Code refuses it. Switch it off when you pay for extra usage. SPARE10_LIMIT_PAUSE overrides it for one run.",
       "default": true
     },
     "headless": {

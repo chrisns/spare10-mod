@@ -11,6 +11,7 @@ import {
   gatesAfter,
   modeOf,
   raisesInPlace,
+  resumeAskingReply,
   resumeAtLimit,
   resumeCase,
   resumeReadReply,
@@ -378,8 +379,7 @@ export function createCommands(d: CommandDeps): Commands {
     const open = d.questions.openQuestion(sx)
     if (open !== undefined) {
       const r = await d.questions.settle(sx, open.key, 'resume', 'command', sNow === undefined ? {} : { raiseAt: sNow })
-      const q = r.q ?? open
-      return resumeReply('asking', q.facts, undefined, undefined, q.mode)
+      return resumeAskingReply(r.q ?? open, now)
     }
     const s = sNow ?? (await d.sense.sense(sx))
     const mode = modeOf(cfg)

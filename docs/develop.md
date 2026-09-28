@@ -68,6 +68,7 @@ codex/dist/cli.mjs               the CLI bundle, for spare10 commands from a she
 codex/types/claude-code.d.ts     the claude-code types that hooks/core imports, for the Codex type check
 codex/test/*.spec.ts             Codex tests (node --test), also the pure tests of hooks/core/codex.ts
 codex/test/scripts.spec.ts       tests of scripts/check.sh, the cleanup of codex/e2e/run.sh and its --only ids
+codex/test/claude-pins.spec.ts   pins of hooks/register.tsx that no kit case can act out, such as an option value
 codex/e2e/                       end-to-end runs with the real Codex and a mock provider, with no model request
 tests/helpers/world.ts           the kit world beneath the plugin
 tests/core/*.test.ts             pure tests

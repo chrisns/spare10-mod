@@ -2177,6 +2177,7 @@ const L7: Facts = { used: 100, left: 0, resetsAtMs: W, reserve: 10, timeZone: TZ
 const R7: Facts = { used: 92, left: 8, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0 } // the weekly reserve, not at the limit
 const PF5 = '100% used · 0% left · resets 15:00'
 const AFTER = 'After the reset, type a prompt to continue.'
+const BACK = `${AFTER} ${LIMIT_OFF}` // the end of the limit question: after Stop here, and the way out
 
 test('the limit options put Continue at the reset first, and the heads name the limit of each window', () => {
   expect(LIMIT_OPTIONS).toEqual(['Continue at the reset', 'Stop here'])
@@ -2187,26 +2188,26 @@ test('the limit options put Continue at the reset first, and the heads name the 
 
 test('the limit question: loop and prompt, with autoResume on and off', () => {
   expect(limitQuestionText(L5, 'loop', true)).toBe(
-    `The quota limit is reached: ${PF5}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${AFTER}`,
+    `The quota limit is reached: ${PF5}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${BACK}`,
   )
   expect(limitQuestionText(L5, 'loop', false)).toBe(
-    `The quota limit is reached: ${PF5}. All work is on hold. Continue the work at the reset? Until you answer, the work waits. Stop here stops the work. ${AFTER}`,
+    `The quota limit is reached: ${PF5}. All work is on hold. Continue the work at the reset? Until you answer, the work waits. Stop here stops the work. ${BACK}`,
   )
   expect(limitQuestionText(L5, 'prompt', true)).toBe(
-    `The quota limit is reached: ${PF5}. spare10 holds your prompt and any other work. Continue the work at the reset? If you do not answer, all of it continues after 15:00, unless a reserve is still reached. Stop here gives your prompt back and stops other work. ${AFTER}`,
+    `The quota limit is reached: ${PF5}. spare10 holds your prompt and any other work. Continue the work at the reset? If you do not answer, all of it continues after 15:00, unless a reserve is still reached. Stop here gives your prompt back and stops other work. ${BACK}`,
   )
   expect(limitQuestionText(L5, 'prompt', false)).toBe(
-    `The quota limit is reached: ${PF5}. spare10 holds your prompt and any other work. Continue the work at the reset? Until you answer, all of it waits. Stop here gives your prompt back and stops other work. ${AFTER}`,
+    `The quota limit is reached: ${PF5}. spare10 holds your prompt and any other work. Continue the work at the reset? Until you answer, all of it waits. Stop here gives your prompt back and stops other work. ${BACK}`,
   )
   expect(limitQuestionText(L5, 'loop')).toBe(limitQuestionText(L5, 'loop', false))
 })
 
 test('the limit question names the weekly window, and both windows with the later reset', () => {
   expect(limitQuestionText(L7, 'loop', true)).toBe(
-    `The weekly quota limit is reached: 100% used · 0% left · resets Mon 09:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${AFTER}`,
+    `The weekly quota limit is reached: 100% used · 0% left · resets Mon 09:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${BACK}`,
   )
   expect(limitQuestionText([L7, L5], 'loop', true)).toBe(
-    `The quota limits of both windows are reached: 5-hour window ${PF5}, weekly window 100% used · 0% left · resets Mon 09:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${AFTER}`,
+    `The quota limits of both windows are reached: 5-hour window ${PF5}, weekly window 100% used · 0% left · resets Mon 09:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${BACK}`,
   )
 })
 
@@ -2239,14 +2240,17 @@ test('notStarted at the limit names only the limit and the reset', () => {
 })
 
 test('the transcript lines at the limit, and {Rs} of a kind at the limit in the shared lines', () => {
-  expect(notice.limitContinues(L5)).toBe('held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.')
-  expect(notice.limitContinues([L5, L7])).toBe('held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.')
+  expect(notice.limitContinues(L5)).toBe(`held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
+  expect(notice.limitContinues([L5, L7])).toBe(`held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
   expect(notice.limitPromptWaits(L5)).toBe('your prompt waits with the held work until 15:00. Then spare10 continues all of it, unless a reserve is still reached.')
   expect(notice.limitStopped('15:00')).toBe(`stopped at the quota limit until 15:00. ${AFTER}`)
+  expect(notice.limitStopped('15:00', true)).toBe('stopped at the quota limit until 15:00. Then spare10 continues the work, unless a reserve is still reached.')
+  expect(notice.limitStopped()).toBe('stopped at the quota limit. Type a prompt to continue.') // the reset has passed: no time
   expect(notice.limitHoldLimit('Mon 09:00', true)).toBe(
     'the hold reached its time limit. The work is stopped at the quota limit until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.',
   )
   expect(notice.limitHoldLimit('Mon 09:00', false)).toBe(`the hold reached its time limit. The work is stopped at the quota limit until Mon 09:00. ${AFTER}`)
+  expect(notice.limitHoldLimit(undefined, false)).toBe('the hold reached its time limit. The work is stopped at the quota limit. Type a prompt to continue.')
   expect(notice.limitReached).toBe('the quota limit is reached. spare10 asks you again.')
   expect(notice.limitOver).toBe('the pause at the limit is over. Held work continues, unless a reserve is still reached.')
   expect(yourReserves([L5, L7])).toBe('your quota limit and your weekly quota limit')
@@ -2255,7 +2259,8 @@ test('the transcript lines at the limit, and {Rs} of a kind at the limit in the 
 })
 
 test('the command replies at the limit', () => {
-  expect(resumeReply('limit-asking', L5)).toBe('held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.')
+  expect(resumeReply('limit-asking', L5)).toBe(`held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
+  expect(resumeReply('limit-late', L5)).toBe('resumed. Held work continues.') // the reset has passed: no time
   expect(resumeReply('limit', L5)).toBe(
     'nothing to resume now. The quota limit is reached until 15:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.',
   )
@@ -2300,14 +2305,29 @@ test('the report: the limit phase lines, and the at the limit row only while the
   expect(env).toContain('  · at the limit   off. spare10 does not pause at the limit (from SPARE10_LIMIT_PAUSE)')
 })
 
+test('the report: a stop at the limit names the reset and the way out, not the resume command', () => {
+  const at = { basis: { kind: 'live', pct: 100, resetsAtMs: R } as Basis, facts: L5, autoResume: { on: true, from: 'option' } as const }
+  const stopped = statusReport(status({ ...at, phase: 'stopped', limit: { ms: R, kinds: ['five_hour'], held: false } })).split('\n')
+  expect(stopped[2]).toBe(`  ■ stopped        you chose Stop here, until 15:00. Type a prompt to be asked again. ${LIMIT_OFF}`)
+  const auto = { at: { ms: R, kinds: ['five_hour'] as Kind[] }, work: true, autoStop: true }
+  const cont = statusReport(status({ ...at, ...auto, phase: 'stopped', limit: { ms: R, kinds: ['five_hour'], held: false } })).split('\n')
+  expect(cont[2]).toBe(`  ■ stopped        you chose Stop here. spare10 continues the work after 15:00. Type a prompt to be asked again. ${LIMIT_OFF}`)
+  // Below the limit: the line of today.
+  expect(statusReport(status({ ...at, phase: 'stopped' })).split('\n')[2]).toBe('  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run /spare10 resume.')
+})
+
 /** Every limit notice, warning and reply, for the prefix and STE guards. */
 function limitEnginePrefixed(): string[] {
   const out: string[] = [
     notice.limitReached,
     notice.limitOver,
     notice.limitStopped('15:00'),
+    notice.limitStopped('15:00', true),
+    notice.limitStopped(),
     notice.limitHoldLimit('15:00', true),
     notice.limitHoldLimit('15:00', false),
+    notice.limitHoldLimit(undefined, false),
+    resumeReply('limit-late'),
     badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'on'),
     stopReply('limit', undefined, undefined, { at: '15:00' }),
     stopReply('limit'),
@@ -2315,7 +2335,7 @@ function limitEnginePrefixed(): string[] {
   for (const f of [L5, L7, [L5, L7]] as Array<Facts | Facts[]>) {
     out.push(notice.limitContinues(f), notice.limitPromptWaits(f), resumeReply('limit-asking', f), resumeReply('limit', f), notice.stopped(f), notice.resetStillHeld(FIVE, Array.isArray(f) ? f : [f]))
   }
-  for (const phase of ['limit', 'open'] as const)
+  for (const phase of ['limit', 'open', 'stopped'] as const)
     for (const held of [false, true])
       for (const on of [false, true])
         out.push(statusReport(status({ phase, facts: L5, limit: { ms: R, kinds: ['five_hour'], held }, limitPause: { on, from: 'env' }, autoResume: { on: true, from: 'option' } })))

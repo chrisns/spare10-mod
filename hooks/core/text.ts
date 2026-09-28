@@ -421,13 +421,14 @@ export function limitHead(f: Facts | readonly Facts[]): string {
 /**
  * The limit question (100% used): what it holds, and what no answer and Stop here mean. {at} is the latest
  * reset. `auto`: autoResume when it opened. No answer: with it on, the work continues after the reset, and
- * with it off, the work waits for the answer. Stop here stops until the reset and continues nothing.
+ * with it off, the work waits for the answer. Stop here stops until the reset and continues nothing. The
+ * last sentence names the way out, for a reading that is out of date or for paid extra usage (LIMIT_OFF).
  */
 export function limitQuestionText(f: Facts | readonly Facts[], opener: 'loop' | 'prompt', auto = false): string {
   const fs = listOf(f)
   const { at } = whenOf(fs)
   const head = `${limitHead(fs)}: ${personFacts(fs)}.`
-  const back = 'After the reset, type a prompt to continue.'
+  const back = `After the reset, type a prompt to continue. ${LIMIT_OFF}`
   if (opener === 'loop') {
     const none = auto ? `If you do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.` : 'Until you answer, the work waits.'
     return `${head} All work is on hold. Continue the work at the reset? ${none} Stop here stops the work. ${back}`
@@ -640,18 +641,29 @@ export const notice = {
     return named.length === 0 && open.length === 0 ? tail : `${eventOr(named, open)}, but ${tail}`
   },
   resumeFailed: (reason: string): string => `could not continue the stopped work: ${reason}. Type a prompt to continue.`,
-  /** Continue at the reset on the limit question: held work waits for the reset. */
-  limitContinues: (f: Facts | readonly Facts[]): string => `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached.`,
+  /** Continue at the reset on the limit question: held work waits for the reset. It names the way out (LIMIT_OFF). */
+  limitContinues: (f: Facts | readonly Facts[]): string =>
+    `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`,
   /** A person prompt after Continue at the reset: it waits with the held work, and asks nothing. */
   limitPromptWaits: (f: Facts | readonly Facts[]): string =>
     `your prompt waits with the held work until ${whenOf(f).at}. Then spare10 continues all of it, unless a reserve is still reached.`,
-  /** Stop here on the limit question. */
-  limitStopped: (at: string): string => `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
-  /** The hold time limit on a limit question. `cont`: the stop continues the work at the reset. */
-  limitHoldLimit: (at: string, cont: boolean): string =>
-    cont
-      ? `the hold reached its time limit. The work is stopped at the quota limit until ${at}. Then spare10 continues it, unless a reserve is still reached.`
-      : `the hold reached its time limit. The work is stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /**
+   * A stop at the quota limit: Stop here, or a question at the reserve that ends with no answer at the limit.
+   * `cont`: the stop continues the work at the reset. No `at`: the reset has passed, so the line names no time.
+   */
+  limitStopped: (at?: string, cont = false): string =>
+    at === undefined
+      ? 'stopped at the quota limit. Type a prompt to continue.'
+      : cont
+        ? `stopped at the quota limit until ${at}. Then spare10 continues the work, unless a reserve is still reached.`
+        : `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /** The hold time limit at the quota limit. `cont`: the stop continues the work at the reset. No `at` (only without `cont`): the reset has passed. */
+  limitHoldLimit: (at: string | undefined, cont: boolean): string =>
+    at === undefined
+      ? 'the hold reached its time limit. The work is stopped at the quota limit. Type a prompt to continue.'
+      : cont
+        ? `the hold reached its time limit. The work is stopped at the quota limit until ${at}. Then spare10 continues it, unless a reserve is still reached.`
+        : `the hold reached its time limit. The work is stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
   /** A question at the reserve gives way to the limit question. */
   limitReached: 'the quota limit is reached. spare10 asks you again.',
   /** A limit question ends before its reset: no kind that gates is at the quota limit now. */
@@ -702,7 +714,7 @@ export type StatusInput = {
     | 'off' // reserve 0 is off too
   autoResume?: { on: boolean; from: Source }
   limitPause?: { on: boolean; from: Source } // the pause at the quota limit. Its row shows only while it is off
-  limit?: { ms: number; kinds: readonly Kind[]; held: boolean } // the limit phase: when held work continues. held: a limit question after Continue at the reset
+  limit?: { ms: number; kinds: readonly Kind[]; held: boolean } // the limit phase: when held work continues. held: a limit question after Continue at the reset. The stopped phase: the reset of the kinds at the limit
   at?: { ms: number; kinds: readonly Kind[]; skip?: boolean } // when an open question or a stop continues. skip: a skip start ('at', not 'after')
   work?: boolean // the stop has work
   autoStop?: boolean // the stop has auto, and autoResume is on
@@ -761,12 +773,16 @@ function quietOf(s: StatusInput): string {
 
 function phaseLine(s: StatusInput): string {
   const at = s.at === undefined ? undefined : atText(s.at.ms, s.at.kinds, s.timeZone, s.now)
-  const again = s.heldInPlace === true ? HELD_WAITS : AGAIN
+  // A stop at the quota limit: the resume command changes nothing until the reset, so the line names the reset and the way out.
+  const limitClock = s.phase === 'stopped' && s.limit !== undefined ? atText(s.limit.ms, s.limit.kinds, s.timeZone, s.now) : undefined
+  const again = limitClock !== undefined ? `Type a prompt to be asked again. ${LIMIT_OFF}` : s.heldInPlace === true ? HELD_WAITS : AGAIN
   const open = s.open === undefined ? [] : listOf(s.open)
   const openRs = open.length === 0 ? '' : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`
   const stopped =
     at === undefined
-      ? `you chose Stop here. ${again}`
+      ? limitClock === undefined
+        ? `you chose Stop here. ${again}`
+        : `you chose Stop here, until ${limitClock}. ${again}`
       : s.skipStop === true
         ? s.work === true && s.autoStop === true
           ? `you chose Stop here. spare10 continues the work at ${at}. ${again}`
@@ -996,10 +1012,11 @@ const resumedPart = (f: Facts): string => {
  * B23 ('tripped' is "tripped, not stopped"). 'overdue': a stop past its end that nobody released yet,
  * with the windows that reset and the open ones. 'open': no kind gates and some kind is open (`f`: the
  * open kinds). `absent` (Codex design 2.1): the kinds the host reports no window for. With five_hour in
- * it, a reply with no figures names no 5-hour reading.
+ * it, a reply with no figures names no 5-hour reading. 'limit-late': a resume settles a limit question
+ * whose reset has passed (it waited for the answer), so the reply names no time.
  */
 export function resumeReply(
-  c: ReplyCase | 'overdue' | 'open' | 'limit-asking' | 'limit',
+  c: ReplyCase | 'overdue' | 'open' | 'limit-asking' | 'limit' | 'limit-late',
   f?: Facts | readonly Facts[],
   named?: readonly Named[],
   open?: readonly Facts[],
@@ -1037,6 +1054,8 @@ export function resumeReply(
       return notice.limitContinues(fs)
     case 'limit':
       return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then. ${LIMIT_OFF}`
+    case 'limit-late':
+      return 'resumed. Held work continues.'
   }
 }
 

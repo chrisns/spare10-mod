@@ -14,7 +14,7 @@ Use the cheapest model and one-line prompts, and use `sleep` to make time window
 LC1, LC2, LC3, LC5, LC4, LC6, LC7 and LC8 must pass before each release.
 For 0.2, LC17 to LC24 and LC26 to LC31 must also pass, and LC25 must run once.
 For 0.3, LC32 to LC37 must also pass.
-For the pause at the limit, LC38 to LC42 and LC45 must also pass. LC43 and LC44 are optional.
+For the pause at the limit, LC38 to LC43 and LC45 must also pass. LC44 is optional.
 LC18b is optional.
 LC9 to LC16 are optional or regression checks.
 
@@ -1227,12 +1227,12 @@ Cost: two small `-p` runs.
 ## Quota limit checks
 
 These checks test the pause at the limit.
-LC38 to LC42 and LC45 are in the release gate for the pause at the limit.
-LC43 and LC44 are optional.
+LC38 to LC43 and LC45 are in the release gate for the pause at the limit.
+LC44 is optional.
 The checks use the default open times and the default floors, so they start from the **floor start command**.
 A short test window at 100% used shows that the limit holds also in an open reserve.
 
-**Precondition of LC38 to LC42 and LC45.**
+**Precondition of LC38 to LC43 and LC45.**
 The `reading` row and the `weekly reading` row of `/spare10` show less than 90% used.
 A real reading in the reserve can hold the work again after the test window ends.
 If a row shows 90% or more, wait for the reset.
@@ -1260,7 +1260,7 @@ Each check ends with `/spare10 simulate off`, so no test reading, test consent o
 - `HH:MM` is two minutes after step 2.
 - The dialog shows, although the test window is shorter than the open time of 20 minutes.
 - The dialog has this text:
-  `The quota limit is reached: 100% used · 0% left · resets HH:MM. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue.`
+  `The quota limit is reached: 100% used · 0% left · resets HH:MM. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue. To let work run past the limit, turn off Pause at the limit in /config.`
 - The options are `❯ 1. Continue at the reset` and `2. Stop here`. The first option has the focus.
 - About one minute after HH:MM, the dialog leaves the screen by itself.
 - Then `$S10/lc38` exists.
@@ -1291,7 +1291,7 @@ It also settles that the limit holds in an open reserve.
 **Expected:**
 
 - After step 3, the dialog leaves the screen at once.
-- The transcript shows `spare10: held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached.`
+- The transcript shows `spare10: held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached. To let work run past the limit, turn off Pause at the limit in /config.`
 - After step 3, no second dialog shows, also when the main loop makes a step.
 - After step 4, the badge shows `‖ spare10 (test): at the limit until HH:MM`.
 - After step 4, the phase line reads `‖ limit          the quota limit is reached. Held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached. To let work run past the limit, turn off Pause at the limit in /config.`
@@ -1326,6 +1326,7 @@ Cost: two short turns, each with one agent.
 - After step 3, the Bash call gets this text, or the next request gets the matching PAUSED text:
   `spare10: the user stopped work at the quota limit (100% of quota used · resets HH:MM). Stop now and wait for the user. Do not call any further tools.`
 - After step 3, the badge shows `■ spare10 (test): stopped`, with no time.
+- After step 3, `/spare10` shows the phase line `■ stopped        you chose Stop here, until HH:MM. Type a prompt to be asked again. To let work run past the limit, turn off Pause at the limit in /config.`
 - During step 4, no plugin message comes, and `$S10/lc40` does not exist.
 - Step 5 goes in with no question, and the model replies.
 
@@ -1432,7 +1433,7 @@ Cost: two small `-p` runs.
 
 **Leaves:** nothing. The `-p` processes have ended.
 
-### LC43 Hold budget at the limit (optional)
+### LC43 Hold budget at the limit
 
 **Start:** a new session with its own debug log.
 Type `/exit`, then send this start command:
@@ -1445,7 +1446,7 @@ tmux send-keys -t s10 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
 **Steps:**
 
 1. Send the two-step prompt with `$S10/lc43`.
-2. While `sleep` runs, type `/spare10 simulate 100 weekly in 2d`.
+2. While `sleep` runs, type `/spare10 simulate 100 in 5h`.
 3. When the dialog shows, choose **Continue at the reset**.
 4. Leave the session alone until about 5 minutes after the test window ends.
 5. Run `grep 'spare10: held' "$S10/lc43.log"`.
@@ -1454,14 +1455,17 @@ tmux send-keys -t s10 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
 **Expected:**
 
 - The debug log has a line `spare10: held N min. Budget left MS ms.` about every 10 minutes.
-- If the budget runs out first, the transcript shows `spare10: the hold reached its time limit. The work is stopped at the quota limit until ddd HH:MM. Then spare10 continues it, unless a reserve is still reached.`
-  Then, about one minute after the test window ends, a plugin message starts a new turn, and `$S10/lc43` exists.
-- If the budget lasts, the held work continues about one minute after the test window ends, and `$S10/lc43` exists.
+- The budget lasts. The held work continues about one minute after the test window ends, and `$S10/lc43` exists.
+- Work out the cost of one cycle and the longest hold, as in LC25.
+- If the budget runs out first, the check fails.
+  The transcript then shows `spare10: the hold reached its time limit. The work is stopped at the quota limit until HH:MM. Then spare10 continues it, unless a reserve is still reached.`
 
-**Record:** the budget in the last line, and whether the budget ran out.
+**Record:** the budget in the first and the last line, the cost of one cycle and the longest hold.
+Write the longest hold in item 28 of the [Known limitations](how-it-works.md#known-limitations).
 
-**Settles:** the hold budget at the weekly limit, and the stop that ends a hold at its time limit.
-Cost: one short turn, and a session that runs for 2 days.
+**Settles:** a pause at the 5-hour limit lasts until the reset, and the held work does not end.
+It also measures the hold budget over a long hold.
+Cost: one short turn, and a session that runs for about 5 hours.
 
 **Leaves:** no test reading, no consent and no stop.
 
@@ -1776,7 +1780,7 @@ Keep the old rows.
 | LC41 Past a second Resume | | | | |
 | LC42 Option off | | | | |
 | LC45 Unattended runs at the limit | | | | Record the run time and the exit code of each run. |
-| LC43 Hold budget at the limit | | | | Record the budget in the last line, and whether the budget ran out. |
+| LC43 Hold budget at the limit | | | | Record the budget in the first and the last line, the cost of one cycle and the longest hold. |
 | LC44 The real limit | | | | Record which agents were on hold, and the time from the reset to the release. |
 
 The run of 2026-09-24 found defects D1 to D4.
@@ -1797,4 +1801,4 @@ Add a new row for each run.
 
 The pause at the limit adds LC38 to LC45.
 It does not change the texts of LC1 to LC37, because no earlier check reaches 100% used.
-Before the next release, run the release gate with LC38 to LC42 and LC45.
+Before the next release, run the release gate with LC38 to LC43 and LC45.

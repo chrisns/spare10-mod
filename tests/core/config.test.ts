@@ -599,7 +599,7 @@ test('withEnv: SPARE10_LIMIT_PAUSE on and off win over the option, and a bad val
 
 test('LIMIT_UNREAD: until a copy reads its settings, $.spare10.limit() answers on, whatever the option says (fail closed, as NO_SPANS)', () => {
   // register.tsx starts limitNow here, and not at the option: an older copy's held loop that asks before
-  // the newest copy read SPARE10_LIMIT_PAUSE never lets work past 100% on the option alone.
+  // the newest copy read SPARE10_LIMIT_PAUSE never lets work past 100% on the option alone. The kit cannot
+  // set an option, so codex/test/claude-pins.spec.ts pins that register.tsx uses this constant.
   expect(LIMIT_UNREAD).toBe(true)
-  expect(LIMIT_UNREAD).not.toBe(fromOptions({ limitPause: false }).limitPause)
 })

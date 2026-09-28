@@ -388,7 +388,7 @@ function limitQuestionText(f, opener, auto = false) {
   const fs = listOf(f);
   const { at } = whenOf(fs);
   const head = `${limitHead(fs)}: ${personFacts(fs)}.`;
-  const back = "After the reset, type a prompt to continue.";
+  const back = `After the reset, type a prompt to continue. ${LIMIT_OFF}`;
   if (opener === "loop") {
     const none2 = auto ? `If you do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.` : "Until you answer, the work waits.";
     return `${head} All work is on hold. Continue the work at the reset? ${none2} Stop here stops the work. ${back}`;
@@ -513,14 +513,17 @@ var notice = {
     return named.length === 0 && open.length === 0 ? tail : `${eventOr(named, open)}, but ${tail}`;
   },
   resumeFailed: (reason) => `could not continue the stopped work: ${reason}. Type a prompt to continue.`,
-  /** Continue at the reset on the limit question: held work waits for the reset. */
-  limitContinues: (f) => `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached.`,
+  /** Continue at the reset on the limit question: held work waits for the reset. It names the way out (LIMIT_OFF). */
+  limitContinues: (f) => `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`,
   /** A person prompt after Continue at the reset: it waits with the held work, and asks nothing. */
   limitPromptWaits: (f) => `your prompt waits with the held work until ${whenOf(f).at}. Then spare10 continues all of it, unless a reserve is still reached.`,
-  /** Stop here on the limit question. */
-  limitStopped: (at) => `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
-  /** The hold time limit on a limit question. `cont`: the stop continues the work at the reset. */
-  limitHoldLimit: (at, cont) => cont ? `the hold reached its time limit. The work is stopped at the quota limit until ${at}. Then spare10 continues it, unless a reserve is still reached.` : `the hold reached its time limit. The work is stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /**
+   * A stop at the quota limit: Stop here, or a question at the reserve that ends with no answer at the limit.
+   * `cont`: the stop continues the work at the reset. No `at`: the reset has passed, so the line names no time.
+   */
+  limitStopped: (at, cont = false) => at === void 0 ? "stopped at the quota limit. Type a prompt to continue." : cont ? `stopped at the quota limit until ${at}. Then spare10 continues the work, unless a reserve is still reached.` : `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /** The hold time limit at the quota limit. `cont`: the stop continues the work at the reset. No `at` (only without `cont`): the reset has passed. */
+  limitHoldLimit: (at, cont) => at === void 0 ? "the hold reached its time limit. The work is stopped at the quota limit. Type a prompt to continue." : cont ? `the hold reached its time limit. The work is stopped at the quota limit until ${at}. Then spare10 continues it, unless a reserve is still reached.` : `the hold reached its time limit. The work is stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
   /** A question at the reserve gives way to the limit question. */
   limitReached: "the quota limit is reached. spare10 asks you again.",
   /** A limit question ends before its reset: no kind that gates is at the quota limit now. */
@@ -568,10 +571,11 @@ function quietOf(s) {
 }
 function phaseLine(s) {
   const at = s.at === void 0 ? void 0 : atText(s.at.ms, s.at.kinds, s.timeZone, s.now);
-  const again = s.heldInPlace === true ? HELD_WAITS : AGAIN;
+  const limitClock = s.phase === "stopped" && s.limit !== void 0 ? atText(s.limit.ms, s.limit.kinds, s.timeZone, s.now) : void 0;
+  const again = limitClock !== void 0 ? `Type a prompt to be asked again. ${LIMIT_OFF}` : s.heldInPlace === true ? HELD_WAITS : AGAIN;
   const open = s.open === void 0 ? [] : listOf(s.open);
   const openRs = open.length === 0 ? "" : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`;
-  const stopped = at === void 0 ? `you chose Stop here. ${again}` : s.skipStop === true ? s.work === true && s.autoStop === true ? `you chose Stop here. spare10 continues the work at ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}` : s.autoStop !== true ? `you chose Stop here. ${again}` : s.work === true ? `you chose Stop here. spare10 continues the work after ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}`;
+  const stopped = at === void 0 ? limitClock === void 0 ? `you chose Stop here. ${again}` : `you chose Stop here, until ${limitClock}. ${again}` : s.skipStop === true ? s.work === true && s.autoStop === true ? `you chose Stop here. spare10 continues the work at ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}` : s.autoStop !== true ? `you chose Stop here. ${again}` : s.work === true ? `you chose Stop here. spare10 continues the work after ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}`;
   const openNote = openRs === "" ? "" : ` ${openRs}, so new work goes on.`;
   const asking = at === void 0 || s.autoResume?.on !== true ? `a question is open. Held work waits until you answer.${openNote} If no ${HOST.dialog} shows, run ${HOST.anytime} resume or ${HOST.anytime} stop.` : `a question is open. Held work waits until you answer, or until ${at}.${openNote} If no ${HOST.dialog} shows, run ${HOST.anytime} resume or ${HOST.anytime} stop.`;
   const detail = {
@@ -752,6 +756,8 @@ function resumeReply(c, f, named, open, mode = "hold", absent2) {
       return notice.limitContinues(fs);
     case "limit":
       return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then. ${LIMIT_OFF}`;
+    case "limit-late":
+      return "resumed. Held work continues.";
   }
 }
 function stopReply(c, f, trip, auto, weeklyTrip, ended, absent2) {
@@ -3040,7 +3046,8 @@ function stopPlan(q, now, auto, sNow, atLimit2 = false) {
   const work = q.loops > 0;
   const passed = auto ? q.holdEnd <= now : q.skip && q.stopEnd <= now;
   const real = sNow === void 0 ? q.real : sNow.holders;
-  const late = sNow === void 0 ? [] : passed ? sNow.split.gating : atLimit2 ? sNow.split.gating.filter((k) => k.limit) : [];
+  const limitNow = sNow === void 0 ? [] : sNow.split.gating.filter((k) => k.limit);
+  const late = sNow === void 0 ? [] : passed ? sNow.split.gating : limitNow;
   const opened = sNow !== void 0 && passed ? sNow.split.open.filter((k) => q.kinds.includes(k.kind)) : [];
   const until = auto ? Math.max(q.holdEnd, ...late.map((k) => k.holdEnd)) : Math.max(q.stopEnd, ...late.map((k) => k.stopEnd));
   const ended = sNow === void 0 || opened.length === 0 ? void 0 : endedFor(namedOf(q), sNow.s, late, true);
@@ -3058,7 +3065,7 @@ function stopPlan(q, now, auto, sNow, atLimit2 = false) {
     ...ended === void 0 ? {} : { ended },
     late,
     record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real },
-    ...atLimit2 ? { limit: true } : {}
+    ...atLimit2 || limitNow.length > 0 ? { limit: true } : {}
   };
 }
 function stopOpenNotice(q, ended, via) {
@@ -3077,7 +3084,8 @@ function stopNotice(q, plan, written, via, now, auto) {
   const text3 = (limit, stopped) => via === "time limit" ? { text: limit } : via !== "command" ? { text: stopped } : {};
   if (q.limit === true || plan.limit === true) {
     const cont = auto && written.auto === true && written.work === true;
-    return { ...text3(notice.limitHoldLimit(u.at, cont), notice.limitStopped(u.at)), late: { record: written, until: u } };
+    const at = cont || written.windowEnd > now ? u.at : void 0;
+    return { ...text3(notice.limitHoldLimit(at, cont), notice.limitStopped(at, cont)), late: { record: written, until: u } };
   }
   const ended = plan.ended;
   if (ended !== void 0 && late.length === 0 && auto && work && plan.until <= now) {
@@ -3191,6 +3199,7 @@ function resumeAtLimit(sNow, q) {
   if (sNow === void 0 && q?.limit === true) return { choose: false, reply: resumeReply("limit", q.facts) };
   return void 0;
 }
+var resumeAskingReply = (q, now) => q?.limit === true && q.holdEnd <= now ? resumeReply("limit-late") : resumeReply("asking", q?.facts, void 0, void 0, q?.mode);
 var gatesAfter = (sNow) => sNow?.kinds.some((k) => k.tripped && !k.open) === true;
 function stopOverdueReply(t) {
   if (t.open.length > 0) return stopReply("overdue-open", t.open);
@@ -3386,7 +3395,7 @@ function statusInput(p, i) {
   const week = p.bases.seven_day;
   const q = p.question;
   const st = p.stop;
-  const lim = p.phase === "limit" ? limitAt(p) : void 0;
+  const lim = p.phase === "limit" ? limitAt(p) : p.phase === "stopped" ? limitAt({ gating: p.gating }) : void 0;
   const at = q !== void 0 ? { ms: q.holdEnd, kinds: q.kinds, skip: q.skip } : st?.kinds !== void 0 && (st.auto === true || st.skip === true) ? { ms: st.windowEnd, kinds: st.kinds, skip: st.skip === true } : void 0;
   const rowOf = (kind) => {
     const k = p.kinds.find((x) => x.kind === kind);
@@ -4548,8 +4557,7 @@ function createCommands(d) {
     const open = d.questions.openQuestion(sx);
     if (open !== void 0) {
       const r = await d.questions.settle(sx, open.key, "resume", "command", sNow === void 0 ? {} : { raiseAt: sNow });
-      const q = r.q ?? open;
-      return resumeReply("asking", q.facts, void 0, void 0, q.mode);
+      return resumeAskingReply(r.q ?? open, now);
     }
     const s = sNow ?? await d.sense.sense(sx);
     const mode = modeOf(cfg);
