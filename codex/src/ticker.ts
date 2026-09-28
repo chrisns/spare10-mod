@@ -4,7 +4,8 @@ import { endedFor, extendNotice, extended, namedStop, tickPlan } from '../../hoo
 import { debugLine, notice, resumePrompt } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
 import type { Timer } from './clock.ts'
-import type { DaemonLink } from './daemon.ts'
+import { DaemonError } from './daemon.ts'
+import type { DaemonLink, TurnInfo } from './daemon.ts'
 import type { Deps } from './deps.ts'
 import { readThread } from './held.ts'
 import type { Quota } from './quota.ts'
@@ -58,6 +59,15 @@ export function createTicker(d: TickerDeps): Ticker {
       return false
     }
   }
+  /** After a turn/start timeout: the newest turn is not `before`. A failed look is false (the failure line shows). */
+  const newerTurn = async (sx: SessionCtx, before: TurnInfo | undefined): Promise<boolean> => {
+    try {
+      const t = await d.daemon.get()?.newestTurn(sx.sid)
+      return t !== undefined && t.id !== before?.id
+    } catch {
+      return false
+    }
+  }
   let timer: Timer | undefined
   let session: SessionCtx | undefined
   let busy = false
@@ -94,11 +104,13 @@ export function createTicker(d: TickerDeps): Ticker {
       return
     }
     const ended = endedFor(namedStop(r), s, [], r.skip === true) // skip 4.5: what reset and what opened
+    let before: TurnInfo | undefined // the newest turn before the turn/start
     if (r.work === true) {
       const daemon = d.daemon.get()
       if (daemon === undefined) return
       const status = await daemon.status(sx.sid)
       const newest = await daemon.newestTurn(sx.sid)
+      before = newest
       // A person prompt of that turn still waits on its gate (a prompt question in a stopped session): its
       // own decision takes the stop over with the B35 note, as register.tsx does. The ticker leaves it.
       if (newest !== undefined && heldPrompt(sx, newest.id)) return
@@ -135,6 +147,9 @@ export function createTicker(d: TickerDeps): Ticker {
     } catch (e) {
       const reason = errText(e)
       d.log.debug(codexDebug.startFailed(reason))
+      // 3.5: a timeout is no proof of failure. A turn newer than the one read before the start (the
+      // continuation, or a person prompt) means the work goes on: the record stays and no failure line shows.
+      if (e instanceof DaemonError && e.kind === 'timeout' && (await newerTurn(sx, before))) return
       sx.store.locked((tx) => {
         if (tx.state.continuation?.text === text) delete tx.state.continuation
         noticeIn(tx.state, notice.resumeFailed(reason), d.clock.now())

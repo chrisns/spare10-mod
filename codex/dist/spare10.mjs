@@ -6105,7 +6105,8 @@ function createRefusal(d) {
     const raw = sx.store.read().stopped;
     const r = parseStopped(raw);
     if (raw === void 0 || r?.kinds === void 0 || r.auto !== true || r.sessionId !== sx.sid) return false;
-    if (d.clock.now() < stopDue(r) || !d.settings.get().autoResume) return false;
+    const cfg = d.settings.get();
+    if (d.clock.now() < stopDue(r) || !cfg.autoResume || !cfg.enabled) return false;
     await d.quota.live(LIVE_RELEASE_MAX_AGE_MS);
     const s = await d.sense.sense(sx);
     if (noReading(s)) return false;
@@ -6181,7 +6182,7 @@ function createRefusal(d) {
         const mine = last.s.attended && rec !== void 0 && rec.sessionId === sx.sid;
         const stands = mine && rec !== void 0 && rec.windowEnd > start2;
         const due = mine && rec?.kinds !== void 0 && rec.auto === true && d.settings.get().autoResume ? stopDue(rec) : void 0;
-        if ((v === "pass" || v === "tell") && !stands) {
+        if ((v === "pass" || v === "tell") && (!stands || !last.s.cfg.enabled)) {
           try {
             sx.store.locked((tx) => dropStopNotices(tx.state));
           } catch (e) {
@@ -6595,6 +6596,14 @@ function createTicker(d) {
       return false;
     }
   };
+  const newerTurn = async (sx, before) => {
+    try {
+      const t = await d.daemon.get()?.newestTurn(sx.sid);
+      return t !== void 0 && t.id !== before?.id;
+    } catch {
+      return false;
+    }
+  };
   let timer;
   let session;
   let busy = false;
@@ -6627,11 +6636,13 @@ function createTicker(d) {
       return;
     }
     const ended = endedFor(namedStop(r), s, [], r.skip === true);
+    let before;
     if (r.work === true) {
       const daemon = d.daemon.get();
       if (daemon === void 0) return;
       const status = await daemon.status(sx.sid);
       const newest = await daemon.newestTurn(sx.sid);
+      before = newest;
       if (newest !== void 0 && heldPrompt(sx, newest.id)) return;
       if (newest !== void 0 && newest.startedAt !== null && newest.startedAt * 1e3 > r.at) {
         const cleared = sx.store.locked((tx) => {
@@ -6665,6 +6676,7 @@ function createTicker(d) {
     } catch (e) {
       const reason = errText9(e);
       d.log.debug(codexDebug.startFailed(reason));
+      if (e instanceof DaemonError && e.kind === "timeout" && await newerTurn(sx, before)) return;
       sx.store.locked((tx) => {
         if (tx.state.continuation?.text === text3) delete tx.state.continuation;
         noticeIn(tx.state, notice.resumeFailed(reason), d.clock.now());

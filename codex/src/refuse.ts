@@ -104,7 +104,9 @@ export function createRefusal(d: RefusalDeps): Refusal {
     const raw = sx.store.read().stopped
     const r = parseStopped(raw)
     if (raw === undefined || r?.kinds === undefined || r.auto !== true || r.sessionId !== sx.sid) return false
-    if (d.clock.now() < stopDue(r) || !d.settings.get().autoResume) return false
+    const cfg = d.settings.get()
+    // As stopAction in the ticker: a switched-off spare10 never extends or ends a stop.
+    if (d.clock.now() < stopDue(r) || !cfg.autoResume || !cfg.enabled) return false
     await d.quota.live(LIVE_RELEASE_MAX_AGE_MS)
     const s = await d.sense.sense(sx)
     if (noReading(s)) return false
@@ -134,7 +136,7 @@ export function createRefusal(d: RefusalDeps): Refusal {
    * through, but for an attended call only once no stop of its session that applied during the hold
    * stands: spare10 never lets held work go before the stop's due time (the margin of 4.8), and with
    * Continue at the reset off held work waits for the person (the table of 4.4). An auto stop past its due
-   * time ends in place (releaseInPlace).
+   * time ends in place (releaseInPlace). When the person switches spare10 off, a pass lets the call through at once.
    * A held stop that the person turns into a plain stop (`spare10 stop` clears `noDialog`) takes the normal
    * mode: a hosted call is interrupted.
    */
@@ -193,7 +195,8 @@ export function createRefusal(d: RefusalDeps): Refusal {
         // The stop applied during this hold: an older record that ended before the hold began holds nothing.
         const stands = mine && rec !== undefined && rec.windowEnd > start
         const due = mine && rec?.kinds !== undefined && rec.auto === true && d.settings.get().autoResume ? stopDue(rec) : undefined
-        if ((v === 'pass' || v === 'tell') && !stands) {
+        // A switched-off spare10 guards nothing (Codex difference 18): the held call goes through, as a new call does.
+        if ((v === 'pass' || v === 'tell') && (!stands || !last.s.cfg.enabled)) {
           try {
             sx.store.locked((tx) => dropStopNotices(tx.state)) // the work did not stop
           } catch (e) {

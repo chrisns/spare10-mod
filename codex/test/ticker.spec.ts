@@ -4,6 +4,7 @@ import { codexDebug, codexText, withPrefix } from '../../hooks/core/codex.ts'
 import { formatStopped, parseStopped } from '../../hooks/core/decide.ts'
 import type { StoppedRecord } from '../../hooks/core/decide.ts'
 import { debugLine, notice } from '../../hooks/core/text.ts'
+import { DaemonError } from '../src/daemon.ts'
 import { CHILD, HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
 import type { World } from './helpers/world.ts'
 
@@ -12,6 +13,8 @@ import type { World } from './helpers/world.ts'
 // went on, extends a stop while a kind gates, ends a stop with no work, and reports a failed turn/start.
 // Only the root broker ticks. The continuation prompt passes with its line and no note. A person prompt
 // after the end takes the stop over with the B35 note. The Stop gate ends the turn with CX3, CX41 or no text.
+// The ticker writes only over the stop it read. With no reading at all it releases nothing (3.6). It keeps
+// the 4.8 margin, sweeps again at each cycle (4.23), and a turn/start timeout is no proof of failure (3.5).
 //
 // The kit port (8.2). typingNow (the prompt box) and $.prompt.submit have no Codex form: turn/start instead.
 // Each tests/kit case and the Codex case that tests it: codex/test/kit-port.txt, kept complete by kit-port.spec.ts.
@@ -258,4 +261,123 @@ test('ticker: a loop Stop here, then Esc on a prompt question: the merged stop k
   assert.equal(starts(w).length, 1, 'one turn/start at the skip start')
   await w.advance(5 * MIN)
   assert.equal(starts(w).length, 1, 'and no second one')
+})
+
+test('ticker: a stop that the person sets while a cycle waits on the daemon stays, and nothing is sent', async (t) => {
+  // The ticker reads the stop, awaits the daemon, then writes under the lock only over the value it read.
+  const person = formatStopped({ sessionId: SID, windowEnd: T0 + 5 * HOUR, at: SKIP, kinds: ['five_hour', 'seven_day'], work: true })
+  for (const site of ['status', 'newestTurn'] as const) {
+    const { w } = await hostedStop(t, stopOf())
+    let wrote = false
+    const setOnce = (): void => {
+      if (wrote || w.clock.now() < SKIP) return
+      wrote = true
+      w.setState({ stopped: person })
+    }
+    // `newestTurn`: a turn after the stop, so the ticker would clear the stop as "the person went on".
+    const turn = { id: 'U1', status: 'completed' as const, startedAt: Math.floor((site === 'newestTurn' ? T0 + 30 * MIN : T0 - 60 * SEC) / 1000) }
+    w.daemon.script.status = () => (site === 'status' ? (setOnce(), 'idle') : 'idle')
+    w.daemon.script.newestTurn = () => (site === 'newestTurn' ? (setOnce(), turn) : turn)
+    await w.advance(SKIP - T0 + 31 * SEC)
+    assert.ok(wrote, site)
+    assert.deepEqual(starts(w), [], site)
+    assert.equal(w.state().stopped, person, site)
+    assert.equal(w.state().continuation, undefined, site)
+  }
+})
+
+test('ticker: a stop that the person sets while an extension waits on the live read stays as set', async (t) => {
+  const early = T0 + 10 * MIN
+  const { w } = await hostedStop(t, stopOf({ windowEnd: early, skip: false, test: true }))
+  const person = formatStopped({ sessionId: SID, windowEnd: T0 + 5 * HOUR, at: early, kinds: ['five_hour', 'seven_day'], work: true })
+  let wrote = false
+  w.daemon.script.rateLimits = () => {
+    if (!wrote && w.clock.now() >= early + 60 * SEC) {
+      wrote = true
+      w.setState({ stopped: person })
+    }
+    throw new Error('no rate limits scripted')
+  }
+  await w.advance(early + 60 * SEC - T0 + 30 * SEC)
+  assert.ok(wrote)
+  assert.equal(w.state().stopped, person)
+  assert.deepEqual(w.notices(), [])
+  assert.deepEqual(starts(w), [])
+})
+
+test('ticker: with no reading at all at the due time, the stop stays and no turn/start comes (3.6)', async (t) => {
+  const w = world(t, { daemon: true })
+  await w.broker({ hosted: true })
+  const stop = stopOf()
+  w.setState({ stopped: stop }) // no rollout reading, no seed, and the daemon read fails
+  w.daemon.script.newestTurn = { id: 'U1', status: 'completed', startedAt: Math.floor(T0 / 1000) - 60 }
+  await w.advance(SKIP - T0 + 2 * MIN)
+  assert.ok(w.daemon.callsOf('rateLimits').length > 0, 'the ticker read the daemon first')
+  assert.deepEqual(starts(w), [])
+  assert.equal(w.state().stopped, stop)
+  assert.equal(w.state().continuation, undefined)
+})
+
+test('ticker: a test stop whose due time comes less than 5 min after a real reset in the reserve waits for the margin, then continues (4.8)', async (t) => {
+  const reset = T0 + 10 * MIN
+  const w = world(t, { daemon: true })
+  await w.broker({ hosted: true })
+  w.reading(SID, 92, { reset })
+  // The test window ends at the real reset. Its due time (plus the 60 s test margin) is inside the 5-minute margin.
+  const stop = stopOf({ windowEnd: reset, skip: false, test: true })
+  w.setState({ stopped: stop })
+  w.daemon.script.newestTurn = { id: 'U1', status: 'completed', startedAt: Math.floor(T0 / 1000) - 60 }
+  await w.advance(reset + 90 * SEC - T0)
+  assert.deepEqual(starts(w), [], 'no turn/start inside the margin')
+  assert.equal(w.state().stopped, stop, 'the stop stays unchanged')
+  await w.advance(3 * MIN)
+  assert.deepEqual(starts(w), [], 'still inside the margin')
+  await w.advance(MIN)
+  assert.equal(starts(w).length, 1, 'after the margin the stopped work continues')
+  assert.equal(w.state().stopped, undefined)
+})
+
+test('ticker: each cycle under an attended stop sweeps again, so a running turn that an earlier sweep missed is interrupted once (4.23)', async (t) => {
+  const w = world(t, { daemon: true })
+  await w.broker({ hosted: true })
+  w.reading(SID, 92, { reset: RESET })
+  w.daemon.script.newestTurn = { id: 'U1', status: 'inProgress', startedAt: Math.floor(T0 / 1000) - 60 }
+  // The stop comes from another process whose sweep failed, and the sweep of the next cycle fails too.
+  w.daemon.script.loaded = new Error('the daemon call took longer than 8000 ms')
+  w.setState({ stopped: stopOf() })
+  await w.advance(30 * SEC)
+  assert.deepEqual(w.daemon.callsOf('interrupt'), [], 'the sweep of this cycle failed')
+  w.daemon.script.loaded = () => [...w.hosted]
+  await w.advance(30 * SEC)
+  assert.deepEqual(w.daemon.callsOf('interrupt'), [[SID, 'U1']], 'the next cycle interrupts the turn')
+  assert.equal(typeof w.state().interrupts?.['U1'], 'number')
+  await w.advance(30 * SEC)
+  assert.equal(w.daemon.callsOf('interrupt').length, 1, 'once')
+})
+
+test('ticker: a turn/start that times out counts as sent when a newer turn shows, and as failed when none does (3.5)', async (t) => {
+  const timeout = 'the daemon call took longer than 5000 ms'
+  for (const started of [true, false]) {
+    const { w } = await hostedStop(t, stopOf())
+    w.daemon.script.newestTurn = { id: 'U1', status: 'completed', startedAt: Math.floor(T0 / 1000) - 60 }
+    w.daemon.script.start = () => {
+      // Codex took the request and started the turn, but its reply missed the call timer.
+      if (started) w.daemon.script.newestTurn = { id: 'U-NEW', status: 'inProgress', startedAt: Math.floor(w.clock.now() / 1000) }
+      throw new DaemonError('timeout', timeout)
+    }
+    await w.advance(SKIP - T0 + 31 * SEC)
+    const got = starts(w)
+    assert.equal(got.length, 1, `${started}`)
+    assert.ok(w.log.lines.includes(codexDebug.startFailed(timeout)), `${started}`)
+    assert.equal(w.state().stopped, undefined, `${started}`)
+    if (started) {
+      assert.deepEqual(w.notices(), [], 'no failure line')
+      assert.equal(w.state().continuation?.text, got[0]?.[1], 'the continuation stays for its prompt gate')
+    } else {
+      assert.equal(w.state().continuation, undefined)
+      assert.deepEqual(w.notices(), [notice.resumeFailed(timeout)])
+    }
+    await w.advance(2 * MIN)
+    assert.equal(starts(w).length, 1, `${started}: no second turn/start`)
+  }
 })
