@@ -1247,6 +1247,11 @@ var codexText = {
   setDefault: (name, value) => `${name} is back to its default, ${value}. It applies from the next step.`,
   /** CX29: appended to CX27 or CX28, so it starts with a space. */
   setEnvWins: (env) => ` ${env} is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.`,
+  /**
+   * CX54: appended to CX27 or CX28, so it starts with a space. The set found a torn config.json (an OS
+   * crash after a write) and wrote a new file, so each other option of that file is lost.
+   */
+  setRepaired: (path) => ` spare10 could not read ${path}, so it wrote a new file. The other options are back to their defaults. Run spare10 set to check them.`,
   /** CX30 */
   setBad: (name, range) => `${name} takes ${range}. Nothing changed.`,
   /** CX52: `spare10 set pausePrompt` with no text. */
@@ -1256,8 +1261,8 @@ var codexText = {
   /** CX49: a typed `spare10 <word>` that is no command. */
   unknown: (word2) => `unknown command "${word2}". Nothing changed. Run spare10 help to list the commands.`,
   /**
-   * CX50: `spare10 resume` after a stop that ended, while held work still waits under it. spare10 cleared
-   * the stop, so each held call decides again. A kind that gates still asks.
+   * CX50: `spare10 resume` with nothing to resume, while held work still waits under a stop that no longer
+   * applies. spare10 cleared the stop, so each held call decides again. A kind that gates still asks.
    */
   heldStopOver: "the stop is over. Held work continues now.",
   /**
@@ -1266,8 +1271,10 @@ var codexText = {
    * them, as the core `asking` reply says it.
    */
   stopAskingWaits: (until) => until === void 0 ? `stopped. ${HELD_WAITS}` : `stopped. Held work waits. spare10 continues it ${until.lead === void 0 ? `after ${until.at}` : `at ${untilPhrase(until)}`}. Run !spare10 resume to continue it now.`,
-  /** CX53 (report only): a stop that spare10 does not end by itself is over, and held work still waits under it. */
+  /** CX53, a warning of the report: a stop no longer applies, and held work still waits under it until a resume. */
   heldStopEnded: `the stop is over. ${HELD_WAITS}`,
+  /** CX53 at the end of the phase line of `!spare10 status` (2.9), so it starts with a space. */
+  heldStopEndedTail: ` The stop is over. ${HELD_WAITS}`,
   /** CX32. `unread`: config.json does not parse, or is not an object, so the text says how to repair it. */
   setFailed: (path, err, unread = false) => `could not write ${path}: ${err}. Nothing changed.${unread ? ` ${CONFIG_FIX}` : ""}`,
   /** CX33: rows of [name, value, source]. */
@@ -1914,7 +1921,7 @@ import { readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, 
 import { join as join2 } from "node:path";
 
 // codex/src/settings.ts
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 var ENV_NAMES = [
   ["reserve", "SPARE10_RESERVE"],
@@ -2014,6 +2021,7 @@ function setOption(paths, owner, name, value) {
   const path = configPath(paths);
   return withLock(join(paths.data, "config.lock"), owner, () => {
     const read = readOwnJson(path);
+    const repaired = read === void 0 && existsSync(path);
     const raw = read === void 0 ? {} : read;
     if (!isObject2(raw)) throw new ConfigUnreadError("it is not a JSON object");
     const next = { ...raw };
@@ -2021,7 +2029,7 @@ function setOption(paths, owner, name, value) {
     if (value === void 0) delete next[name];
     else next[name] = value;
     writeJson(path, next);
-    return { old };
+    return { old, ...repaired ? { repaired: true } : {} };
   });
 }
 
@@ -3900,17 +3908,17 @@ function createCommands(d) {
     for (const tid of tids) if (await d.daemon.hosted(tid).catch(() => false)) return true;
     return false;
   };
-  const endedHeld = (sx, state, p, autoResume) => {
+  const endable = (sx, r, s) => r !== void 0 && r.sessionId === sx.sid && !heldPast(r, commandHolders(s.kinds));
+  const endedHeld = (sx, state, p, s) => {
+    if (p.phase === "stopped" || p.question !== void 0 || !p.attended || !p.cfg.enabled) return false;
     const r = parseStopped(state.stopped);
-    if (r === void 0 || r.sessionId !== sx.sid || p.stop !== void 0 || p.question !== void 0 || !p.attended || !p.cfg.enabled) return false;
-    if (r.kinds !== void 0 && r.auto === true && autoResume) return false;
+    if (!endable(sx, r, s)) return false;
+    if (r.kinds !== void 0 && r.auto === true && p.cfg.autoResume && p.now >= r.windowEnd) return false;
     return heldLive(sx);
   };
   const endHeldStop = (sx, s) => {
     const raw = sx.store.read().stopped;
-    const r = parseStopped(raw);
-    if (raw === void 0 || r?.sessionId !== sx.sid || !heldLive(sx)) return false;
-    if (stopInForce(r, sx.sid, void 0, s.now, [], commandHolders(s.kinds)) !== void 0) return false;
+    if (raw === void 0 || !endable(sx, parseStopped(raw), s) || !heldLive(sx)) return false;
     return sx.store.locked((tx) => {
       if (tx.state.stopped !== raw) return false;
       clearStopped(tx.state);
@@ -3963,7 +3971,7 @@ function createCommands(d) {
     const now = p.now;
     const hosted = sx0 === void 0 ? false : await d.daemon.hosted(sx.sid).catch(() => false);
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)];
-    if (sx0 !== void 0 && endedHeld(sx, state, p, cfg.autoResume)) warnings.push(codexText.heldStopEnded);
+    if (sx0 !== void 0 && endedHeld(sx, state, p, s)) warnings.push(codexText.heldStopEnded);
     for (const k of p.kinds) {
       const c = consentPastWindow(k, state[consentField(k.kind)], now);
       if (c !== void 0) warnings.push(codexText.consentBeyond(k.kind, c.until, now));
@@ -4142,16 +4150,19 @@ function createCommands(d) {
       value = v.value;
     }
     let old;
+    let repaired = "";
     try {
-      old = setOption(d.paths, d.owner, name, value).old;
+      const r = setOption(d.paths, d.owner, name, value);
+      old = r.old;
+      if (r.repaired === true) repaired = codexText.setRepaired(shownPath(path, d.paths.home));
     } catch (e) {
       return codexText.setFailed(shownPath(path, d.paths.home), errText3(e), e instanceof SyntaxError || e instanceof ConfigUnreadError);
     }
     const wins = envWins(eff, name) && d.env[option.env] !== void 0 ? codexText.setEnvWins(option.env) : "";
-    if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}`;
+    if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}${repaired}`;
     const was = old === void 0 ? void 0 : option.parse(old);
     const oldText = was !== void 0 ? optionText(name, was) : spanUnread(eff, name) ? optionText(name, valueOf(eff, name)) : defaultText(name);
-    return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}`;
+    return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}${repaired}`;
   };
   const exec = async (sx, cmd, o) => {
     switch (cmd.verb) {
@@ -4186,9 +4197,10 @@ function createCommands(d) {
     async phaseLine(sx0) {
       await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS);
       const sx = sx0 ?? scratchCtx();
-      const { p, s } = await seen(sx);
+      const { p, s, state } = await seen(sx);
       const report = statusReport(inputOf(sx, p, s, { childPolicy: "", warnings: [], tickerStale: false }));
-      return (report.split("\n")[2] ?? "").replace(/^ {2}/, "");
+      const line = (report.split("\n")[2] ?? "").replace(/^ {2}/, "");
+      return sx0 !== void 0 && endedHeld(sx, state, p, s) ? `${line}${codexText.heldStopEndedTail}` : line;
     },
     async phase(sx) {
       return (await seen(sx)).p.phase;
@@ -4203,7 +4215,7 @@ import { request as httpRequest } from "node:http";
 import { dirname as dirname3 } from "node:path";
 
 // codex/src/paths.ts
-import { existsSync, readFileSync as readFileSync3, realpathSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, delimiter, dirname as dirname2, isAbsolute, join as join6, resolve, sep } from "node:path";
 var DATA_NAME = "spare10-spare10";
@@ -4229,7 +4241,7 @@ function realish(p) {
   const tail = [];
   for (; ; ) {
     try {
-      if (existsSync(head)) return join6(realpathSync(head), ...tail);
+      if (existsSync2(head)) return join6(realpathSync(head), ...tail);
     } catch {
     }
     const up = dirname2(head);
