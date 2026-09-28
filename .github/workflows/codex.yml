@@ -43,16 +43,20 @@ jobs:
     name: Codex bundle on Node.js 20.0
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # The floor of broker.sh. Keep this job on Node.js 20.0.0. Renovate skips a node-version that is an
+      # expression, so it opens no PR that moves the floor.
+      NODE_FLOOR: 20.0.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 20.0.0
+          node-version: ${{ env.NODE_FLOOR }}
       - name: The broker answers initialize, tools/list and a gate
         run: |
-          test "$(node --version)" = v20.0.0
+          test "$(node --version)" = "v$NODE_FLOOR"
           t=$(mktemp -d)
           printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \

@@ -4634,10 +4634,11 @@ var dayOf = (at) => new Date(at).toISOString().slice(0, 10);
 var DAY_FILE = /^broker-(\d{4}-\d{2}-\d{2})\.log$/;
 var logFileOf = (dataDir, at) => join7(dataDir, "log", `broker-${dayOf(at)}.log`);
 function pruneLogs(dataDir, at) {
-  const oldest = dayOf(at - (LOG_KEEP_DAYS - 1) * DAY_MS2);
   const dir = join7(dataDir, "log");
+  let oldest;
   let names;
   try {
+    oldest = dayOf(at - (LOG_KEEP_DAYS - 1) * DAY_MS2);
     names = readdirSync3(dir);
   } catch {
     return;
@@ -4652,7 +4653,10 @@ function pruneLogs(dataDir, at) {
   }
 }
 function fileLog(dataDir, on, clock, o = {}) {
-  if (!on) return noLog;
+  if (!on) {
+    pruneLogs(dataDir, clock.now());
+    return noLog;
+  }
   const tag = o.tag === void 0 ? "" : ` [${o.tag}]`;
   let pruned = "";
   return {
