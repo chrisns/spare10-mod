@@ -5172,10 +5172,13 @@ function createGate(d) {
     const now = d.clock.now();
     sx.store.locked((tx) => {
       const st = tx.state;
-      const other = st.hostPid !== void 0 && st.hostPid !== d.hostPid && st.attended === true && !att.attended && d.pidAlive(st.hostPid);
+      const live = (pid) => pid !== void 0 && d.pidAlive(pid);
+      const hostLive = st.rootBrokerPid !== d.pid && live(st.rootBrokerPid) && live(st.hostPid);
+      const other = st.attended === true && !att.attended && hostLive;
       if (!other) {
         st.hostPid = d.hostPid;
         st.hostKind = d.hostKind;
+        st.rootBrokerPid = d.pid;
         st.transcript = sx.transcript;
         st.attended = att.attended;
         st.brokerEnv = brokerEnvOf(d.env);

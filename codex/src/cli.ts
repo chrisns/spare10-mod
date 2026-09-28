@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { codexText, optionOf, shownPath } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, optionOf, shownPath } from '../../hooks/core/codex.ts'
 import type { Command, HostKind } from '../../hooks/core/codex.ts'
 import { VERSION, commandFailed } from '../../hooks/core/text.ts'
 import { createAttendance } from './attend.ts'
@@ -32,12 +32,12 @@ import type { Wake } from './wake.ts'
 // writes wake the brokers through their Wake source. A named session is judged with the SPARE10_* values
 // of its root broker (5.2). `resume`, `stop` and `simulate` act only on a named session: they never guess.
 // From `!` (CODEX_THREAD_ID is set) Codex gives the output to the model. There `status` prints the phase
-// line only, and `status --full` the report. A command that changes the session or config.json prints one
-// short line (CX44) and queues its full reply as a transcript line of the session. A command that changes
-// nothing prints its reply, because no held call wakes to show a queued line. From a terminal the CLI
-// prints the full reply, and a command that can change a named session also queues it, so the transcript
-// shows it. The agent cannot run the CLI inside its sandbox: a sandbox shows in the env, or in a data dir
-// that it cannot write.
+// line only, and `status --full` the report. A command that changes a named session or config.json queues
+// its full reply as a transcript line of that session, from `!` and from a terminal. From `!` it then prints
+// one short line (CX44). A command that changes nothing prints its reply and queues nothing, because no held
+// call wakes to show a queued line. A `set` with no named session queues nothing: a command outside the
+// sandbox can write config.json itself. The agent cannot run the CLI inside its sandbox: a sandbox shows in
+// the env, or in a data dir that it cannot write.
 
 export type CliDeps = {
   env: Env
@@ -245,7 +245,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
     const target = changes ? p.sx : undefined
     /** What a command changes: the consents, the stop, the test reading, the answer of a question and config.json. Undefined when a read fails. */
     const markOf = (): string | undefined => {
-      if (target === undefined || !fromBang) return undefined
+      if (target === undefined) return undefined
       try {
         const st = target.store.read()
         const file = (path: string): string => {
@@ -263,19 +263,21 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
     }
     const before = markOf()
     const reply = await p.cmds.exec(sx, cmd, { cli: true })
-    if (target !== undefined) {
-      if (fromBang) {
-        const after = markOf()
-        if (before === undefined || after === undefined || before !== after) {
-          // CX44: the model reads this line only. The full reply rides the next root gate (2.4).
-          target.store.queueNotice(reply)
-          print(codexText.cliDone(verb))
-          return 0
-        }
-        // It changed nothing, so no held call wakes and a queued line could wait until the hold ends.
-      } else {
-        // From a terminal, the reply also rides the next root gate: a change is never hidden from the transcript.
+    const after = markOf()
+    // The reply of a change rides the next root gate (2.4), from `!` and from a terminal: a change never hides
+    // from the transcript. A command that changed nothing queues nothing: no held call wakes to show the line,
+    // and a session id that never ran gets no folder.
+    if (target !== undefined && (before === undefined || after === undefined || before !== after)) {
+      let queued = false
+      try {
         target.store.queueNotice(reply)
+        queued = true
+      } catch (e) {
+        log.debug(codexDebug.writeFailed('the transcript line of the command', errText(e)))
+      }
+      if (fromBang && queued) {
+        print(codexText.cliDone(verb)) // CX44: the model reads this line only
+        return 0
       }
     }
     print(`spare10: ${reply}`)

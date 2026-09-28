@@ -244,16 +244,20 @@ export function createGate(d: GateDeps): Gate {
     const cfg = d.settings.get()
     const att = d.attendance.attended({ transcript: sx.transcript }, input.mode)
     const guarded = att.attended && cfg.enabled
-    // A failed read is unknown: it records no lasting CX6 or CX7. A socket that nothing listens on is no daemon.
+    // A failed read is unknown: it records no lasting CX6 or CX7.
     const hosted = guarded ? await d.daemon.known(sx.thread).catch(() => undefined) : false
     const now = d.clock.now()
     sx.store.locked((tx) => {
       const st = tx.state
-      // 3.7: an unattended newcomer (a `codex exec resume` of a live session) keeps off the fields of a live attended host.
-      const other = st.hostPid !== undefined && st.hostPid !== d.hostPid && st.attended === true && !att.attended && d.pidAlive(st.hostPid)
+      // 3.7: an unattended newcomer (a `codex exec resume` of a live session) keeps off the fields of a live
+      // attended host. A host is live while its root broker lives: a Codex daemon runs on after its sessions end.
+      const live = (pid: number | undefined): boolean => pid !== undefined && d.pidAlive(pid)
+      const hostLive = st.rootBrokerPid !== d.pid && live(st.rootBrokerPid) && live(st.hostPid)
+      const other = st.attended === true && !att.attended && hostLive
       if (!other) {
         st.hostPid = d.hostPid
         st.hostKind = d.hostKind
+        st.rootBrokerPid = d.pid
         st.transcript = sx.transcript
         st.attended = att.attended
         st.brokerEnv = brokerEnvOf(d.env) // 5.2: the CLI judges the session with these values

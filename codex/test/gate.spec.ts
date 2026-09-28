@@ -430,7 +430,7 @@ test('gate: a sense that fails in the round after a question ended with no answe
   assert.equal(out['permissionDecision'], 'deny', 'never a pass')
 })
 
-test('gate: a root sense warns once (CX9) when the turn_context shows no sandbox, and a read-only or exec session does not', async (t) => {
+test('gate: a root sense warns once (CX9) when the turn_context shows no sandbox, and a read-only, exec or unguarded session does not', async (t) => {
   const w = world(t)
   const b = await w.broker()
   w.reading(SID, 40, { reset: RESET })
@@ -444,8 +444,13 @@ test('gate: a root sense warns once (CX9) when the turn_context shows no sandbox
   s.reading(SID, 40, { reset: RESET })
   s.rollout(SID).turnContext({ turn: 'U1', sandbox: 'danger-full-access' })
   assert.equal(parsed(await c.gate('stop'))['systemMessage'], withPrefix(codexText.unsafe))
-  // A read-only sandbox, or an unattended exec run: no CX9.
-  for (const o of [{ sandbox: 'read-only', broker: {} }, { sandbox: 'danger-full-access', broker: { hostKind: 'exec' as const, originator: 'codex_exec', source: 'exec' } }]) {
+  // A read-only sandbox, an unattended exec run, or a session that spare10 does not guard: no CX9.
+  const cases = [
+    { sandbox: 'read-only', broker: {} },
+    { sandbox: 'danger-full-access', broker: { hostKind: 'exec' as const, originator: 'codex_exec', source: 'exec' } },
+    { sandbox: 'danger-full-access', broker: { env: { SPARE10: 'off' } } },
+  ]
+  for (const o of cases) {
     const v = world(t)
     const e = await v.broker(o.broker)
     v.reading(SID, 40, { reset: RESET })
