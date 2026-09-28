@@ -58,6 +58,7 @@ test('HOST has the Claude Code words', () => {
     child: 'claude -p',
     resume: 'claude --resume',
     keepOpen: 'set its Open reserve option to 0 in /config',
+    limitOff: 'turn off Pause at the limit in /config',
     backIt: 'gives it back to you',
     backPrompt: 'gives your prompt back',
     blind: 'Claude Code reports no 5-hour quota.',

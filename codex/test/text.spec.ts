@@ -117,7 +117,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
   ['limitQuestionText, loop opener, auto', () => limitQuestionText(LF, 'loop', true), 'The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue.'],
   ['notStarted at the limit', () => notStarted([LF, FW]), 'spare10: not started. The quota limit is reached until 15:00. Send the prompt again after the reset.'],
   ['headlessText at the limit', () => headlessText(LF, 'S1'), 'spare10 stopped this unattended run at the quota limit (100% of quota used · resets 15:00). No further model requests were sent. To pick it up later: codex exec resume S1'],
-  ['resumeReply limit', () => resumeReply('limit', [LF, LW]), 'nothing to resume now. The quota limits of both windows are reached until Sun 15:00. spare10 holds all work until then.'],
+  ['resumeReply limit', () => resumeReply('limit', [LF, LW]), 'nothing to resume now. The quota limits of both windows are reached until Sun 15:00. spare10 holds all work until then. To let work run past the limit, run spare10 set limitPause off.'],
   ['simulateReply at the limit', () => simulateReply('set', { ...LF, test: true }, undefined, undefined, undefined, true), 'test reading set to 100% used, resets 15:00. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run spare10 simulate off to clear it.'],
   ['report: the at the limit row, from spare10 set', () => statusReport(status({ limitPause: { on: false, from: 'option' } })).split('\n').filter((l) => l.includes('at the limit')).join('\n'), '  · at the limit   off. spare10 does not pause at the limit (from spare10 set)'],
   ['report: armed, the claude -p row and both help lines', () => statusReport(status()), [
@@ -325,6 +325,7 @@ test('HOST has the Codex words under the host loader', () => {
     child: 'codex exec',
     resume: 'codex exec resume',
     keepOpen: 'run spare10 set lastMinutes 0, or spare10 set weeklyLastHours 0',
+    limitOff: 'run spare10 set limitPause off',
     backIt: 'drops it',
     backPrompt: 'drops your prompt',
     blind: 'Codex reports no quota windows for this login.',
@@ -440,7 +441,7 @@ test('the Codex report equals the sample of 2.8', () => {
   )
 })
 
-// ---- The texts of CX1 to CX55 ----
+// ---- The texts of CX1 to CX57 ----
 
 const HOME = '/Users/me'
 const L = '/Users/me/.codex/plugins/data/spare10-spare10/bin/spare10'
@@ -453,6 +454,8 @@ test('the CX texts read as in the design', () => {
   assert.equal(codexText.turnEnds, 'spare10: the turn ends here, because work stopped at the quota reserve.')
   assert.equal(codexText.turnEndsHold, 'spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.')
   assert.equal(codexText.turnEndsLimit, 'spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.')
+  assert.equal(codexText.turnEndsAtLimit, 'spare10: the turn ends here, because work stopped at the quota limit.')
+  assert.equal(codexText.turnEndsLimitHeld('15:00'), 'spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until 15:00.')
   assert.equal(
     codexText.hardStop,
     'past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.',
@@ -718,6 +721,7 @@ function corePrefixed(): string[] {
   for (const kinds of [['five_hour'], ['seven_day'], ['five_hour', 'seven_day']] as Kind[][]) out.push(notice.newWindowFor(kinds))
   // The pause at the quota limit.
   out.push(notice.limitReached, notice.limitOver, notice.limitStopped('15:00'), notice.limitHoldLimit('15:00', true), notice.limitHoldLimit('15:00', false))
+  for (const f of [LF, LW, [LF, LW]] as Array<Facts | Facts[]>) out.push(notice.limitPromptWaits(f))
   out.push(badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'on'), stopReply('limit', undefined, undefined, { at: '15:00' }))
   for (const f of [LF, LW, [LF, LW]] as Array<Facts | Facts[]>) out.push(notice.limitContinues(f), resumeReply('limit-asking', f), resumeReply('limit', f))
   for (const named of NAMED) {
@@ -758,6 +762,8 @@ test('model texts, drop reasons, CLI lines and debug lines keep their own spare1
     codexText.cliDone('stop'),
     ...DEBUG,
     codexText.turnEndsLimit,
+    codexText.turnEndsAtLimit,
+    codexText.turnEndsLimitHeld('15:00'),
     stopText(LF),
     pausedText(LF),
     notStarted(LF),
@@ -799,6 +805,8 @@ function everyCodexText(): string[] {
     codexText.turnEnds,
     codexText.turnEndsHold,
     codexText.turnEndsLimit,
+    codexText.turnEndsAtLimit,
+    codexText.turnEndsLimitHeld('Mon 09:00'),
     codexText.steerNote,
     codexText.interruptedNote,
     codexText.notStartedNoDialog([F, FW]),

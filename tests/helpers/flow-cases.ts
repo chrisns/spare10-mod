@@ -16,6 +16,7 @@ import {
   consentPastWindow,
   consentOfEnd,
   consentedOf,
+  continuesLine,
   dueMargin,
   dueRelease,
   dueStep,
@@ -38,6 +39,7 @@ import {
   newTold,
   noFloor,
   notStartedFor,
+  promptWaitsLine,
   questionEdges,
   questionOf,
   quietOf,
@@ -77,6 +79,7 @@ import {
   stopRecordOf,
   stopTrippedReply,
   stopWriteOf,
+  stopsAtLimit,
   supersedes,
   takenOf,
   takeoverSense,
@@ -1570,6 +1573,60 @@ const limitCases: FlowCase[] = [
       const off = stopPlan(q, LNOW, stopAutoOf(q, 'time limit', false), sNow)
       if (off.kind !== 'write') return
       eq(stopNotice(q, off, stopRecordOf(undefined, off.record, 'S1', LNOW), 'time limit', LNOW, false).text, notice.limitHoldLimit(u.at, false))
+    },
+  },
+  {
+    name: 'stopsAtLimit: a Stop here on a question at the reserve while a kind at the limit gates stops until the reset, with no auto',
+    run: (eq) => {
+      // A question at the reserve (92%, a skip owner) that is still open when the quota reaches 100%.
+      const q = question(s92())
+      const sNow = stopSense(sensed({ five: live(100, R), week: live(50, W) }))
+      const vias = ['dialog', 'command', 'dialog ended without an answer', 'could not ask', 'time limit'] as const
+      eq(vias.map((via) => stopsAtLimit(q, via, sNow)), [true, true, false, false, false])
+      eq(vias.map((via) => stopAutoOf(q, via, true, sNow)), [false, false, true, true, true])
+      // Below the limit, or with no sense: the Stop here of today.
+      eq([stopsAtLimit(q, 'dialog', stopSense(s92())), stopsAtLimit(q, 'command'), stopAutoOf(q, 'command', true)], [false, false, true])
+      const plan = stopPlan(q, NOW, false, sNow, true)
+      if (plan.kind !== 'write') throw new Error('a kind at the limit gates, so the stop is written')
+      eq([plan.until, plan.limit, plan.late.map((k) => k.kind), plan.record.auto, plan.record.skip, plan.record.work], [R, true, ['five_hour'], false, false, true])
+      const today = stopPlan(q, NOW, false, stopSense(s92()))
+      if (today.kind !== 'write') throw new Error('a kind in the reserve gates, so the stop is written')
+      eq([today.until, today.limit], [SKIP5, undefined])
+      const written = stopRecordOf(undefined, plan.record, 'S1', NOW)
+      const u = untilFor(byKind(factsFrom(plan.late, NOW, false)), R, ['five_hour'], false, NOW)
+      eq(stopNotice(q, plan, written, 'dialog', NOW, false).text, notice.limitStopped(u.at))
+      eq(stopNotice(q, plan, written, 'command', NOW, false).text, undefined)
+      eq(stopAskingReply(stopNotice(q, plan, written, 'command', NOW, false).late), stopReply('asking'))
+    },
+  },
+  {
+    name: 'stopKept: at the limit an auto stop, or one that ends before the reset, does not stay, and the merge drops its auto',
+    run: (eq) => {
+      const lim = [lim5()]
+      eq(stopKept(stopRec({ auto: true }), lim), false)
+      eq(stopKept(stopRec({ auto: false, windowEnd: SKIP5 }), lim), false)
+      eq(stopKept(stopRec({ auto: false }), lim), true)
+      eq(stopKept(stopRec({ auto: true, windowEnd: SKIP5 }), [k92()]), true) // below the limit: as today
+      const merged = stopRecordOf(stopRec({ auto: true, work: true, windowEnd: SKIP5, skip: true }), stopWriteOf(lim, true, false), 'S1', NOW)
+      eq([merged.auto, merged.work, merged.windowEnd, merged.skip], [false, true, R, undefined])
+    },
+  },
+  {
+    name: 'resumeAtLimit: a limit question whose limit is gone is not chosen, so the resume of today settles it',
+    run: (eq) => {
+      const q = question(sensed({ five: live(100, R) }))
+      const off = sensed({ five: live(100, R), cfg: cfgOf({ limitPause: 'off' }) })
+      eq([resumeAtLimit(off, q), resumeAtLimit(s92(), q)], [undefined, undefined])
+      eq(resumeAtLimit(sensed({ five: live(100, R) }), q)?.choose, true)
+    },
+  },
+  {
+    name: 'continuesLine and promptWaitsLine: only while the reset is ahead, and the prompt line only after Continue at the reset',
+    run: (eq) => {
+      const q = question(sensed({ five: live(100, R) }))
+      eq([continuesLine(q, R - MIN), continuesLine(q, R), continuesLine(q, R + 20 * MIN)], [notice.limitContinues(q.facts), undefined, undefined])
+      const chosen = { ...q, chosen: true }
+      eq([promptWaitsLine(q, NOW), promptWaitsLine(chosen, NOW), promptWaitsLine(chosen, R)], [undefined, notice.limitPromptWaits(q.facts), undefined])
     },
   },
   {

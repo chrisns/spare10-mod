@@ -664,8 +664,29 @@ export const quietOf = (q: Pick<QuestionCore, 'silent' | 'chosen'>): boolean => 
 export const supersedes = (q: Pick<QuestionCore, 'limit' | 'silent'>, gating: readonly KindSense[]): boolean =>
   q.limit !== true && !q.silent && gating.some((k) => k.limit)
 
-/** Stop here at the limit never continues by itself. The hold time limit falls back to the auto stop of the setting in force. */
-export const stopAutoOf = (q: Pick<QuestionCore, 'limit'>, via: Via, auto: boolean): boolean => (q.limit === true && via !== 'time limit' ? false : auto)
+/**
+ * A Stop here at the quota limit: any Stop here on the limit question but the hold time limit, or a
+ * person's own Stop here (the dialog or the stop command) on another question while a kind at the quota
+ * limit gates now (`sNow`). It lasts until the reset and never continues by itself. A question at the
+ * reserve that ends with no answer keeps the setting in force, as the limit question does.
+ */
+export const stopsAtLimit = (q: Pick<QuestionCore, 'limit'>, via: Via, sNow?: Pick<StopSense, 'split'>): boolean =>
+  via !== 'time limit' && (q.limit === true || ((via === 'dialog' || via === 'command') && sNow?.split.gating.some((k) => k.limit) === true))
+
+/** Stop here at the limit never continues by itself (`stopsAtLimit`). Else the auto stop of the setting in force. */
+export const stopAutoOf = (q: Pick<QuestionCore, 'limit'>, via: Via, auto: boolean, sNow?: Pick<StopSense, 'split'>): boolean =>
+  stopsAtLimit(q, via, sNow) ? false : auto
+
+/**
+ * The line of Continue at the reset, while the reset is still ahead. After the reset the release line
+ * follows at once, so a line that names a passed time would only confuse.
+ */
+export const continuesLine = (q: Pick<QuestionCore, 'facts' | 'holdEnd'>, now: number): string | undefined =>
+  now < q.holdEnd ? notice.limitContinues(q.facts) : undefined
+
+/** A person prompt joins a limit question after Continue at the reset: it waits with the held work, and says so. */
+export const promptWaitsLine = (q: Pick<QuestionCore, 'facts' | 'holdEnd' | 'chosen'>, now: number): string | undefined =>
+  q.chosen === true && now < q.holdEnd ? notice.limitPromptWaits(q.facts) : undefined
 
 /** The times at which a new question can change the badge: each consent bound, its hold end, due, stop end and note time. */
 export const questionEdges = (q: QuestionCore): number[] => [
@@ -788,10 +809,13 @@ export type Late = { record?: StoppedRecord; ended?: Ended; until?: { at: string
 /** A sense at a Stop here: the kinds, the split and the holders of now. */
 export type StopSense = { s: Sensed; split: Split; holders: readonly Holder[] }
 
-/** What a Stop here writes. 'open' (B46 open): nothing, because nothing gates and a kind of the question is open. */
+/**
+ * What a Stop here writes. 'open' (B46 open): nothing, because nothing gates and a kind of the question is
+ * open. `limit`: a Stop here at the quota limit (`stopsAtLimit`), with the limit texts.
+ */
 export type StopPlan =
   | { kind: 'open'; until: number; ended: Ended }
-  | { kind: 'write'; until: number; ended?: Ended; late: KindSense[]; record: StopWrite }
+  | { kind: 'write'; until: number; ended?: Ended; late: KindSense[]; record: StopWrite; limit?: true }
 
 /**
  * A Stop here (skip 3.5, B46). The sense gives the kinds whose real reading gates now (TS1: the `real`
@@ -800,12 +824,14 @@ export type StopPlan =
  * kinds that gate are stopped as usual. When nothing gates, a kind of the question is open, and no work
  * waits for a resume prompt, nothing is written: such a stop would never apply. No sense (it failed):
  * the D0.2 write, with the real kinds of the question when it opened. `auto`: the setting in force.
+ * `atLimit` (`stopsAtLimit`): the kinds at the quota limit that gate now are late too, so the stop lasts
+ * until their reset, also when a question at the reserve had an earlier end.
  */
-export function stopPlan(q: QuestionCore, now: number, auto: boolean, sNow?: StopSense): StopPlan {
+export function stopPlan(q: QuestionCore, now: number, auto: boolean, sNow?: StopSense, atLimit = false): StopPlan {
   const work = q.loops > 0
   const passed = auto ? q.holdEnd <= now : q.skip && q.stopEnd <= now
   const real = sNow === undefined ? q.real : sNow.holders // fail closed: the question's real kinds when the sense fails
-  const late = sNow !== undefined && passed ? sNow.split.gating : []
+  const late = sNow === undefined ? [] : passed ? sNow.split.gating : atLimit ? sNow.split.gating.filter((k) => k.limit) : []
   const opened = sNow !== undefined && passed ? sNow.split.open.filter((k) => q.kinds.includes(k.kind)) : []
   const until = auto ? Math.max(q.holdEnd, ...late.map((k) => k.holdEnd)) : Math.max(q.stopEnd, ...late.map((k) => k.stopEnd))
   const ended = sNow === undefined || opened.length === 0 ? undefined : endedFor(namedOf(q), sNow.s, late, true)
@@ -817,7 +843,14 @@ export function stopPlan(q: QuestionCore, now: number, auto: boolean, sNow?: Sto
     ...late.map((k) => k.skipAt).filter((t): t is number => t !== null),
   ]
   const skip = skipTag(until, starts, [q.due, ...late.map((k) => k.holdEnd + dueMargin(k))], auto)
-  return { kind: 'write', until, ...(ended === undefined ? {} : { ended }), late, record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real } }
+  return {
+    kind: 'write',
+    until,
+    ...(ended === undefined ? {} : { ended }),
+    late,
+    record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real },
+    ...(atLimit ? { limit: true as const } : {}),
+  }
 }
 
 /** B46 open: the transcript line of a Stop here that writes nothing. None for a command. */
@@ -851,7 +884,7 @@ export function stopNotice(
   )
   const u = untilFor(facts, written.windowEnd, written.kinds ?? plan.record.kinds, written.skip === true, now)
   const text = (limit: string, stopped: string): { text?: string } => (via === 'time limit' ? { text: limit } : via !== 'command' ? { text: stopped } : {})
-  if (q.limit === true) {
+  if (q.limit === true || plan.limit === true) {
     // Stop here at the limit stops until the reset and continues nothing. The hold time limit keeps the setting in force.
     const cont = auto && written.auto === true && written.work === true
     return { ...text(notice.limitHoldLimit(u.at, cont), notice.limitStopped(u.at)), late: { record: written, until: u } }
@@ -1086,17 +1119,18 @@ export function resumeCase(
 }
 
 /**
- * Resume at the quota limit. An open limit question that is not chosen yet: choose Continue at the reset
- * (`choose`). Else, while a kind is at the quota limit (or a limit question is open and the sense failed):
- * a reply that nothing resumes now. Nothing is written or cleared: no consent, no stop takeover, no stop
- * clear. Undefined: the resume of today (also for a chosen limit question whose limit is gone).
+ * Resume at the quota limit. An open limit question that is not chosen yet, while a kind is at the quota
+ * limit (or the sense failed): choose Continue at the reset (`choose`). Else, while a kind is at the quota
+ * limit (or a limit question is open and the sense failed): a reply that nothing resumes now. Nothing is
+ * written or cleared: no consent, no stop takeover, no stop clear. Undefined: the resume of today, also
+ * for a limit question whose limit is gone (limitPause off, credits that pay, or a reset): it settles as Resume.
  */
 export function resumeAtLimit(
   sNow: Pick<Sensed, 'kinds' | 'now'> | undefined,
   q: Pick<QuestionCore, 'limit' | 'chosen' | 'facts'> | undefined,
 ): { choose: boolean; reply: string } | undefined {
-  if (q?.limit === true && q.chosen !== true) return { choose: true, reply: resumeReply('limit-asking', q.facts) }
   const at = sNow?.kinds.filter((k) => k.limit) ?? []
+  if (q?.limit === true && q.chosen !== true && (sNow === undefined || at.length > 0)) return { choose: true, reply: resumeReply('limit-asking', q.facts) }
   if (sNow !== undefined && at.length > 0) return { choose: false, reply: resumeReply('limit', factsFrom(at, sNow.now)) }
   if (sNow === undefined && q?.limit === true) return { choose: false, reply: resumeReply('limit', q.facts) }
   return undefined
@@ -1166,9 +1200,15 @@ export function stopCase(
   return { ks, facts: factsFrom(trippedKinds, s.now), real: ks.filter((k) => k.realIn).map(realHolder) }
 }
 
-/** A stop in force that names each kind that gates now stays as it is. */
+/**
+ * A stop in force that names each kind that gates now stays as it is. At the quota limit it stays only when
+ * it never continues by itself and lasts until the reset of each kind at the limit. Else the new stop,
+ * merged with it (3.2), drops its auto and lasts until the reset.
+ */
 export const stopKept = (st: StoppedRecord | undefined, ks: readonly KindSense[]): st is StoppedRecord =>
-  st !== undefined && ks.every((k) => (st.kinds ?? ['five_hour']).includes(k.kind))
+  st !== undefined &&
+  ks.every((k) => (st.kinds ?? ['five_hour']).includes(k.kind)) &&
+  ks.every((k) => !k.limit || (st.auto !== true && st.windowEnd >= k.stopEnd))
 
 /**
  * B24: the reply of a stop over a stop that stays. R4: its end shows when spare10 ends it by itself.

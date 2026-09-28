@@ -30,6 +30,11 @@ export type SpanSource = Source | 'unread'
 export type Spans = { lastMinutes: number; weeklyLastHours: number }
 /** Both spans off: the guard holds until the reset. Every unknown gives this. */
 export const NO_SPANS: Spans = Object.freeze({ lastMinutes: 0, weeklyLastHours: 0 })
+/**
+ * The pause at the limit that a copy answers through $.spare10.limit() until its first successful settings
+ * read, as NO_SPANS (B47): on, so an older copy's held loop never lets work past 100% on a guess.
+ */
+export const LIMIT_UNREAD: boolean = true
 export type Effective = Settings & {
   enabled: boolean
   from: {

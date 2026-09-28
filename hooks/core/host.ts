@@ -10,6 +10,7 @@ export type Host = {
   child: string // the report label of nested unattended runs, 15 characters at most
   resume: string // the command that picks up an unattended run, before its id
   keepOpen: string // the end of 'To keep a reserve until the reset, {keepOpen}.'
+  limitOff: string // the end of 'To let work run past the limit, {limitOff}.'
   backIt: string // what Stop here does with a held prompt, tell mode
   backPrompt: string // what Stop here does with a held prompt, hold mode
   blind: string // the blind phase detail, first sentence
@@ -29,6 +30,7 @@ export const HOST: Host = {
   child: 'claude -p',
   resume: 'claude --resume',
   keepOpen: 'set its Open reserve option to 0 in /config',
+  limitOff: 'turn off Pause at the limit in /config',
   backIt: 'gives it back to you',
   backPrompt: 'gives your prompt back',
   blind: 'Claude Code reports no 5-hour quota.',

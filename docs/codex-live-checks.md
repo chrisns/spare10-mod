@@ -15,9 +15,9 @@ They must also pass before each release and after each update of Codex.
 LCX9, LCX10, LCX12 to LCX16, and LCX18 to LCX20 belong to the P1 features.
 Run each one when its feature ships.
 LCX14 and LCX19 are optional.
-For the pause at the limit, LCX21 to LCX23 must also pass. LCX24 and LCX25 belong to P1.
+For the pause at the limit, LCX21 to LCX23 and LCX26 must also pass. LCX24 and LCX25 belong to P1.
 
-Run the checks in the order of this file: LCX1, LCX2, LCX17, LCX3 to LCX8, LCX11, then LCX21 to LCX23.
+Run the checks in the order of this file: LCX1, LCX2, LCX17, LCX3 to LCX8, LCX11, then LCX21 to LCX23 and LCX26.
 Each check states the state that it starts from and the state that it leaves.
 Record each result in the [results table](#results), with the date and the Codex version.
 
@@ -37,7 +37,7 @@ Do not run them again for spare10.
 
 ## Safety
 
-- Never use your real `~/.codex` for LCX1 to LCX25.
+- Never use your real `~/.codex` for LCX1 to LCX26.
 - Never type a test prompt in a real Codex session. If a gate fails, Codex sends the prompt to the model.
 - The isolated home has no `auth.json`. Its model provider is the mock.
 - Every command below sets `HOME` and `CODEX_HOME` to the isolated home.
@@ -412,9 +412,9 @@ Until then, no check runs the plugin on the real home.
 ## Quota limit checks
 
 These checks test the pause at the limit in Codex.
-LCX21 to LCX23 must pass before the release of the pause at the limit.
+LCX21 to LCX23 and LCX26 must pass before the release of the pause at the limit.
 LCX24 and LCX25 are in the [P1 checks](#p1-checks).
-LCX21 to LCX23 use a test reading at 100%, so the mock needs no change.
+LCX21 to LCX23 and LCX26 use a test reading at 100%, so the mock needs no change.
 The 5-hour test window is shorter than the open time of 20 minutes, so a reserve would be open.
 The checks show that the limit holds all the same.
 spare10 releases held work about one minute after the end of the test window.
@@ -443,7 +443,10 @@ spare10 releases held work about one minute after the end of the test window.
 - About one minute after HH:MM, the prompt goes in, and the tool runs.
 - `↳ Hook · spare10: the test window ended. Held work continues.` shows.
 
-**Record:** when the line `↳ Hook · spare10: held work waits until HH:MM. ...` shows.
+**Record:** whether the line `↳ Hook · spare10: held work waits until HH:MM. ...` shows, and when.
+Codex shows a queued line only when a hook of the main thread answers.
+At the limit, spare10 holds each such hook, so expect the line at the release, beside the release line.
+A hold of more than 30 minutes drops it. This check holds for about 2 minutes, so the line can show.
 
 **Leaves:** the session runs, with no test reading.
 
@@ -492,9 +495,45 @@ spare10 releases held work about one minute after the end of the test window.
 - The reply of step 2 has the sentence `The test window ends within 20 min, so the reserve is open at once.`
 - In step 3, no form shows, and the tool runs.
 - The report of step 4 has the row `at the limit   off. spare10 does not pause at the limit (from spare10 set)`.
-- The report of step 4 has the warning `⚠ past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.`
+- The report of step 4 has no warning `⚠ past 100% used, Codex refuses each model request until the reset. ...`.
+  The reading at 100% is a test reading, and Codex refuses nothing for it.
+  spare10 shows this warning only for a real reading at 100% used.
 
 **Leaves:** the session runs, with the default options and no test reading.
+
+### LCX26 Two forms at once
+
+**Mode:** embedded.
+
+**Start:** a new session from the embedded start command, with no test reading.
+
+This check shows what Codex does with a second form while the first form waits.
+A form at the reserve cannot be withdrawn.
+When the quota reaches 100% used, the limit form comes while the old form is still on the screen.
+
+**Steps:**
+
+1. Type `spare10 simulate 92 in 1h`.
+2. Send `TOOL`. The form at the reserve shows. Do not answer it.
+3. Type `!spare10 simulate 100`, and press Enter. If the form takes the keys, run the same command with the CLI of LCX17 in a second pane.
+4. Wait about one minute. spare10 checks the held work, and asks the limit question.
+5. Answer the form at the reserve with **Resume**.
+6. Answer the limit form with **Stop here**.
+7. Type `spare10`, then `spare10 simulate off`.
+
+**Pass when:**
+
+- In step 3, the reply says `test reading raised to 100% used`.
+- The **Resume** of step 5 lets no work through. The tool does not run.
+- The limit form shows after the form at the reserve, with **Continue at the reset** first.
+- After step 6, the report shows the phase `stopped`.
+
+**Record:** whether Codex shows the limit form while the form at the reserve waits, or only after you answer it.
+If Codex rejects the second form, record the error line of the debug log.
+spare10 then counts that form as **Continue at the reset**, so the work waits until the reset.
+In that case, item 22 of the Codex limitations in `docs/codex.md` must change.
+
+**Leaves:** the session runs, with no test reading.
 
 ## P1 checks
 
@@ -554,8 +593,9 @@ Keep the old rows.
 | LCX18 Broker replaced during a hold (P1) | | | | Record what each of the three runs did. |
 | LCX19 A host with no `node` on `PATH` (P1, optional) | | | | Record the host. |
 | LCX20 An unsafe mode (P1) | | | | |
-| LCX21 The limit form | | | | Record when the line `held work waits until HH:MM` shows. |
+| LCX21 The limit form | | | | Record whether and when the line `held work waits until HH:MM` shows. |
 | LCX22 Stop here at the limit | | | | |
 | LCX23 Pause at the limit off | | | | |
+| LCX26 Two forms at once | | | | Record whether the limit form shows while the form at the reserve waits. |
 | LCX24 Credits at the limit (P1) | | | | Record the credit header names. |
 | LCX25 The Stop gate at the limit (P1) | | | | |

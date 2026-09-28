@@ -1,6 +1,7 @@
 import type { EngineInterface, Register, SessionRateLimit, Timer } from 'claude-code'
 import {
   DEFAULTS,
+  LIMIT_UNREAD,
   NO_SPANS,
   childHeadless,
   flagOnlyInShell,
@@ -100,6 +101,7 @@ import {
   commandHolders,
   consentBeyond,
   consentOfEnd,
+  continuesLine,
   dueRelease,
   dueStep,
   dueWait,
@@ -119,6 +121,7 @@ import {
   needsRealList,
   noFloor,
   notStartedFor,
+  promptWaitsLine,
   questionEdges,
   questionOf,
   quietOf,
@@ -152,6 +155,7 @@ import {
   stopRecordOf,
   stopTrippedReply,
   stopWriteOf,
+  stopsAtLimit,
   supersedes,
   takenOf,
   takeoverSense,
@@ -231,7 +235,7 @@ let base: Settings = DEFAULTS // register()
 let effective: Promise<Effective> | undefined // register() resets it
 let autoNow: boolean = DEFAULTS.autoResume // this copy's effective autoResume, answered by $.spare10.auto()
 let spansNow: Spans = NO_SPANS // B47: this copy's spans of its last successful settings read, answered by $.spare10.spans()
-let limitNow: boolean = DEFAULTS.limitPause // this copy's effective limitPause, answered by $.spare10.limit()
+let limitNow: boolean = LIMIT_UNREAD // this copy's effective limitPause, answered by $.spare10.limit(): on until a settings read succeeds
 let attended: boolean | undefined // session.start, else lazily
 let sid: string | undefined // session.start, refreshed by stoppedNow, writeStopped, writeConsent, and act on a tell or headless verdict
 let endedSid: string | undefined // the id the last /clear or /resume ended: its stop no longer counts (D3)
@@ -939,6 +943,11 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
       settleAgain($, key, 'limit', g, s)
     } else if (open !== undefined && joinableAt(outcomes.get(key), answeredOf(open), g.map(viewedOf))) {
       if (opener === 'loop') open.loops += 1
+      else {
+        // A person prompt after Continue at the reset joins with no dialog: say that it waits.
+        const line = promptWaitsLine(open, s.now)
+        if (line !== undefined) $.ui.log(line)
+      }
       return key // join (synchronous check: no race)
     }
     // A settled again, or a settled Resume that does not answer a kind that gates now (B50): a new question.
@@ -1029,9 +1038,16 @@ function chooseContinue($: EngineInterface, key: string, via: Via): void {
   needsRaise.delete(key)
   for (const resolve of outcomeWaits.get(key) ?? []) resolve('continue') // withdraws this copy's dialog
   outcomeWaits.delete(key)
-  if (via !== 'command') $.ui.log(notice.limitContinues(q.facts))
+  if (via !== 'command') void noteContinues($, q)
   wakeAll()
   redraw($)
+}
+
+/** The line of Continue at the reset, only while the reset is ahead (flow.ts continuesLine). A failed clock read logs it. */
+async function noteContinues($: EngineInterface, q: Question): Promise<void> {
+  const now = await $.clock.now().catch(() => undefined)
+  const line = now === undefined ? notice.limitContinues(q.facts) : continuesLine(q, now)
+  if (line !== undefined) $.ui.log(line)
 }
 
 function lost($: EngineInterface, key: string, r: Raiser): void {
@@ -1124,8 +1140,6 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
  * failed sense gives empty lists: the D0.2 write, with the real kinds of the question when it opened.
  */
 async function settleStop($: EngineInterface, q: Question, via: Via, now: number): Promise<Late> {
-  // The setting in force. Stop here at the limit never continues by itself, but the hold time limit does.
-  const auto = stopAutoOf(q, via, await $.spare10.auto().catch(() => autoNow))
   let sNow: StopSense | undefined
   try {
     const sensed = await sense($)
@@ -1134,7 +1148,10 @@ async function settleStop($: EngineInterface, q: Question, via: Via, now: number
   } catch {
     sNow = undefined // fail closed: the question's real kinds (flow.ts stopPlan)
   }
-  const plan = stopPlan(q, now, auto, sNow)
+  // The setting in force. A Stop here at the limit never continues by itself, also on a question at the
+  // reserve while a kind at the limit gates now, but the hold time limit does (flow.ts stopsAtLimit).
+  const auto = stopAutoOf(q, via, await $.spare10.auto().catch(() => autoNow), sNow)
+  const plan = stopPlan(q, now, auto, sNow, stopsAtLimit(q, via, sNow))
   if (plan.kind === 'open') {
     // B46 open: nothing is stopped. Held work is refused (the outcome is stop), new work passes.
     const text = stopOpenNotice(q, plan.ended, via)
@@ -1767,7 +1784,7 @@ export const register: Register = (on, options) => {
   effective = undefined
   autoNow = base.autoResume
   spansNow = NO_SPANS // B47: 0 until this copy's first successful settings read
-  limitNow = base.limitPause
+  limitNow = LIMIT_UNREAD // fail closed until this copy's first successful settings read, as spansNow (B47)
 
   // 1. The carrier a held dispatch parks on (4.4), and the setting in force (3.4). No .catch on engine.create.
   on('engine.create', async ($, e, next) => {

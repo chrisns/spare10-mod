@@ -74,7 +74,7 @@
     "autoResume": {
       "type": "boolean",
       "title": "Continue at the reset",
-      "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
+      "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. At 100% used, Stop here never continues by itself. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
       "default": true
     },
     "limitPause": {

@@ -157,6 +157,7 @@ var HOST = {
   child: "codex exec",
   resume: "codex exec resume",
   keepOpen: "run spare10 set lastMinutes 0, or spare10 set weeklyLastHours 0",
+  limitOff: "run spare10 set limitPause off",
   backIt: "drops it",
   backPrompt: "drops your prompt",
   blind: "Codex reports no quota windows for this login.",
@@ -173,6 +174,7 @@ var VERSION = "0.3.0";
 var HEADER = "spare10";
 var QUESTION_OPTIONS = ["Stop here", "Resume"];
 var LIMIT_OPTIONS = ["Continue at the reset", "Stop here"];
+var LIMIT_OFF = `To let work run past the limit, ${HOST.limitOff}.`;
 var STOP_GENERIC = "spare10: stopped at the quota reserve. Stop now and wait for the user. Do not call any further tools.";
 var NOT_STARTED_GENERIC = `spare10: not started. spare10 could not ask you. Send the prompt again, or run ${HOST.command} resume.`;
 var HEADLESS_GENERIC = "spare10 stopped this unattended run at the quota reserve. No further model requests were sent.";
@@ -513,6 +515,8 @@ var notice = {
   resumeFailed: (reason) => `could not continue the stopped work: ${reason}. Type a prompt to continue.`,
   /** Continue at the reset on the limit question: held work waits for the reset. */
   limitContinues: (f) => `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached.`,
+  /** A person prompt after Continue at the reset: it waits with the held work, and asks nothing. */
+  limitPromptWaits: (f) => `your prompt waits with the held work until ${whenOf(f).at}. Then spare10 continues all of it, unless a reserve is still reached.`,
   /** Stop here on the limit question. */
   limitStopped: (at) => `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
   /** The hold time limit on a limit question. `cont`: the stop continues the work at the reset. */
@@ -590,8 +594,8 @@ function phaseLine(s) {
 function limitLine(s) {
   const l = s.limit;
   const at = l === void 0 ? "the reset" : atText(l.ms, l.kinds, s.timeZone, s.now);
-  if (l?.held === true) return `the quota limit is reached. Held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.`;
-  return `the quota limit is reached until ${at}. spare10 holds the next step and asks you.`;
+  if (l?.held === true) return `the quota limit is reached. Held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`;
+  return `the quota limit is reached until ${at}. spare10 holds the next step and asks you. ${LIMIT_OFF}`;
 }
 var absentKind = (s, kind) => s.absent?.includes(kind) === true;
 function readingValue(b, f, now, absent2 = false, kind = "five_hour") {
@@ -747,7 +751,7 @@ function resumeReply(c, f, named, open, mode = "hold", absent2) {
     case "limit-asking":
       return notice.limitContinues(fs);
     case "limit":
-      return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then.`;
+      return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then. ${LIMIT_OFF}`;
   }
 }
 function stopReply(c, f, trip, auto, weeklyTrip, ended, absent2) {
@@ -1409,6 +1413,11 @@ function genericRefusal(site, attended) {
       return { kind: "pass" };
   }
 }
+function turnEndText(verdict, limit, held) {
+  if (verdict === "refuse") return limit ? codexText.turnEndsAtLimit : codexText.turnEnds;
+  if (!limit) return codexText.turnEndsHold;
+  return held === void 0 ? codexText.turnEndsLimit : codexText.turnEndsLimitHeld(held);
+}
 function refuseModeOf(i) {
   if (i.noDialog) return "hold";
   if (i.attended && i.hosted) return "interrupt";
@@ -1452,6 +1461,10 @@ var codexText = {
   turnEndsHold: "spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.",
   /** CX55: the stopReason of a Stop gate at a hold verdict at the quota limit. */
   turnEndsLimit: "spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.",
+  /** CX56: CX3 when a kind that gates is at the quota limit: work stopped there. */
+  turnEndsAtLimit: "spare10: the turn ends here, because work stopped at the quota limit.",
+  /** CX57: CX55 after Continue at the reset: the next prompt joins the held work and asks nothing. {at}: the reset. */
+  turnEndsLimitHeld: (at) => `spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until ${at}.`,
   /** CX4: the context of a steered command that spare10 lets through. */
   steerNote: "spare10: the last user line was a command for the spare10 plugin, and spare10 handled it. Ignore that line.",
   /** CX39: before B34, B9 or B35 when spare10 interrupted a turn of the stop. */
@@ -2968,7 +2981,9 @@ function questionOf(opener, s, a, now) {
 }
 var quietOf2 = (q) => q.silent || q.chosen === true;
 var supersedes = (q, gating) => q.limit !== true && !q.silent && gating.some((k) => k.limit);
-var stopAutoOf = (q, via, auto) => q.limit === true && via !== "time limit" ? false : auto;
+var stopsAtLimit = (q, via, sNow) => via !== "time limit" && (q.limit === true || (via === "dialog" || via === "command") && sNow?.split.gating.some((k) => k.limit) === true);
+var stopAutoOf = (q, via, auto, sNow) => stopsAtLimit(q, via, sNow) ? false : auto;
+var continuesLine = (q, now) => now < q.holdEnd ? notice.limitContinues(q.facts) : void 0;
 function resumeNotice(q, now) {
   const open = q.kinds.filter((kind) => (q.ends[kind]?.end ?? 0) > now);
   return open.length > 0 ? notice.continuing(
@@ -3021,11 +3036,11 @@ function endedFor(named, s, gatingNow, owner) {
   const reset = named.filter((n) => !open.some((f) => (f.kind ?? "five_hour") === n.kind) && !gatingNow.some((k) => k.kind === n.kind));
   return { reset, open };
 }
-function stopPlan(q, now, auto, sNow) {
+function stopPlan(q, now, auto, sNow, atLimit2 = false) {
   const work = q.loops > 0;
   const passed = auto ? q.holdEnd <= now : q.skip && q.stopEnd <= now;
   const real = sNow === void 0 ? q.real : sNow.holders;
-  const late = sNow !== void 0 && passed ? sNow.split.gating : [];
+  const late = sNow === void 0 ? [] : passed ? sNow.split.gating : atLimit2 ? sNow.split.gating.filter((k) => k.limit) : [];
   const opened = sNow !== void 0 && passed ? sNow.split.open.filter((k) => q.kinds.includes(k.kind)) : [];
   const until = auto ? Math.max(q.holdEnd, ...late.map((k) => k.holdEnd)) : Math.max(q.stopEnd, ...late.map((k) => k.stopEnd));
   const ended = sNow === void 0 || opened.length === 0 ? void 0 : endedFor(namedOf(q), sNow.s, late, true);
@@ -3037,7 +3052,14 @@ function stopPlan(q, now, auto, sNow) {
     ...late.map((k) => k.skipAt).filter((t) => t !== null)
   ];
   const skip = skipTag(until, starts, [q.due, ...late.map((k) => k.holdEnd + dueMargin(k))], auto);
-  return { kind: "write", until, ...ended === void 0 ? {} : { ended }, late, record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real } };
+  return {
+    kind: "write",
+    until,
+    ...ended === void 0 ? {} : { ended },
+    late,
+    record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real },
+    ...atLimit2 ? { limit: true } : {}
+  };
 }
 function stopOpenNotice(q, ended, via) {
   if (via === "time limit") return notice.holdLimitLate(q.facts, ended, false);
@@ -3053,7 +3075,7 @@ function stopNotice(q, plan, written, via, now, auto) {
   );
   const u = untilFor(facts, written.windowEnd, written.kinds ?? plan.record.kinds, written.skip === true, now);
   const text3 = (limit, stopped) => via === "time limit" ? { text: limit } : via !== "command" ? { text: stopped } : {};
-  if (q.limit === true) {
+  if (q.limit === true || plan.limit === true) {
     const cont = auto && written.auto === true && written.work === true;
     return { ...text3(notice.limitHoldLimit(u.at, cont), notice.limitStopped(u.at)), late: { record: written, until: u } };
   }
@@ -3163,8 +3185,8 @@ function resumeCase(s, split, mode) {
   return { gating, write, facts: factsFrom(gating, s.now, false, resumeTo) };
 }
 function resumeAtLimit(sNow, q) {
-  if (q?.limit === true && q.chosen !== true) return { choose: true, reply: resumeReply("limit-asking", q.facts) };
   const at = sNow?.kinds.filter((k) => k.limit) ?? [];
+  if (q?.limit === true && q.chosen !== true && (sNow === void 0 || at.length > 0)) return { choose: true, reply: resumeReply("limit-asking", q.facts) };
   if (sNow !== void 0 && at.length > 0) return { choose: false, reply: resumeReply("limit", factsFrom(at, sNow.now)) };
   if (sNow === void 0 && q?.limit === true) return { choose: false, reply: resumeReply("limit", q.facts) };
   return void 0;
@@ -3204,7 +3226,7 @@ function stopCase(s, cfg, absent2) {
   if (ks.length === 0) return { reply: stopReply("open", factsFrom(trippedKinds, s.now)) };
   return { ks, facts: factsFrom(trippedKinds, s.now), real: ks.filter((k) => k.realIn).map(realHolder) };
 }
-var stopKept = (st, ks) => st !== void 0 && ks.every((k) => (st.kinds ?? ["five_hour"]).includes(k.kind));
+var stopKept = (st, ks) => st !== void 0 && ks.every((k) => (st.kinds ?? ["five_hour"]).includes(k.kind)) && ks.every((k) => !k.limit || st.auto !== true && st.windowEnd >= k.stopEnd);
 function stopKeptReply(st, facts, autoResume, now, heldInPlace = false) {
   const shows = st.kinds !== void 0 && (st.auto === true && autoResume || st.skip === true);
   const reply = stopReply("stopped", facts, void 0, shows && st.kinds !== void 0 ? { at: atText(st.windowEnd, st.kinds, void 0, now) } : void 0);
@@ -4350,9 +4372,11 @@ function codexWarnings(state, s, originator) {
   }
   const balance = s.credits?.balance;
   if (s.creditsUsable && typeof balance === "string" && s.kinds.some((k) => (pctOf(k.basis) ?? 0) >= 100)) out.push(codexText.credits(balance));
-  if (!s.cfg.limitPause && !s.creditsUsable && s.kinds.some((k) => atLimit(k.basis) && k.basis.kind !== "none" && (k.basis.resetsAtMs ?? 0) > s.now)) {
-    out.push(codexText.hardStop);
-  }
+  const realAtLimit = (k) => {
+    const r = s.bases[k].real;
+    return atLimit(r) && r.kind !== "none" && (r.resetsAtMs ?? 0) > s.now;
+  };
+  if (!s.cfg.limitPause && !s.creditsUsable && s.kinds.some((k) => realAtLimit(k.kind))) out.push(codexText.hardStop);
   return out;
 }
 function valueOf(eff, name) {
@@ -5676,9 +5700,13 @@ function createGate(d) {
       if (!s.tripped) return { kind: "pass" };
       const a = await d.sense.act(sx, s, { site: "step" });
       const v = a.verdict;
-      if (v.kind === "refuse") return { kind: "end", text: codexText.turnEnds };
-      if (v.kind === "hold") return s.attended ? { kind: "end", text: a.gating.some((k) => k.limit) ? codexText.turnEndsLimit : codexText.turnEndsHold } : { kind: "end" };
-      return { kind: "pass" };
+      const limit = a.gating.some((k) => k.limit);
+      if (v.kind === "refuse") return { kind: "end", text: turnEndText("refuse", limit) };
+      if (v.kind !== "hold") return { kind: "pass" };
+      if (!s.attended) return { kind: "end" };
+      const q = limit ? d.questions.openQuestion(sx) : void 0;
+      const held = q?.limit === true && q.chosen === true ? atText(q.holdEnd, q.kinds, void 0, s.now) : void 0;
+      return { kind: "end", text: turnEndText("hold", limit, held) };
     } catch (e) {
       d.log.debug(codexDebug.readFailed("the quota at the end of the turn", errText5(e)));
       return { kind: "pass" };
@@ -6235,7 +6263,8 @@ function createQuestions(d) {
     const now = d.clock.now();
     const q = update(sx, key, (cur, tx) => {
       if (cur.limit !== true || cur.chosen === true) return void 0;
-      if (via !== "command") noticeIn(tx.state, notice.limitContinues(cur.facts), now);
+      const line = via === "command" ? void 0 : continuesLine(cur, now);
+      if (line !== void 0) noticeIn(tx.state, line, now);
       return { ...cur, chosen: true, nextCheck: 0, leader: null };
     });
     return q !== void 0;
@@ -6414,8 +6443,8 @@ function createQuestions(d) {
         return { q };
       }
       if (q.silent || !(q.mode === "hold" || via === "command")) return { q };
-      const stopAuto = stopAutoOf(q, via, auto ?? q.auto);
-      const plan = stopPlan(q, now, stopAuto, sNow);
+      const stopAuto = stopAutoOf(q, via, auto ?? q.auto, sNow);
+      const plan = stopPlan(q, now, stopAuto, sNow, stopsAtLimit(q, via, sNow));
       if (plan.kind === "open") {
         const text3 = stopOpenNotice(q, plan.ended, via);
         if (text3 !== void 0) noticeIn(tx.state, text3, now, "stop");
@@ -6675,7 +6704,7 @@ function createRefusal(d) {
     releaseInPlace,
     async refusal(sx, call, site, text3, s, a) {
       if (site === "prompt") return { kind: "block", text: refusalText(text3, s, a, sx.sid) };
-      if (site === "stop" || site === "compact") return { kind: "end", text: codexText.turnEnds };
+      if (site === "stop" || site === "compact") return { kind: "end", text: turnEndText("refuse", a.gating.some((k) => k.limit)) };
       if (site !== "tool" && site !== "step" && site !== "start") return { kind: "pass" };
       const denyText = refusalText(s.attended ? "stop" : "headless", s, a, sx.sid);
       if (site === "start") {

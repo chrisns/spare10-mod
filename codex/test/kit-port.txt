@@ -38,6 +38,7 @@
 ! seedWrite = On Codex each view writes seed.json from its own readings (3.6), and consent never goes there.
 ! startStep = On Codex no start step can fail alone (4.22). The env is a snapshot, and the session id comes with the hook input. One store transaction writes the child policy and the warnings.
 ! limitNoun = Codex has no $.spare10 noun and no older copy in a session: each gate reads config.json, so spare10 set limitPause applies at the next step (5.2).
+! heldLine = At the limit every root hook of Codex is held, and a queued line shows only when a root hook answers: Codex shows no line when a prompt joins the held work (docs/codex.md).
 
 # Codex cases that many lines name.
 @parse = core-codex|parseCommand: every form of 2.8
@@ -580,6 +581,12 @@ a Stop here at the limit survives a reload: a new copy refuses work until the re
 the badge shows the limit row while held work waits for the reset => none:badge ; limit|the report shows the limit phase line
 a reading at 100% without a reset time keeps the rules of today => flow|a kind at 100% in its last span is a limit kind
 $.spare10.limit answers the option of the newest copy => none:limitNoun
+/spare10 stop on a question at the reserve after the quota reached 100% stops until the reset, and nothing continues it => limit|spare10 stop on a question at the reserve after the quota reached 100%
+Stop here on the dialog at the reserve after the quota reached 100% stops at the limit, until the reset => limit|Stop here on the form at the reserve after the quota reached 100%
+/spare10 stop at the limit over an auto stop drops its auto, and nothing continues the work after the reset => limit|spare10 stop over an auto stop at the limit
+a person prompt after Continue at the reset joins the held work with a line, and goes in after the reset => flow|continuesLine and promptWaitsLine ; limit|a typed prompt at the limit waits ; none:heldLine
+/spare10 resume on a limit question whose limit is gone settles it as Resume, and the held call runs => flow|resumeAtLimit: a limit question whose limit is gone
+after Continue at the reset, when all held work goes away, the next step asks the limit question again => question|the last waiter that leaves forgets a question older than 90 s
 
 [headless.test.ts]
 -p default off: inside the reserve everything runs, nothing asks, the seed is still written => @hOff ; @qtSeedWrite

@@ -2,10 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { codexText, elicitParams, withPrefix } from '../../hooks/core/codex.ts'
 import { formatConsent, formatStopped, parseStopped } from '../../hooks/core/decide.ts'
-import { atText, headlessText, limitQuestionText, notice, resumeReply, stopReply } from '../../hooks/core/text.ts'
+import { LIMIT_OFF, atText, debugLine, headlessText, limitQuestionText, notice, resumeReply, stopReply } from '../../hooks/core/text.ts'
 import { readJson } from '../src/files.ts'
 import type { QuestionRecord } from '../src/question.ts'
 import type { AnswerFile } from '../src/store.ts'
+import { heldCall, logicWorld } from './helpers/logic.ts'
+import type { LogicWorld } from './helpers/logic.ts'
 import { CHILD, HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
 import type { World, WorldBroker } from './helpers/world.ts'
 
@@ -23,8 +25,8 @@ const LIM = T0 + 10 * MIN
 const MARGIN = 5 * MIN
 const AT = atText(LIM, ['five_hour'])
 
-const question = (w: World): QuestionRecord | undefined => readJson<QuestionRecord>(w.file('question.json'))
-const answer = (w: World): AnswerFile | undefined => readJson<AnswerFile>(w.file('answer.json'))
+const question = (w: Pick<World | LogicWorld, 'file'>): QuestionRecord | undefined => readJson<QuestionRecord>(w.file('question.json'))
+const answer = (w: Pick<World | LogicWorld, 'file'>): AnswerFile | undefined => readJson<AnswerFile>(w.file('answer.json'))
 const params = (b: WorldBroker, n: number): Record<string, unknown> => b.forms()[n]?.['params'] as Record<string, unknown>
 const typed = async (b: WorldBroker, prompt: string): Promise<string> => parsed(await b.gate('prompt', { prompt }))['reason'] as string
 const lineOf = (text: string | undefined): string | undefined => parsed(text)['systemMessage'] as string | undefined
@@ -278,11 +280,11 @@ test('limit: the report shows the limit phase line', async (t) => {
   const b = await w.broker()
   w.reading(SID, 100, { reset: LIM })
   const line = async (): Promise<string | undefined> => (await typed(b, 'spare10')).split('\n')[2]
-  assert.equal(await line(), `  ‖ limit          the quota limit is reached until ${AT}. spare10 holds the next step and asks you.`)
+  assert.equal(await line(), `  ‖ limit          the quota limit is reached until ${AT}. spare10 holds the next step and asks you. ${LIMIT_OFF}`)
   await heldAtLimit(w, b)
   b.host.answer(CONTINUE)
   await w.settle()
-  assert.equal(await line(), `  ‖ limit          the quota limit is reached. Held work waits until ${AT}. Then spare10 continues it, unless a reserve is still reached.`)
+  assert.equal(await line(), `  ‖ limit          the quota limit is reached. Held work waits until ${AT}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
 })
 
 test('limit: an approval never session holds at the limit with no form, and continues after the reset', async (t) => {
@@ -335,18 +337,37 @@ test('limit: a typed prompt at the limit waits after Continue at the reset, and 
   assert.notEqual(parsed(h.box.text)['decision'], 'block', 'the prompt goes in')
 })
 
-// A timeout: a consent that answered the limit question would open and resume a question at each cycle, with no end.
-test('limit: a consent in the state never answers the limit question, so the form stays and the call holds', { timeout: 20_000 }, async (t) => {
-  const w = world(t)
-  const b = await w.broker()
-  const { h } = await heldAtLimit(w, b)
+/** The logic world: a held tool call at the limit, with its question open and its wait started. */
+async function limitWait(w: LogicWorld, b: ReturnType<LogicWorld['broker']>, turn = 'U1', reset = LIM) {
+  w.reading(b.thread, 100, { reset })
+  const s = await b.sense.sense(b.sx, 'tool')
+  const a = await b.sense.act(b.sx, s, { site: 'tool' })
+  const call = heldCall({ turn })
+  const key = b.questions.ensureQuestion(b.sx, call, 'loop', s, a)
+  const box: { out?: string } = {}
+  const out = b.questions.waitQuestion(b.sx, call, key).then((o) => {
+    box.out = o
+    return o
+  })
+  return { call, key, out, box }
+}
+
+// The logic world drives one wait with no gate round: a consent that answered the limit question would end
+// the wait at once, and the spec fails fast instead of looping with a new question at each cycle.
+test('limit: a consent in the state never answers the limit question, so the form stays and the call holds', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const { box } = await limitWait(w, b)
+  await w.settle()
+  assert.equal(b.mcp.requests.length, 1)
   w.setState({ consent: formatConsent(SID, LIM) }) // a full consent, as the CLI or a second Resume writes it
   await w.advance(2 * MIN)
-  assert.equal(h.box.done, false)
+  assert.equal(box.out, undefined, 'the call holds')
   assert.equal(answer(w), undefined, 'not decided elsewhere')
   assert.equal(question(w)?.limit, true)
-  b.host.answer(STOP)
+  b.mcp.answer('stop')
   await w.settle()
+  assert.equal(box.out, 'stop')
   assert.equal(parseStopped(w.state().stopped)?.auto, false)
 })
 
@@ -368,4 +389,128 @@ test('limit: an auto stop at the reserve that is due at the limit lasts until th
   await w.advance(reset + MARGIN - w.clock.now() + MIN)
   assert.equal(w.daemon.callsOf('start').length, 1)
   assert.equal(w.state().stopped, undefined)
+})
+
+test('limit: spare10 stop on a question at the reserve after the quota reached 100% stops until the reset, with no auto', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const reset = T0 + 2 * HOUR
+  w.reading(SID, 92, { reset })
+  b.call('tool')
+  await w.settle()
+  assert.equal(question(w)?.limit, undefined, 'the question at the reserve is open')
+  w.reading(SID, 100, { reset }) // the quota reaches the limit before the next check
+  assert.equal(await typed(b, 'spare10 stop'), `spare10: ${stopReply('asking')}`)
+  const r = parseStopped(w.state().stopped)
+  assert.deepEqual(r && { windowEnd: r.windowEnd, auto: r.auto, skip: r.skip, work: r.work }, { windowEnd: reset, auto: false, skip: undefined, work: true })
+})
+
+test('limit: Stop here on the form at the reserve after the quota reached 100% stops until the reset, with the limit line', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const reset = T0 + 2 * HOUR
+  w.reading(SID, 92, { reset })
+  const h = b.call('tool')
+  await w.settle()
+  w.reading(SID, 100, { reset })
+  b.host.answer(STOP)
+  await w.settle()
+  const r = parseStopped(w.state().stopped)
+  assert.deepEqual(r && { windowEnd: r.windowEnd, auto: r.auto }, { windowEnd: reset, auto: false })
+  const at = atText(reset, ['five_hour'], undefined, T0)
+  assert.ok(w.notices().includes(notice.limitStopped(at)) || (lineOf(h.box.text) ?? '').includes(notice.limitStopped(at)))
+})
+
+test('limit: spare10 stop over an auto stop at the limit drops its auto, and replies with the limit text', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const reset = T0 + HOUR
+  w.reading(SID, 100, { reset })
+  w.setState({ stopped: formatStopped({ sessionId: SID, windowEnd: reset, at: T0 - MIN, kinds: ['five_hour'], auto: true, work: true }) })
+  assert.equal(await typed(b, 'spare10 stop'), `spare10: ${stopReply('limit', undefined, undefined, { at: atText(reset, ['five_hour'], undefined, T0) })}`)
+  const r = parseStopped(w.state().stopped)
+  assert.deepEqual(r && { windowEnd: r.windowEnd, auto: r.auto, work: r.work }, { windowEnd: reset, auto: false, work: true })
+})
+
+test('limit: the Stop gate after Stop here ends the turn with the limit line (CX56), and after Continue at the reset with CX57', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  await heldAtLimit(w, b)
+  b.host.answer(STOP)
+  await w.settle()
+  assert.deepEqual(parsed(await b.gate('stop')), { continue: false, stopReason: codexText.turnEndsAtLimit })
+  const v = world(t)
+  const c = await v.broker()
+  await heldAtLimit(v, c)
+  c.host.answer(CONTINUE)
+  await v.settle()
+  const end = parsed(await c.gate('stop'))
+  assert.deepEqual([end['continue'], end['stopReason']], [false, codexText.turnEndsLimitHeld(AT)])
+})
+
+test('limit: with limitPause off, a test reading at 100% gives no CX14 warning', async (t) => {
+  const w = world(t, { config: { limitPause: false } })
+  const b = await w.broker()
+  w.reading(SID, 30, { reset: T0 + 2 * HOUR })
+  await typed(b, 'spare10 simulate 100 in 2m')
+  const report = await typed(b, 'spare10')
+  assert.equal(report.includes(codexText.hardStop), false)
+})
+
+test('limit: Continue at the reset after the reset queues no line that names the passed reset', async (t) => {
+  const w = world(t, { config: { autoResume: false } })
+  const b = await w.broker()
+  const { h, q } = await heldAtLimit(w, b)
+  await w.advance(LIM + MARGIN - T0 + 2 * MIN)
+  assert.equal(h.box.done, false, 'autoResume off: the work waits for the answer')
+  w.reading(SID, 3, { reset: LIM + 5 * HOUR }) // the new window
+  b.host.answer(CONTINUE)
+  await w.advance(MIN)
+  assert.equal(h.box.done, true)
+  const shown = [...w.notices(), lineOf(h.box.text) ?? '']
+  assert.equal(
+    shown.some((l) => l.includes(notice.limitContinues(q.facts))),
+    false,
+  )
+})
+
+test('limit: Esc on the limit form after the leader turn ended hands it on, and a held call of another thread shows it again', async (t) => {
+  const w = logicWorld(t)
+  const root = w.broker()
+  const child = w.broker({ thread: CHILD })
+  const first = await limitWait(w, root, 'U1')
+  const second = await limitWait(w, child, 'C1')
+  assert.equal(second.key, first.key)
+  await w.settle()
+  assert.equal(root.mcp.requests.length, 1)
+  w.rollout(SID).turnAborted('U1', Math.floor(T0 / 1000), T0)
+  root.mcp.answer('cancel')
+  await w.settle()
+  assert.equal(await first.out, 'dropped')
+  const q = question(w)
+  assert.deepEqual([q?.handoffs, q?.chosen, q?.leader?.threadId], [1, undefined, CHILD])
+  assert.ok(w.log.lines.includes(debugLine.handedOn(1)))
+  assert.equal(child.mcp.requests.length, 1, 'the child shows the limit form again')
+  assert.deepEqual(child.mcp.requests[0], root.mcp.requests[0])
+})
+
+test('limit: past the hand-off limit the limit question is chosen, with no stop, and the held work passes after the reset', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const first = await limitWait(w, b)
+  await w.settle()
+  b.sx.store.locked((tx) => tx.setQuestion({ ...(tx.question() as QuestionRecord), handoffs: 5 }))
+  first.call.drop()
+  assert.equal(await first.out, 'dropped')
+  await w.settle()
+  const q = question(w)
+  assert.deepEqual([q?.key, q?.chosen, q?.leader], [first.key, true, null])
+  assert.equal(answer(w), undefined, 'no Stop here')
+  assert.equal(w.state().stopped, undefined)
+  const next = await limitWait(w, b)
+  assert.equal(next.key, first.key, 'a new call joins the chosen question')
+  w.reading(SID, 3, { reset: LIM + 5 * HOUR }) // the new window
+  await w.advance(LIM + MARGIN - T0 + MIN)
+  assert.equal(await next.out, 'again')
+  assert.equal(b.mcp.requests.length, 1)
 })

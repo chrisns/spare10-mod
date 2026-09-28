@@ -19,6 +19,8 @@ export const HEADER: string = 'spare10'
 export const QUESTION_OPTIONS: readonly [string, string] = ['Stop here', 'Resume']
 /** The limit question: Continue at the reset first, with the focus. Only the exact Stop here label stops. */
 export const LIMIT_OPTIONS: readonly [string, string] = ['Continue at the reset', 'Stop here']
+/** The way out of a pause at the limit: a reading that is out of date, or paid extra usage. */
+export const LIMIT_OFF: string = `To let work run past the limit, ${HOST.limitOff}.`
 export const RESUME_LABEL: string = 'Resume'
 export const COMMAND_DESCRIPTION: string = 'Show the spare10 quota breaker, or resume or stop at the reserve.'
 export const ARGUMENT_HINT: string = '[resume|stop]'
@@ -640,6 +642,9 @@ export const notice = {
   resumeFailed: (reason: string): string => `could not continue the stopped work: ${reason}. Type a prompt to continue.`,
   /** Continue at the reset on the limit question: held work waits for the reset. */
   limitContinues: (f: Facts | readonly Facts[]): string => `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached.`,
+  /** A person prompt after Continue at the reset: it waits with the held work, and asks nothing. */
+  limitPromptWaits: (f: Facts | readonly Facts[]): string =>
+    `your prompt waits with the held work until ${whenOf(f).at}. Then spare10 continues all of it, unless a reserve is still reached.`,
   /** Stop here on the limit question. */
   limitStopped: (at: string): string => `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
   /** The hold time limit on a limit question. `cont`: the stop continues the work at the reset. */
@@ -803,12 +808,15 @@ function phaseLine(s: StatusInput): string {
   return `  ${GLYPH[s.phase]} ${name.padEnd(LABEL_WIDTH)}${detail[s.phase]}`
 }
 
-/** The limit phase line: held work waits for the reset, or the next step holds and asks. */
+/**
+ * The limit phase line: held work waits for the reset, or the next step holds and asks. Both name the way
+ * out, for a reading that is out of date or for paid extra usage (how-it-works items 58 and 59).
+ */
 function limitLine(s: StatusInput): string {
   const l = s.limit
   const at = l === undefined ? 'the reset' : atText(l.ms, l.kinds, s.timeZone, s.now)
-  if (l?.held === true) return `the quota limit is reached. Held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.`
-  return `the quota limit is reached until ${at}. spare10 holds the next step and asks you.`
+  if (l?.held === true) return `the quota limit is reached. Held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`
+  return `the quota limit is reached until ${at}. spare10 holds the next step and asks you. ${LIMIT_OFF}`
 }
 
 /** The host reports no window of this kind (CX17). */
@@ -1028,7 +1036,7 @@ export function resumeReply(
     case 'limit-asking':
       return notice.limitContinues(fs)
     case 'limit':
-      return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then.`
+      return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then. ${LIMIT_OFF}`
   }
 }
 

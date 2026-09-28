@@ -4,6 +4,7 @@ import {
   COMMAND_DESCRIPTION,
   HEADER,
   HEADLESS_GENERIC,
+  LIMIT_OFF,
   LIMIT_OPTIONS,
   NOT_STARTED_GENERIC,
   QUESTION_OPTIONS,
@@ -2240,6 +2241,7 @@ test('notStarted at the limit names only the limit and the reset', () => {
 test('the transcript lines at the limit, and {Rs} of a kind at the limit in the shared lines', () => {
   expect(notice.limitContinues(L5)).toBe('held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.')
   expect(notice.limitContinues([L5, L7])).toBe('held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.')
+  expect(notice.limitPromptWaits(L5)).toBe('your prompt waits with the held work until 15:00. Then spare10 continues all of it, unless a reserve is still reached.')
   expect(notice.limitStopped('15:00')).toBe(`stopped at the quota limit until 15:00. ${AFTER}`)
   expect(notice.limitHoldLimit('Mon 09:00', true)).toBe(
     'the hold reached its time limit. The work is stopped at the quota limit until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.',
@@ -2254,8 +2256,13 @@ test('the transcript lines at the limit, and {Rs} of a kind at the limit in the 
 
 test('the command replies at the limit', () => {
   expect(resumeReply('limit-asking', L5)).toBe('held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached.')
-  expect(resumeReply('limit', L5)).toBe('nothing to resume now. The quota limit is reached until 15:00. spare10 holds all work until then.')
-  expect(resumeReply('limit', [L5, L7])).toBe('nothing to resume now. The quota limits of both windows are reached until Mon 09:00. spare10 holds all work until then.')
+  expect(resumeReply('limit', L5)).toBe(
+    'nothing to resume now. The quota limit is reached until 15:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.',
+  )
+  expect(resumeReply('limit', [L5, L7])).toBe(
+    'nothing to resume now. The quota limits of both windows are reached until Mon 09:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.',
+  )
+  expect(LIMIT_OFF).toBe('To let work run past the limit, turn off Pause at the limit in /config.')
   expect(stopReply('limit', undefined, undefined, { at: '15:00' })).toBe(`stopped at the quota limit until 15:00. ${AFTER}`)
 })
 
@@ -2281,9 +2288,9 @@ test('B27 names SPARE10_LIMIT_PAUSE as on or off', () => {
 test('the report: the limit phase lines, and the at the limit row only while the option is off', () => {
   const at = { basis: { kind: 'live', pct: 100, resetsAtMs: R } as Basis, facts: L5, autoResume: { on: true, from: 'option' } as const }
   const waiting = statusReport(status({ ...at, phase: 'limit', limit: { ms: R, kinds: ['five_hour'], held: false } })).split('\n')
-  expect(waiting[2]).toBe('  ‖ limit          the quota limit is reached until 15:00. spare10 holds the next step and asks you.')
+  expect(waiting[2]).toBe(`  ‖ limit          the quota limit is reached until 15:00. spare10 holds the next step and asks you. ${LIMIT_OFF}`)
   const held = statusReport(status({ ...at, phase: 'limit', limit: { ms: W, kinds: ['seven_day'], held: true } })).split('\n')
-  expect(held[2]).toBe('  ‖ limit          the quota limit is reached. Held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.')
+  expect(held[2]).toBe(`  ‖ limit          the quota limit is reached. Held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
   const on = statusReport(status({ ...at, phase: 'tripped', limitPause: { on: true, from: 'option' } }))
   expect(on).toBe(statusReport(status({ ...at, phase: 'tripped' }))) // on: the report is as it was
   const off = statusReport(status({ ...at, phase: 'open', limitPause: { on: false, from: 'option' } })).split('\n')
@@ -2306,7 +2313,7 @@ function limitEnginePrefixed(): string[] {
     stopReply('limit'),
   ]
   for (const f of [L5, L7, [L5, L7]] as Array<Facts | Facts[]>) {
-    out.push(notice.limitContinues(f), resumeReply('limit-asking', f), resumeReply('limit', f), notice.stopped(f), notice.resetStillHeld(FIVE, Array.isArray(f) ? f : [f]))
+    out.push(notice.limitContinues(f), notice.limitPromptWaits(f), resumeReply('limit-asking', f), resumeReply('limit', f), notice.stopped(f), notice.resetStillHeld(FIVE, Array.isArray(f) ? f : [f]))
   }
   for (const phase of ['limit', 'open'] as const)
     for (const held of [false, true])

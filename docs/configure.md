@@ -62,7 +62,7 @@ A change of option reloads the plugin.
 | Resume floor (%) | `5` | 0 to 99, one decimal at most | After a **Resume** at the 5-hour reserve, spare10 asks again when this much is left. `0` switches this off. A value at or above the reserve does nothing. |
 | Weekly resume floor (%) | `5` | 0 to 99, one decimal at most | The same for the weekly window. |
 | Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. |
-| Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". Off: work waits for you. |
+| Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". At 100% used, **Stop here** never continues by itself. Off: work waits for you. |
 | Pause at the limit | on | on, off | On: at 100% used, spare10 holds all work, also in an open reserve or after a **Resume**. It asks you once, and continues the work after the reset. Off: work runs into the limit. Switch it off when you pay for extra usage. See [At the quota limit](claude-code.md#at-the-quota-limit). |
 | Unattended runs (-p, SDK) | `off` | `off`, `prompt`, `stop`, `wait` | What spare10 does inside the reserve when nobody can answer. See [Unattended runs](#unattended-runs). |
 | Guarded sessions | `all` | `all`, `opt-in` | `all`: every interactive session. `opt-in`: only runs started with `SPARE10=on`. |

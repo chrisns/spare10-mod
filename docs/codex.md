@@ -133,8 +133,25 @@ Esc on the limit form is **Continue at the reset**.
 If the step that asked went away, another held step asks again.
 With approval `never`, no form shows, and the work continues at the reset.
 `spare10 resume` on the limit form counts as **Continue at the reset**.
-`spare10 stop` counts as **Stop here**.
-When a turn ends at the limit, Codex shows `spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.`
+At other times at the limit, its reply names `spare10 set limitPause off`.
+`spare10 stop` counts as **Stop here**, also on a form at the reserve when the quota is at 100% used.
+
+Codex shows a spare10 line only when a hook of the main thread answers.
+At the limit, spare10 holds every such hook.
+So after **Continue at the reset**, Codex shows no line until the held work continues.
+The form closes, and the work stays on hold. This is not a hang.
+When the hold lasts more than 30 minutes, Codex then shows only `spare10: the 5-hour window reset. Held work continues.`
+
+When a turn ends at the limit, Codex shows one of these lines:
+
+```
+spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.
+spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until 15:00.
+spare10: the turn ends here, because work stopped at the quota limit.
+```
+
+The second line comes after **Continue at the reset**.
+The third line comes after **Stop here**.
 
 If you can spend Codex credits past 100%, spare10 does not pause at the limit.
 Then the question at the reserve names the balance.

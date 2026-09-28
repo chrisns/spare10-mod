@@ -1,6 +1,6 @@
 import { closeSync, openSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, unsafeMode, withInterruptedNote, withPrefix } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, turnEndText, unsafeMode, withInterruptedNote, withPrefix } from '../../hooks/core/codex.ts'
 import type { Command, GateResult, GateSite, HostKind, LiveRead } from '../../hooks/core/codex.ts'
 import { childHeadless } from '../../hooks/core/config.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
@@ -8,7 +8,7 @@ import type { Answered } from '../../hooks/core/decide.ts'
 import { factsFrom, modeOf, namedKinds, notStartedFor, refusalText, tellText } from '../../hooks/core/flow.ts'
 import type { Acted, Sensed } from '../../hooks/core/flow.ts'
 import type { Facts } from '../../hooks/core/text.ts'
-import { notPerson, resetContext, resumeContext } from '../../hooks/core/text.ts'
+import { atText, notPerson, resetContext, resumeContext } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
 import { nestedParent, noteOriginator } from './attend.ts'
 import type { Commands } from './commands.ts'
@@ -551,10 +551,14 @@ export function createGate(d: GateDeps): Gate {
       if (!s.tripped) return { kind: 'pass' }
       const a = await d.sense.act(sx, s, { site: 'step' })
       const v = a.verdict
-      if (v.kind === 'refuse') return { kind: 'end', text: codexText.turnEnds }
-      // CX55 at the quota limit, else CX41.
-      if (v.kind === 'hold') return s.attended ? { kind: 'end', text: a.gating.some((k) => k.limit) ? codexText.turnEndsLimit : codexText.turnEndsHold } : { kind: 'end' }
-      return { kind: 'pass' }
+      const limit = a.gating.some((k) => k.limit)
+      if (v.kind === 'refuse') return { kind: 'end', text: turnEndText('refuse', limit) } // CX3, or CX56 at the quota limit
+      if (v.kind !== 'hold') return { kind: 'pass' }
+      if (!s.attended) return { kind: 'end' }
+      // CX41, or CX55 at the quota limit. CX57 after Continue at the reset: the next prompt joins the held work.
+      const q = limit ? d.questions.openQuestion(sx) : undefined
+      const held = q?.limit === true && q.chosen === true ? atText(q.holdEnd, q.kinds, undefined, s.now) : undefined
+      return { kind: 'end', text: turnEndText('hold', limit, held) }
     } catch (e) {
       d.log.debug(codexDebug.readFailed('the quota at the end of the turn', errText(e)))
       return { kind: 'pass' } // a sense failure passes

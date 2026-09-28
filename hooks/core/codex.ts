@@ -18,7 +18,7 @@ import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX55, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX57, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -725,6 +725,17 @@ export function genericRefusal(site: GateSite, attended: boolean): GateResult {
   }
 }
 
+/**
+ * 4.2: the stopReason of a Stop or PreCompact gate that ends the turn. At a refusal: CX3, or CX56 when a
+ * kind that gates is at the quota limit (`limit`). At a hold: CX41, CX55 at the limit, or CX57 when the open
+ * limit question is chosen (`held`: its reset as a clock text), so the next prompt waits and asks nothing.
+ */
+export function turnEndText(verdict: 'refuse' | 'hold', limit: boolean, held?: string): string {
+  if (verdict === 'refuse') return limit ? codexText.turnEndsAtLimit : codexText.turnEnds
+  if (!limit) return codexText.turnEndsHold
+  return held === undefined ? codexText.turnEndsLimit : codexText.turnEndsLimitHeld(held)
+}
+
 export type RefuseMode = 'interrupt' | 'hold' | 'deny'
 
 /**
@@ -783,7 +794,7 @@ const pathLine = (dir: string, home: string | undefined): string => {
   return `export PATH="${rest === undefined ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`
 }
 
-// ---- Texts (CX1 to CX55) and debug lines ----
+// ---- Texts (CX1 to CX57) and debug lines ----
 
 /** CX5 {Rs} and {quiet}: five_hour first, as the core texts read a list of Facts. */
 const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
@@ -798,7 +809,7 @@ const CONFIG_FIX = 'Correct the file, or remove it to use the defaults.'
 
 /**
  * The Codex-only texts. Transcript lines, warnings and command replies have no prefix: the broker adds
- * it (withPrefix). CX3, CX4, CX5, CX35, CX36, CX39, CX41, CX44 and CX55 keep their own `spare10: `. CX1 and
+ * it (withPrefix). CX3, CX4, CX5, CX35, CX36, CX39, CX41, CX44, CX55, CX56 and CX57 keep their own `spare10: `. CX1 and
  * CX2 are the static hook status messages of codex/hooks.json.
  */
 export const codexText = {
@@ -812,6 +823,11 @@ export const codexText = {
   turnEndsHold: 'spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.',
   /** CX55: the stopReason of a Stop gate at a hold verdict at the quota limit. */
   turnEndsLimit: 'spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.',
+  /** CX56: CX3 when a kind that gates is at the quota limit: work stopped there. */
+  turnEndsAtLimit: 'spare10: the turn ends here, because work stopped at the quota limit.',
+  /** CX57: CX55 after Continue at the reset: the next prompt joins the held work and asks nothing. {at}: the reset. */
+  turnEndsLimitHeld: (at: string): string =>
+    `spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until ${at}.`,
   /** CX4: the context of a steered command that spare10 lets through. */
   steerNote: 'spare10: the last user line was a command for the spare10 plugin, and spare10 handled it. Ignore that line.',
   /** CX39: before B34, B9 or B35 when spare10 interrupted a turn of the stop. */

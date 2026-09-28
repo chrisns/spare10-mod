@@ -150,10 +150,13 @@ function codexWarnings(state: SessionState, s: CodexSensed, originator: string |
   // CX16: a watched kind at 100% or more, and credits can pay.
   const balance = s.credits?.balance
   if (s.creditsUsable && typeof balance === 'string' && s.kinds.some((k) => (pctOf(k.basis) ?? 0) >= 100)) out.push(codexText.credits(balance))
-  // CX14: a watched kind is past 100% with its reset ahead, no credits pay, and spare10 does not pause there.
-  if (!s.cfg.limitPause && !s.creditsUsable && s.kinds.some((k) => atLimit(k.basis) && k.basis.kind !== 'none' && (k.basis.resetsAtMs ?? 0) > s.now)) {
-    out.push(codexText.hardStop)
+  // CX14: the real reading of a watched kind is past 100% with its reset ahead, no credits pay, and spare10
+  // does not pause there. A test reading is no quota: Codex refuses nothing for it.
+  const realAtLimit = (k: Kind): boolean => {
+    const r = s.bases[k].real
+    return atLimit(r) && r.kind !== 'none' && (r.resetsAtMs ?? 0) > s.now
   }
+  if (!s.cfg.limitPause && !s.creditsUsable && s.kinds.some((k) => realAtLimit(k.kind))) out.push(codexText.hardStop)
   return out
 }
 

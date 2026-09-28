@@ -1,4 +1,4 @@
-import { codexDebug, codexText, refuseModeOf } from '../../hooks/core/codex.ts'
+import { codexDebug, refuseModeOf, turnEndText } from '../../hooks/core/codex.ts'
 import type { GateResult, GateSite } from '../../hooks/core/codex.ts'
 import { formatStopped, parseStopped, stopDue } from '../../hooks/core/decide.ts'
 import type { Site, StoppedRecord } from '../../hooks/core/decide.ts'
@@ -230,7 +230,7 @@ export function createRefusal(d: RefusalDeps): Refusal {
     releaseInPlace,
     async refusal(sx, call, site, text, s, a) {
       if (site === 'prompt') return { kind: 'block', text: refusalText(text, s, a, sx.sid) }
-      if (site === 'stop' || site === 'compact') return { kind: 'end', text: codexText.turnEnds }
+      if (site === 'stop' || site === 'compact') return { kind: 'end', text: turnEndText('refuse', a.gating.some((k) => k.limit)) } // CX3, or CX56 at the quota limit
       if (site !== 'tool' && site !== 'step' && site !== 'start') return { kind: 'pass' } // spawn and interrupt cannot refuse
       const denyText = refusalText(s.attended ? 'stop' : 'headless', s, a, sx.sid)
       if (site === 'start') {

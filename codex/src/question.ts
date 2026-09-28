@@ -8,6 +8,7 @@ import {
   answeredOf as answeredOfCore,
   answersKind,
   consentOfEnd,
+  continuesLine,
   dueRelease,
   dueStep,
   dueWait,
@@ -23,6 +24,7 @@ import {
   stopNotice,
   stopOpenNotice,
   stopPlan,
+  stopsAtLimit,
   supersedes,
   viewedOf,
 } from '../../hooks/core/flow.ts'
@@ -255,7 +257,9 @@ export function createQuestions(d: QuestionDeps): Questions {
     const now = d.clock.now()
     const q = update(sx, key, (cur, tx) => {
       if (cur.limit !== true || cur.chosen === true) return undefined
-      if (via !== 'command') noticeIn(tx.state, notice.limitContinues(cur.facts), now)
+      // Only while the reset is ahead: after it, the release line follows at once (flow.ts continuesLine).
+      const line = via === 'command' ? undefined : continuesLine(cur, now)
+      if (line !== undefined) noticeIn(tx.state, line, now)
       return { ...cur, chosen: true, nextCheck: 0, leader: null }
     })
     return q !== undefined
@@ -466,9 +470,10 @@ export function createQuestions(d: QuestionDeps): Questions {
         return { q }
       }
       if (q.silent || !(q.mode === 'hold' || via === 'command')) return { q }
-      // Stop here at the limit never continues by itself, but the hold time limit does (the setting in force).
-      const stopAuto = stopAutoOf(q, via, auto ?? q.auto)
-      const plan = stopPlan(q, now, stopAuto, sNow)
+      // A Stop here at the limit never continues by itself, also on a question at the reserve while a kind at
+      // the limit gates now, but the hold time limit does (the setting in force, flow.ts stopsAtLimit).
+      const stopAuto = stopAutoOf(q, via, auto ?? q.auto, sNow)
+      const plan = stopPlan(q, now, stopAuto, sNow, stopsAtLimit(q, via, sNow))
       if (plan.kind === 'open') {
         // B46 open: nothing is stopped. Held work is refused, new work passes.
         const text = stopOpenNotice(q, plan.ended, via)

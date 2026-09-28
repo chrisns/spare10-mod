@@ -10,6 +10,7 @@ import {
   T0,
   TEST_MARGIN,
   TICK,
+  above,
   bash,
   begin,
   cmd,
@@ -67,7 +68,14 @@ const STOPPED = (at = AT): string => `stopped at the quota limit until ${at}. Af
 const REACHED = 'the quota limit is reached. spare10 asks you again.'
 const RESET_CONTINUES = 'the 5-hour window reset. Held work continues.'
 const RESET_WAITING = 'the 5-hour window reset. Held work still waits for your answer.'
-const NOTHING_NOW = (at: string): string => `nothing to resume now. The quota limit is reached until ${at}. spare10 holds all work until then.`
+const LIMIT_OFF = 'To let work run past the limit, turn off Pause at the limit in /config.'
+const NOTHING_NOW = (at: string): string => `nothing to resume now. The quota limit is reached until ${at}. spare10 holds all work until then. ${LIMIT_OFF}`
+const PROMPT_WAITS = (at = AT): string => `your prompt waits with the held work until ${at}. Then spare10 continues all of it, unless a reserve is still reached.`
+
+// BOUNDED: a consent that answered the limit question would open and resume a new question at each round,
+// with no end, and the kit would spin instead of failing. So a test that holds at the limit with a consent in
+// force lets only a few quota reads succeed (w.usageFailsAfter). Such a loop then fails its sense, the held
+// step goes through, and the test fails at once.
 
 type Logs = Pick<World, 'logs'>
 const transcript = (w: Logs): string[] => w.logs.filter((l) => l.to !== 'debug').map((l) => l.text)
@@ -203,11 +211,13 @@ test('a full consent after a second Resume does not let work past the limit', as
   w.pct = 99.9
   expect((await bash($)).result).toBe('ran')
   w.pct = 100
+  w.usageFailsAfter = 10 // fail fast: see BOUNDED
   const held = await heldAtLimit($, w)
   expect(questions(w).at(-1)).toBe(LOOP_Q(hhmm(R_MS)))
   expect(w.env.get('SPARE10_CONSENT')).toBe(consentRec('S1', RESETS)) // the consent is kept
   expect(held.done()).toBe(false)
   expect(w.ran).toEqual(['Bash:main', 'Bash:main', 'Bash:main'])
+  w.usageFailsAfter = undefined
 })
 
 test('a Resume on the floor question that comes at 100% leads to the limit question, and no request goes out', async ($, on) => {
@@ -217,6 +227,7 @@ test('a Resume on the floor question that comes at 100% leads to the limit quest
   await w.clock.settle()
   expect(questions(w)[0]).toMatch(/^Your 5% floor is reached: 96% used/)
   w.pct = 100 // the quota reaches the limit while the second question is up
+  w.usageFailsAfter = 10 // fail fast: see BOUNDED
   w.release('Resume')
   await w.clock.settle()
   expect(w.requests).toBe(0)
@@ -331,11 +342,14 @@ test("another copy's consent never answers the limit question, and the held call
   await begin($, w)
   const held = await heldAtLimit($, w)
   w.env.set('SPARE10_CONSENT', consentRec('S1', LIM)) // another copy's Resume, as a full consent
+  w.usageFailsAfter = 3 // fail fast: see BOUNDED
   w.cap() // the next carrier cycle reads the env
   await w.clock.settle()
   expect(held.done()).toBe(false)
   expect(w.dialogAborted).toBe('no') // not decided elsewhere: the dialog stays up
   expect(w.ran).toEqual([])
+  expect(w.asked).toHaveLength(1)
+  w.usageFailsAfter = undefined
   w.release('Stop here')
   expect((await held.p).deny).toBe(STOP())
 })
@@ -469,6 +483,9 @@ test('autoResume off: with no answer the held work waits past the reset with one
   w.release('Continue at the reset')
   expect((await held.p).result).toBe('ran')
   expect(w.asked).toHaveLength(1)
+  await w.clock.settle()
+  expect(transcript(w)).not.toContain(CONTINUES()) // the reset has passed: only the release line
+  expect(transcript(w)).toContain(RESET_CONTINUES)
 })
 
 // ---- Unattended runs (1.8) ----
@@ -540,13 +557,13 @@ test('the badge shows the limit row while held work waits for the reset', async 
   await $.session.measure(measure(100, ['rateLimits', 'cost'], LIM))
   await w.clock.settle()
   expect(await badgeOf($)).toEqual({ text: ` ‖ spare10: at the limit until ${AT}`, color: 'warning' })
-  expect(phaseLine(await report($))).toBe(`  ‖ limit          the quota limit is reached until ${AT}. spare10 holds the next step and asks you.`)
+  expect(phaseLine(await report($))).toBe(`  ‖ limit          the quota limit is reached until ${AT}. spare10 holds the next step and asks you. ${LIMIT_OFF}`)
   const held = await heldAtLimit($, w)
   expect(await badgeOf($)).toEqual({ text: ` ? spare10: waiting for you until ${AT}`, color: 'warning' })
   w.release('Continue at the reset')
   await w.clock.settle()
   expect(await badgeOf($)).toEqual({ text: ` ‖ spare10: at the limit until ${AT}`, color: 'warning' })
-  expect(phaseLine(await report($))).toBe(`  ‖ limit          the quota limit is reached. Held work waits until ${AT}. Then spare10 continues it, unless a reserve is still reached.`)
+  expect(phaseLine(await report($))).toBe(`  ‖ limit          the quota limit is reached. Held work waits until ${AT}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
   await pastDue(w, LIM)
   expect((await held.p).result).toBe('ran')
 })
@@ -572,4 +589,100 @@ test('$.spare10.limit answers the option of the newest copy', { plugins: [newerL
   w.env.set('NEWER_COPY_LIMIT', 'on')
   await heldAtLimit($, w)
   expect(questions(w)).toEqual([LOOP_Q()])
+})
+
+// ---- A stop that comes at the limit (review fixes) ----
+
+test('/spare10 stop on a question at the reserve after the quota reached 100% stops until the reset, and nothing continues it', async ($, on) => {
+  const w = world(on, { pct: 92 })
+  await begin($, w)
+  const held = tracked(bash($))
+  await w.clock.settle()
+  expect(questions(w)[0]).toMatch(/^Your 10% reserve is reached: 92% used/)
+  w.pct = 100 // the quota reaches the limit before the next check
+  expect(await run($, 'stop')).toBe('stopped. Held work is refused.')
+  expect((await held.p).deny).toMatch(/^spare10: the user stopped work at the quota/)
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${R_MS} ${T0} five_hour,work`) // no auto, until the reset
+  await pastDue(w, RESETS)
+  await w.clock.advance(2 * MIN)
+  expect(w.submitted).toEqual([])
+})
+
+test('Stop here on the dialog at the reserve after the quota reached 100% stops at the limit, until the reset', async ($, on) => {
+  const w = world(on, { pct: 92 })
+  await begin($, w)
+  const held = tracked(bash($))
+  await w.clock.settle()
+  w.pct = 100
+  w.release('Stop here')
+  expect((await held.p).deny).toMatch(/^spare10: the user stopped work at the quota/)
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${R_MS} ${T0} five_hour,work`)
+  expect(transcript(w)).toContain(STOPPED(hhmm(R_MS)))
+  await pastDue(w, RESETS)
+  await w.clock.advance(2 * MIN)
+  expect(w.submitted).toEqual([])
+})
+
+test('/spare10 stop at the limit over an auto stop drops its auto, and nothing continues the work after the reset', async ($, on) => {
+  const w = world(on, { pct: 100, env: { SPARE10_STOPPED: stopRec('S1', RESETS, T0 - MIN, 'five_hour,work,auto') } })
+  await begin($, w)
+  expect(await run($, 'stop')).toBe(STOPPED(hhmm(R_MS)))
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_STOPPED')).toBe(`S1 ${R_MS} ${T0} five_hour,work`)
+  await pastDue(w, RESETS)
+  await w.clock.advance(2 * MIN)
+  expect(w.submitted).toEqual([])
+})
+
+// ---- Continue at the reset, and after (review fixes) ----
+
+test('a person prompt after Continue at the reset joins the held work with a line, and goes in after the reset', async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM })
+  await begin($, w)
+  const held = await heldAtLimit($, w)
+  w.release('Continue at the reset')
+  await w.clock.settle()
+  const p = tracked($.prompt.submit(typed('hello')))
+  await w.clock.settle()
+  expect(p.done()).toBe(false)
+  expect(w.asked).toHaveLength(1) // no second dialog
+  expect(transcript(w)).toContain(PROMPT_WAITS())
+  await pastDue(w, LIM)
+  expect((await held.p).result).toBe('ran')
+  expect(await p.p).toMatchObject({ text: 'hello' })
+})
+
+test('/spare10 resume on a limit question whose limit is gone settles it as Resume, and the held call runs', { plugins: [newerLimit] }, async ($, on) => {
+  const w = world(on, { pct: 100 })
+  await begin($, w)
+  const held = await heldAtLimit($, w)
+  w.env.set('NEWER_COPY_LIMIT', 'off') // the option is off now: no kind is at the limit
+  expect(await run($, 'resume')).toMatch(/^resumed\. Held work continues on the reserve/)
+  await w.clock.settle()
+  expect(held.done()).toBe(true)
+  expect((await held.p).result).toBe('ran')
+  expect(w.env.get('SPARE10_CONSENT')).toBe(consentRec('S1', RESETS))
+  expect(w.asked).toHaveLength(1)
+})
+
+test('after Continue at the reset, when all held work goes away, the next step asks the limit question again', { plugins: [above] }, async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM })
+  await begin($, w)
+  const main = bash($, undefined, 'abandon me')
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(1)
+  w.release('Continue at the reset')
+  await w.clock.settle()
+  await w.clock.advance(1000) // the hook above settles: the only held dispatch is abandoned
+  expect((await main).deny).toBe('a hook above settled first')
+  await w.clock.settle()
+  const next = tracked(bash($))
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(2) // the chosen question went with its work
+  expect(w.asked[1]?.labels).toEqual(OPTIONS)
+  expect(next.done()).toBe(false)
+  w.release('Stop here')
+  expect((await next.p).deny).toBe(STOP())
 })

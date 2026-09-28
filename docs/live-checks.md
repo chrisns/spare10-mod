@@ -1294,7 +1294,7 @@ It also settles that the limit holds in an open reserve.
 - The transcript shows `spare10: held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached.`
 - After step 3, no second dialog shows, also when the main loop makes a step.
 - After step 4, the badge shows `‖ spare10 (test): at the limit until HH:MM`.
-- After step 4, the phase line reads `‖ limit          the quota limit is reached. Held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached.`
+- After step 4, the phase line reads `‖ limit          the quota limit is reached. Held work waits until HH:MM. Then spare10 continues it, unless a reserve is still reached. To let work run past the limit, turn off Pause at the limit in /config.`
 - Before HH:MM, `$S10/lc39a` does not exist.
 - About one minute after HH:MM, the transcript shows `spare10: the test window ended. Held work continues.`
 - Then the subagent finishes, and `$S10/lc39a` exists.
