@@ -16,7 +16,6 @@ import {
   namedOf,
   questionOf,
   quietOf,
-  raiseAtFloor,
   resumeNotice,
   sensedNote,
   stopAutoOf,
@@ -26,6 +25,7 @@ import {
   stopPlan,
   stopsAtLimit,
   supersedes,
+  tierAtResume,
   viewedOf,
 } from '../../hooks/core/flow.ts'
 import type { Acted, KindSense, Late, QuestionCore, Sensed, StopSense, Via } from '../../hooks/core/flow.ts'
@@ -84,10 +84,11 @@ export type Questions = {
   /** 4.3 the Codex form of hold(): the outcome, `again`, or `dropped` when Codex dropped the call. */
   waitQuestion(sx: SessionCtx, call: HeldCall, key: string): Promise<Settled | 'dropped'>
   /**
-   * 4.3 ports settle and settleStop. `raiseAt` (B50 item 4, a resume command): a fresh sense, so a kind at
-   * the floor is raised to a full Resume first. `noDialog`: the question could not show (a held stop, A5).
+   * 4.3 ports settle and settleStop. `raiseAt` (B50 item 4, a resume command): a fresh sense, so each kind
+   * takes its tier now first (flow.ts tierAtResume): a kind at the floor is raised to a full Resume, and a
+   * kind of a limit question whose limit is gone gets its tier. `noDialog`: the question could not show (a held stop, A5).
    */
-  settle(sx: SessionCtx, key: string, outcome: Outcome, via: Via, o?: { noDialog?: boolean; raiseAt?: Pick<Sensed, 'kinds' | 'now'> }): Promise<SettleResult>
+  settle(sx: SessionCtx, key: string, outcome: Outcome, via: Via, o?: { noDialog?: boolean; raiseAt?: Pick<Sensed, 'kinds' | 'now' | 'cfg'> }): Promise<SettleResult>
   /**
    * Continue at the reset on the open limit question `key` (the resume command). It writes no answer: the
    * held calls keep waiting in place, and the question raises no form again. True when it chose.
@@ -455,7 +456,7 @@ export function createQuestions(d: QuestionDeps): Questions {
     const r = sx.store.locked((tx): SettleResult | undefined => {
       const q = tx.question() as QuestionRecord | undefined
       if (q === undefined || q.key !== key || tx.answer()?.key === key) return undefined
-      if (o.raiseAt !== undefined) raiseAtFloor(q, o.raiseAt)
+      if (o.raiseAt !== undefined) tierAtResume(q, o.raiseAt)
       tx.setAnswer({ key, outcome, via, at: now, answered: answeredOfCore(q), ...(o.noDialog === true ? { noDialog: true } : {}) })
       tx.setQuestion(undefined)
       // Elsewhere: the consent or the stop is already written, as register.tsx.

@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { RESET_JITTER_MS, codexText, defaultText, initialPresence, nextPresence, optionText, OPTIONS, parseSetValue, shownPath } from '../../hooks/core/codex.ts'
+import { RESET_JITTER_MS, codexText, defaultText, hideHome, initialPresence, nextPresence, optionText, OPTIONS, parseSetValue, shownPath } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot, Command, OptionName } from '../../hooks/core/codex.ts'
 import { watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective } from '../../hooks/core/config.ts'
@@ -141,6 +141,7 @@ function codexWarnings(state: SessionState, s: CodexSensed, originator: string |
   if (has('CX6') || has('CX7')) out.push(codexText.noDaemon(s.cfg.autoResume))
   if (has('CX8')) out.push(codexText.approvalNever)
   if (has('CX9')) out.push(codexText.unsafe)
+  if (has('CX58')) out.push(codexText.nodeExposed)
   if (has('CX42')) out.push(codexText.optInDaemon)
   if (has('CX43') && originator !== undefined) out.push(codexText.originator(originator))
   // CX13 and CX40 follow the kinds of now: a report also runs before any gate of the session sensed.
@@ -326,7 +327,7 @@ export function createCommands(d: CommandDeps): Commands {
     const tickerStale = sx0 !== undefined && st?.work === true && st.auto === true && cfg.autoResume && !hosted && !heldLive(sx)
     const live = s.view.live
     const liveError = s.view.liveError
-    const liveRow = live !== undefined ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === undefined ? {} : { error: liveError.error })
+    const liveRow = live !== undefined ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === undefined ? {} : { error: hideHome(liveError.error, d.paths.home) })
     let daemonRow: string
     if (sx0 !== undefined) daemonRow = codexText.daemonRow(hosted, cfg.autoResume)
     else {
@@ -382,6 +383,9 @@ export function createCommands(d: CommandDeps): Commands {
       return resumeAskingReply(r.q ?? open, now)
     }
     const s = sNow ?? (await d.sense.sense(sx))
+    // A failed first sense skipped the limit check above, and no question is open: check it on this sense.
+    const late = sNow === undefined ? resumeAtLimit(s, undefined) : undefined
+    if (late !== undefined) return late.reply
     const mode = modeOf(cfg)
     const absent = absentOf(s)
     const early = resumeReadReply(s, absent) // B23, CX17
@@ -536,7 +540,7 @@ export function createCommands(d: CommandDeps): Commands {
       if (r.repaired === true) repaired = codexText.setRepaired(shownPath(path, d.paths.home)) // CX54
     } catch (e) {
       // CX32: a config.json that does not parse, or is not an object, gets the hint to repair it.
-      return codexText.setFailed(shownPath(path, d.paths.home), errText(e), e instanceof SyntaxError || e instanceof ConfigUnreadError)
+      return codexText.setFailed(shownPath(path, d.paths.home), hideHome(errText(e), d.paths.home), e instanceof SyntaxError || e instanceof ConfigUnreadError)
     }
     // A15: only a variable that parses wins (withEnv). The variable must be set here: a nested run gets its
     // parent's child policy as `headless` from the env source with no SPARE10_HEADLESS.

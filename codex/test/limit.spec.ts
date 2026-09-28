@@ -585,3 +585,32 @@ test('limit: after Continue at the reset the chosen question outlives its held w
   await w.settle()
   assert.equal(b.mcp.requests.length, 2, 'the next call asks the limit form again')
 })
+
+test('limit: spare10 resume on a limit question after a new test below the floor consents only to the floor, and the floor form asks', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const reset = T0 + 2 * HOUR
+  w.reading(SID, 50, { reset })
+  assert.match(await typed(b, 'spare10 simulate 100'), /^spare10: test reading set to 100% used/)
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call holds at the limit')
+  assert.equal(question(w)?.limit, true)
+  b.host.answer(CONTINUE)
+  await w.settle()
+  assert.equal(question(w)?.chosen, true)
+  // A new test: the chosen limit question stays open until its next check.
+  assert.match(await typed(b, 'spare10 simulate 91'), /^spare10: test reading set to 91% used.+ This starts a new test\./)
+  assert.equal(question(w)?.limit, true)
+  assert.match(await typed(b, 'spare10 resume'), /^spare10: resumed\. Held work continues on the reserve until 95% used\. Until \d\d:\d\d, spare10 asks you again at 95% used\.$/)
+  await w.settle()
+  assert.equal(h.box.done, true, 'the held call passes')
+  assert.deepEqual(w.state().test?.consent, { five_hour: { floor: { until: reset, to: 95 } } }, 'a consent to the floor, not until the reset')
+  // Raised in place past the floor: the Resume ends, and the floor form asks.
+  assert.match(await typed(b, 'spare10 simulate 96'), /^spare10: test reading raised to 96% used.+ Your earlier answers stay\./)
+  const n = b.forms().length
+  const next = b.call('tool')
+  await w.settle()
+  assert.equal(next.box.done, false, 'no work runs past the floor without a second Resume')
+  assert.match(params(b, n)['message'] as string, /^Your 5% floor is reached: 96% used/)
+})

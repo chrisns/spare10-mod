@@ -13,6 +13,9 @@ You need Node.js 20 or later.
 spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin` and in Volta.
 Then it tries the versions of nvm, mise, asdf and fnm, newest first.
 It takes a Node.js from your `PATH` only when none of these is Node.js 20 or later.
+spare10 runs that Node.js outside the Codex sandbox.
+So install Node.js 20 or later in one of these places.
+[Differences in Codex](#differences-in-codex) item 26 says why.
 
 ```sh
 codex plugin marketplace add chrisns/spare10-mod
@@ -250,7 +253,7 @@ The `headless` option works as in [Unattended runs](configure.md#unattended-runs
 11. Some model requests have no hook, so spare10 cannot hold them. One is the request after a failed tool call. Others are the checks of a shell command that runs longer than 10 seconds. Codex review, title and memory requests, and the internal steps of `/review`, have no hook too. After a daemon restart, the first request of the restored turn also goes through. On the daemon, **Stop here** ends such turns.
 12. Without the daemon, spare10 sees the quota one model response later than in Claude Code.
 13. The unattended `stop` policy costs one more model request for each running loop.
-14. In the Codex sandbox, only you can run `spare10 resume` and `spare10 set`. In some modes the agent can run them by itself. These modes are no sandbox, a sandbox that lets the agent write in `~/.codex`, and the automatic review of approvals. `--sandbox danger-full-access` is one mode with no sandbox. In a guarded session, spare10 warns you once when it sees one of these modes. A command that you approve to run outside the sandbox can also run them. This includes a script that the agent wrote. Another MCP server or tool that runs commands for the agent can also run them. Outside the sandbox, a command can also change or remove the spare10 files. spare10 cannot see these cases, and gives no warning for them.
+14. In the Codex sandbox, only you can run `spare10 resume` and `spare10 set`. In some modes the agent can run them by itself. These modes are no sandbox, a sandbox that lets the agent write in `~/.codex`, and the automatic review of approvals. `--sandbox danger-full-access` is one mode with no sandbox. In a guarded session, spare10 warns you once when it sees one of these modes. spare10 also warns once when the agent can write a folder where spare10 looks for Node.js (item 26). A command that you approve to run outside the sandbox can also run them. This includes a script that the agent wrote. Another MCP server or tool that runs commands for the agent can also run them. Outside the sandbox, a command can also change or remove the spare10 files. spare10 cannot see these cases, and gives no warning for them.
 15. When spare10 continues held work by itself, the question can stay on the screen until the turn ends. Press Esc to close it.
 16. If spare10 finds no Node.js 20 or later, Codex cannot start a session. Remove or switch off the plugin to go on.
 17. In a TUI without the daemon, Esc during a hold also ends the automatic continue of that stop. Held subagents continue at the end of the stop.
@@ -262,6 +265,7 @@ The `headless` option works as in [Unattended runs](configure.md#unattended-runs
 23. Codex tells spare10 when credits can pay past 100%. Then spare10 does not pause at the limit. Claude Code does not tell spare10 about extra usage.
 24. During an upgrade, an older spare10 process can show the question at the reserve for the limit question. Its **Resume** only asks again. Its **Stop here** can continue the work after the reset.
 25. Without the Codex daemon, spare10 does not see a reset credit or a plan change at the limit. Held work then waits until the old reset. Run `spare10 set limitPause off` to let it go on. With `autoResume` off, then also run `spare10 resume`.
+26. spare10 runs Node.js outside the Codex sandbox when a thread starts. The agent can write some folders where spare10 looks for it. One is your home folder, when Codex starts there and Node.js comes from nvm, mise, asdf, fnm or Volta. Another is a project folder on your `PATH`, such as `.venv/bin` or `node_modules/.bin`. spare10 takes Node.js from there only when no other place holds Node.js 20 or later. Then the agent can put a file there that spare10 runs outside the sandbox. spare10 warns you once per session in this case. With a Node.js from your `PATH`, the `spare10` command runs the `node` of the shell that calls it. To close this, install Node.js 20 or later in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`. Also do not start Codex in your home folder.
 
 Codex also gives spare10 some things that Claude Code does not:
 

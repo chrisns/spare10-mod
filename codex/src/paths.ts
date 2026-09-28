@@ -207,7 +207,7 @@ export function parentArgs(ppid: number): string {
 /** `s` as one single-quoted shell word: each `'` becomes `'\''`. */
 export const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
 
-/** The CLI launcher (3.9): the Node.js that runs the broker, on the CLI of this plugin root. */
+/** The CLI launcher (3.9): the Node.js that runs the broker, or `node` for one from PATH, on the CLI of this plugin root. */
 export const launcherText = (nodePath: string, pluginRoot: string): string =>
   `#!/bin/sh\nexec ${shQuote(nodePath)} ${shQuote(join(pluginRoot, 'codex', 'dist', 'cli.mjs'))} "$@"\n`
 

@@ -413,6 +413,44 @@ test('gate: the first root gate writes the child policy of codex exec children o
   assert.equal(await childOf({ config: { scope: 'opt-in' } }), undefined, 'a root that is switched off sets nothing')
 })
 
+test('gate: a root sense warns once (CX58) when the agent can write a folder where broker.sh looked for Node.js', async (t) => {
+  /** A turn_context whose sandbox lets the agent write `root`. */
+  const writes = (root: string): string =>
+    JSON.stringify({
+      timestamp: '2026-09-25T19:00:00.000Z',
+      type: 'turn_context',
+      payload: {
+        turn_id: 'U1',
+        cwd: root,
+        approval_policy: 'on-request',
+        sandbox_policy: { type: 'workspace-write' },
+        permission_profile: { type: 'managed', file_system: { type: 'restricted', entries: [{ path: { type: 'path', path: root }, access: 'write' }] } },
+      },
+    }) + '\n'
+  const nvm = (home: string) => ({ HOME: home, SPARE10_NODE_FROM: 'home', SPARE10_NODE: join(home, '.nvm', 'versions', 'node', 'v22.19.0', 'bin', 'node') })
+  // Codex runs in the home folder, and the Node.js of the broker comes from nvm there.
+  const w = world(t)
+  const home = join(w.root, 'home')
+  const b = await w.broker({ env: nvm(home) })
+  w.reading(SID, 40, { reset: RESET })
+  w.rollout(SID).raw(writes(home))
+  assert.equal(parsed(await b.gate('tool'))['systemMessage'], withPrefix(codexText.nodeExposed))
+  assert.ok(w.state().warned?.includes('CX58'))
+  assert.ok(!(w.state().warned ?? []).includes('CX9'), 'Codex keeps ~/.codex read-only there')
+  assert.equal(await b.gate('tool'), '', 'once per session')
+  assert.ok((parsed(await b.gate('prompt', { prompt: 'spare10' }))['reason'] as string).includes(`\n  ⚠ ${codexText.nodeExposed}\n`), 'the report shows it')
+  // A fixed Node.js runs the broker, or the agent can write only a project folder: no CX58.
+  for (const o of [{ from: 'fixed', root: 'home' }, { from: 'home', root: 'home/project' }]) {
+    const v = world(t)
+    const vhome = join(v.root, 'home')
+    const e = await v.broker({ env: { ...nvm(vhome), SPARE10_NODE_FROM: o.from } })
+    v.reading(SID, 40, { reset: RESET })
+    v.rollout(SID).raw(writes(join(v.root, o.root)))
+    assert.equal(await e.gate('tool'), '', `${o.from} ${o.root}`)
+    assert.ok(!(v.state().warned ?? []).includes('CX58'), `${o.from} ${o.root}`)
+  }
+})
+
 test('gate: a sense that fails in the round after a question ended with no answer refuses the call (fail closed)', async (t) => {
   const w = world(t)
   const b = await w.broker()

@@ -125,7 +125,7 @@ test('manifest: codex/bin/broker.sh is an executable POSIX sh script that runs c
   const sh = text(file)
   assert.ok(sh.startsWith('#!/bin/sh\n'))
   // The cwd is the plugin root (codex/mcp.json). The full path puts the install in the argv of the broker.
-  assert.match(sh, /exec "\$n" "\$PWD\/codex\/dist\/spare10\.mjs"/)
+  assert.match(sh, /exec "\$2" "\$PWD\/codex\/dist\/spare10\.mjs"/)
   assert.match(sh, /process\.versions\.node\.split\("\."\)\[0\] >= 20/)
   assert.match(sh, /^echo "spare10: no Node\.js 20 or later found\. .*" >&2\nexit 1\n$/m)
 })

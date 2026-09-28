@@ -11,13 +11,15 @@ version_nodes() { PATH=/usr/bin:/bin; ls -d "$HOME"/.nvm/versions/node/v*/bin/no
 # The Node.js on PATH, from the absolute PATH folders only. bash makes a node in a relative folder absolute, and an
 # empty PATH means the current folder.
 path_node() { set -f; IFS=:; p=; for d in $PATH; do case $d in /*) p=$p${p:+:}$d ;; esac; done; [ -n "$p" ] && PATH=$p && command -v node; }
+# Runs the broker with the candidate $2 when it is Node.js 20 or later. SPARE10_NODE_FROM ($1) and SPARE10_NODE
+# tell the broker where its Node.js came from, so it can warn when the agent can write such a folder (CX58).
+start() { if ok "$2"; then export SPARE10_NODE_FROM="$1" SPARE10_NODE="$2"; exec "$2" "$PWD/codex/dist/spare10.mjs"; fi; }
 # One candidate per line, so a folder name with a space stays one path. The Node.js on PATH comes last.
 # $(version_nodes) and $(path_node) run in a subshell, so their PATH, IFS and set -f stay there.
 IFS='
 '
-for n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node \
-  "$HOME/.volta/bin/node" $(version_nodes) "$(path_node 2>/dev/null)"; do
-  if ok "$n"; then exec "$n" "$PWD/codex/dist/spare10.mjs"; fi
-done
+for n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do start fixed "$n"; done
+for n in "$HOME/.volta/bin/node" $(version_nodes); do start home "$n"; done
+start path "$(path_node 2>/dev/null)"
 echo "spare10: no Node.js 20 or later found. Install Node.js, or switch off the spare10 plugin in ~/.codex/config.toml." >&2
 exit 1

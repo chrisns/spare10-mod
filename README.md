@@ -101,6 +101,8 @@ You can switch each of these off.
 You need Node.js 20 or later.
 spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin` and in Volta.
 Then it tries the versions of nvm, mise, asdf and fnm, and last your `PATH`.
+spare10 runs it outside the Codex sandbox.
+[Differences in Codex](docs/codex.md#differences-in-codex) item 26 says where to install it.
 
 1. Install the plugin:
 
@@ -236,9 +238,9 @@ During a turn, put `!` in front of it.
 | `weeklyLastHours` | `8` | spare10 opens the weekly reserve in these last hours of the weekly window. `0` switches this off. |
 | `resumeFloor` | `5` | After a **Resume**, spare10 asks again when this percent of the 5-hour window is left. |
 | `weeklyResumeFloor` | `5` | The same for the weekly window. |
-| `pausePrompt` | empty | Text here tells the agents to wind down, and spare10 stops nothing. |
+| `pausePrompt` | empty | Text here tells the agents to wind down, and spare10 stops nothing. At 100% used, `limitPause` still holds all work and asks you. |
 | `autoResume` | on | spare10 continues held and stopped work when the reserve opens, or after the reset. |
-| `limitPause` | on | At 100% used, spare10 holds all work and asks you once. With no answer, it continues the work after the reset, unless `autoResume` is off. Switch it off when you pay for extra usage. |
+| `limitPause` | on | At 100% used, spare10 holds all work and asks you once, also with a pause prompt. With no answer, it continues the work after the reset, unless `autoResume` is off. Switch it off when you pay for extra usage. |
 | `headless` | `off` | What spare10 does in unattended runs: `off`, `prompt`, `stop` or `wait`. |
 | `scope` | `all` | `all` guards every interactive session. `opt-in` guards only runs started with `SPARE10=on`. |
 | `badge` | on | Shows the badge in the Claude Code footer. Codex has no badge. |

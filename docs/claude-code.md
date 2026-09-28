@@ -680,6 +680,7 @@ At the quota limit, the commands work like this:
   It replies `spare10: nothing to resume now. The quota limit is reached until 15:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.`
 - When a limit question is open but no window is at the limit now, `/spare10 resume` counts as **Resume**.
   This happens after the reset, or after `/spare10 simulate off` ends a test limit.
+  Before the floor, that **Resume** lasts until the floor, as a **Resume** at the reserve does.
   After the reset, it replies `spare10: resumed. Held work continues.`
 - `/spare10 stop` stops until the reset, and spare10 does not continue the work.
   It replies `spare10: stopped at the quota limit until 15:00. After the reset, type a prompt to continue.`

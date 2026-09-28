@@ -18,7 +18,7 @@ import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX57, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX58, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -445,7 +445,7 @@ export function attendedFrom(i: {
  * P1 (CX9): the agent can send prompts for the person, or write spare10's files, in this turn. Auto review
  * (`guardian_subagent` is its old name) approves for the person with any approval but `never`. Codex keeps
  * `<root>/.codex` of each writable root read-only, so a writable home folder alone does not expose
- * `~/.codex`.
+ * `~/.codex`. A writable home folder can still expose a Node.js that the broker runs: `nodeExposed` (CX58).
  */
 export function unsafeMode(tc: TurnContextFacts | undefined, dataDir: string): boolean {
   if (tc === undefined) return false
@@ -453,6 +453,43 @@ export function unsafeMode(tc: TurnContextFacts | undefined, dataDir: string): b
   if (tc.profile === 'disabled') return true
   if ((tc.reviewer === 'auto_review' || tc.reviewer === 'guardian_subagent') && tc.approval !== 'never') return true
   return tc.roots.some((r) => within(dataDir, r) && !within(dataDir, `${bare(r) === '/' ? '' : bare(r)}/.codex`))
+}
+
+/** The fixed places of codex/bin/broker.sh, tried first. Keep them in step with broker.sh. */
+export const NODE_FIXED = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'] as const
+
+/** The folders under the home folder where broker.sh looks next: Volta, nvm, mise, asdf and fnm. */
+export const NODE_HOME = ['.volta', '.nvm', '.local/share/mise', '.asdf', '.local/share/fnm', 'Library/Application Support/fnm', '.fnm'] as const
+
+/**
+ * P1 (CX58): the folders where codex/bin/broker.sh looked for the Node.js that runs this broker. broker.sh
+ * runs each candidate, outside the sandbox, until one is Node.js 20 or later. It says where the one that
+ * runs came from in SPARE10_NODE_FROM (`fixed`, `home` or `path`) and SPARE10_NODE. So the places are the
+ * fixed ones, then with `home` the version managers under $HOME, and then with `path` the absolute PATH
+ * folders up to the one that holds that Node.js. A broker that broker.sh did not start has the fixed ones.
+ */
+export function nodePlaces(env: Readonly<Record<string, string | undefined>>): string[] {
+  const from = env['SPARE10_NODE_FROM']
+  const out: string[] = [...NODE_FIXED]
+  if (from !== 'home' && from !== 'path') return out
+  const home = env['HOME'] ?? ''
+  if (home.startsWith('/')) out.push(...NODE_HOME.map((d) => `${bare(home) === '/' ? '' : bare(home)}/${d}`))
+  if (from !== 'path') return out
+  const dirs = (env['PATH'] ?? '').split(':').filter((d) => d.startsWith('/'))
+  const node = env['SPARE10_NODE'] ?? ''
+  const at = dirs.findIndex((d) => bare(d) === bare(node.slice(0, node.lastIndexOf('/'))))
+  out.push(...(at < 0 ? dirs : dirs.slice(0, at + 1)))
+  return out
+}
+
+/**
+ * P1 (CX58): the agent can write a folder of `nodePlaces` in this turn. It can then put a file there that
+ * broker.sh runs outside the sandbox at the next thread start, such as `~/.nvm/versions/node/v99.0.0/bin/node`
+ * when the agent can write the home folder.
+ */
+export function nodeExposed(tc: TurnContextFacts | undefined, places: readonly string[]): boolean {
+  if (tc === undefined) return false
+  return tc.roots.some((r) => places.some((p) => within(p, r)))
 }
 
 // macOS keeps /tmp and /var under /private: compare both forms.
@@ -781,6 +818,16 @@ export function shownPath(p: string, home: string | undefined): string {
   return rest === undefined ? p : `~${rest}`
 }
 
+/**
+ * A system error text with each path under the home folder as `~/...`. Node.js puts the full path of a file
+ * in its error text, such as `EACCES: permission denied, open '/Users/me/.codex/...'`.
+ */
+export function hideHome(text: string, home: string | undefined): string {
+  const h = (home ?? '').replace(/\/+$/, '')
+  if (!h.startsWith('/')) return text // no home folder, or the root folder: nothing to hide
+  return text.split(`${h}/`).join('~/')
+}
+
 /** A path as one shell word: `"$HOME/..."` under the home folder, else the path, in single quotes when the shell would split or expand it. */
 export function shellPath(p: string, home: string | undefined): string {
   const rest = afterHome(p, home)
@@ -848,6 +895,9 @@ export const codexText = {
   /** CX9 (P1): the agent can act for the person. */
   unsafe:
     "the agent can send prompts for you in this mode, or write spare10's files. So spare10 cannot tell your spare10 resume from one that the agent sends. Run Codex with a sandbox that keeps ~/.codex read-only to keep that choice yours.",
+  /** CX58 (P1): the agent can write a folder where broker.sh looks for Node.js. */
+  nodeExposed:
+    'the agent can write a folder where spare10 looks for Node.js, such as your home folder or a PATH folder. spare10 runs Node.js from there outside the Codex sandbox when a thread starts. So the agent can run its own code outside the sandbox. Do not start Codex in your home folder. Install Node.js 20 or later in /opt/homebrew/bin, /usr/local/bin or /usr/bin.',
   /** CX10 (P1): SPARE10 variables in the env of the daemon. */
   daemonEnv: (set: ReadonlyArray<readonly [string, string]>): string =>
     `this session runs on the Codex daemon, which has ${envList(set)}. A daemon session gets such values from the environment of the daemon when it started, not from your terminal. To change them, restart the Codex daemon, or run codex --no-daemon.`,

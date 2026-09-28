@@ -674,6 +674,45 @@ test('/spare10 resume on a limit question whose limit is gone settles it as Resu
   expect(w.asked).toHaveLength(1)
 })
 
+test('/spare10 resume on a limit question after a new test below the floor consents only to the floor, and the floor question asks', async ($, on) => {
+  const w = world(on, { pct: 50 })
+  await begin($, w)
+  await run($, 'simulate 100')
+  const held = await heldAtLimit($, w)
+  w.release('Continue at the reset')
+  await w.clock.settle()
+  await run($, 'simulate 91') // a new test: the chosen limit question stays open until its next check
+  expect(await run($, 'resume')).toBe(
+    `resumed. Held work continues on the reserve until 95% used. Until ${hhmm(R_MS - 20 * MIN)}, spare10 asks you again at 95% used.`,
+  )
+  expect((await held.p).result).toBe('ran')
+  await w.clock.settle()
+  expect(await run($, 'simulate 96')).toMatch(/^test reading raised to 96% used.+ Your earlier answers stay\./)
+  const next = tracked(bash($))
+  await w.clock.settle()
+  expect(next.done()).toBe(false) // the Resume ends at the floor: no work runs past it without a second Resume
+  expect(questions(w).at(-1)).toMatch(/^Your 5% floor is reached: 96% used/)
+  w.release('Resume')
+  expect((await next.p).result).toBe('ran')
+})
+
+test('/spare10 resume after a failed quota read at the limit keeps Stop here, and writes no consent', async ($, on) => {
+  const w = world(on, { pct: 100, resetsAt: LIM })
+  await begin($, w)
+  const held = await heldAtLimit($, w)
+  w.release('Stop here')
+  expect((await held.p).deny).toBe(STOP())
+  await w.clock.settle()
+  const stop = w.env.get('SPARE10_STOPPED')
+  expect(stop).toMatch(stopRe('S1', 'five_hour,work'))
+  w.usageFailsNext = 1 // the first read of the command fails, and the next one works
+  expect(await run($, 'resume')).toBe(NOTHING_NOW(AT))
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_STOPPED')).toBe(stop)
+  expect(w.env.get('SPARE10_CONSENT')).toBeUndefined()
+  expect((await bash($)).deny).toBe(STOP())
+})
+
 test('after Continue at the reset, when all held work goes away, the next step asks the limit question again', { plugins: [above] }, async ($, on) => {
   const w = world(on, { pct: 100, resetsAt: LIM })
   await begin($, w)

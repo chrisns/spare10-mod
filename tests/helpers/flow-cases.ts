@@ -31,6 +31,7 @@ import {
   holdersFrom,
   limitAt,
   limitOf,
+  lowerAfterLimit,
   modeOf,
   namedKinds,
   namedOf,
@@ -87,6 +88,7 @@ import {
   tellText,
   testReading,
   tickPlan,
+  tierAtResume,
   toldHas,
   toldMainOf,
   toldNotice,
@@ -798,6 +800,45 @@ const questionCases: FlowCase[] = [
       const later = { ...q, ends: { ...q.ends }, facts: [...q.facts] }
       raiseAtFloor(later, sensed({ five: live(96, R + 2 * MIN), spans: NO_SPANS })) // another window
       eq(later.ends, q.ends)
+    },
+  },
+  {
+    name: 'lowerAfterLimit and tierAtResume: resume on a limit question whose limit is gone takes the tier now, in its window only',
+    run: (eq) => {
+      const t = (pct: number, end = R, cfg = cfgOf()): Sensed => sensed({ five: testB(pct, end), real: { five: live(50, R) }, cfg })
+      const q = question(t(100))
+      eq([q.limit, q.ends, q.mode], [true, { five_hour: { end: R, test: true } }, 'hold'])
+      const copy = (): QuestionCore => ({ ...q, ends: { ...q.ends }, facts: [...q.facts] })
+      // A new test below the floor: a consent to the floor, and the facts of the reply name it.
+      const below = copy()
+      const s91 = t(91)
+      tierAtResume(below, s91)
+      eq(below.ends, { five_hour: { end: R, test: true, to: 95 } })
+      eq(below.facts, factsFrom([kindIn(s91, 'five_hour')], NOW, false, resumeTo))
+      eq(resumeAskingReply(below, NOW), resumeReply('asking', below.facts, undefined, undefined, 'hold'))
+      // Below the reserve too: never a full Resume that a later raise in place could carry past the floor.
+      const low = copy()
+      tierAtResume(low, t(50))
+      eq(low.ends.five_hour?.to, 95)
+      // At the floor, at the limit, in another window or on another basis: the full Resume stays.
+      for (const s of [t(96), t(100), t(91, R + 2 * MIN), sensed({ five: live(91, R) })]) {
+        const x = copy()
+        tierAtResume(x, s)
+        eq(x.ends, q.ends)
+      }
+      // The mode follows the setting in force: with a pause prompt, spare10 tells the agents at the floor.
+      const tell = copy()
+      tierAtResume(tell, t(91, R, cfgOf({ pausePrompt: 'Wrap up.' })))
+      eq([tell.mode, tell.ends.five_hour?.to], ['tell', 95])
+      // A question at the reserve keeps its tier as asked, and a floor question stays a full Resume.
+      const reserve = question(s92())
+      const r2 = { ...reserve, ends: { ...reserve.ends } }
+      lowerAfterLimit(r2, sensed({ five: live(50, R) }))
+      eq(r2.ends, reserve.ends)
+      const floorQ = question(sensed({ five: live(96, R) }))
+      const f2 = { ...floorQ, ends: { ...floorQ.ends } }
+      lowerAfterLimit(f2, s92())
+      eq(f2.ends, floorQ.ends)
     },
   },
 ]

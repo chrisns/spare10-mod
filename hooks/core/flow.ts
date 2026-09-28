@@ -1073,6 +1073,40 @@ export function raiseAtFloor(q: Pick<QuestionCore, 'ends' | 'facts' | 'skip'>, s
 }
 
 /**
+ * Resume on an open limit question whose limit is gone (limitPause off, credits that pay, or a new test
+ * reading): the limit question asked no tier, so each kind of it takes its tier now. A kind before its
+ * floor, also one below its reserve, gets a consent to the floor. A kind at the floor or open keeps a full
+ * Resume. Only on the question's basis and in its window. Its facts and mode then follow the fresh sense,
+ * for the reply. So no work runs past the floor without a second Resume. It updates `q`.
+ */
+export function lowerAfterLimit(
+  q: Pick<QuestionCore, 'ends' | 'facts' | 'skip' | 'limit' | 'mode'>,
+  sNow: Pick<Sensed, 'kinds' | 'now' | 'cfg'>,
+): void {
+  if (q.limit !== true) return
+  let lowered = false
+  for (const k of sNow.kinds) {
+    const end = q.ends[k.kind]
+    if (end === undefined || end.to !== undefined || k.limit || k.test !== end.test || Math.abs(k.windowEnd - end.end) > 60_000) continue
+    const to = k.open || k.atFloor || k.point === null ? undefined : k.point
+    if (to === undefined) continue
+    q.ends[k.kind] = { ...end, to }
+    q.facts = byKind([...q.facts.filter((f) => (f.kind ?? 'five_hour') !== k.kind), ...factsFrom([k], sNow.now, q.skip, () => to)])
+    lowered = true
+  }
+  if (lowered) q.mode = modeOf(sNow.cfg)
+}
+
+/** A resume command on an open question: each kind at its tier now (`raiseAtFloor`, `lowerAfterLimit`). It updates `q`. */
+export function tierAtResume(
+  q: Pick<QuestionCore, 'ends' | 'facts' | 'skip' | 'limit' | 'mode'>,
+  sNow: Pick<Sensed, 'kinds' | 'now' | 'cfg'>,
+): void {
+  raiseAtFloor(q, sNow)
+  lowerAfterLimit(q, sNow)
+}
+
+/**
  * B23: the reply of resume from the reading alone: no reading, or below every reserve. Undefined: split
  * next. `absent` (Codex design 2.1, CX17): the kinds the host reports no window for. Claude passes none.
  */
@@ -1128,7 +1162,8 @@ export function resumeCase(
  * limit (or the sense failed): choose Continue at the reset (`choose`). Else, while a kind is at the quota
  * limit (or a limit question is open and the sense failed): a reply that nothing resumes now. Nothing is
  * written or cleared: no consent, no stop takeover, no stop clear. Undefined: the resume of today, also
- * for a limit question whose limit is gone (limitPause off, credits that pay, or a reset): it settles as Resume.
+ * for a limit question whose limit is gone (limitPause off, credits that pay, or a reset): it settles as Resume,
+ * each kind at its tier now (`tierAtResume`). A host whose first sense failed asks again on its second one.
  */
 export function resumeAtLimit(
   sNow: Pick<Sensed, 'kinds' | 'now'> | undefined,

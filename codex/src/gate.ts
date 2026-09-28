@@ -1,6 +1,21 @@
 import { closeSync, openSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, turnEndText, unsafeMode, withInterruptedNote, withPrefix } from '../../hooks/core/codex.ts'
+import {
+  codexDebug,
+  codexText,
+  genericRefusal,
+  isGateSite,
+  nodeExposed,
+  nodePlaces,
+  offQuota,
+  parseCommand,
+  render,
+  rootOnly,
+  turnEndText,
+  unsafeMode,
+  withInterruptedNote,
+  withPrefix,
+} from '../../hooks/core/codex.ts'
 import type { Command, GateResult, GateSite, HostKind, LiveRead } from '../../hooks/core/codex.ts'
 import { childHeadless } from '../../hooks/core/config.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
@@ -293,15 +308,20 @@ export function createGate(d: GateDeps): Gate {
     }
   }
 
+  /** CX58: the folders where broker.sh looked for the Node.js of this broker. */
+  const places = nodePlaces(d.env)
+
   /**
    * The warnings of a root sense (2.5), once per session. CX9: the turn_context of the rollout shows a mode in
-   * which the agent can act for the person (no sandbox, auto review, or a data dir it can write). CX13 and
-   * CX40: once the kinds are known, only a weekly window.
+   * which the agent can act for the person (no sandbox, auto review, or a data dir it can write). CX58: the
+   * agent can write a folder where broker.sh looks for Node.js. CX13 and CX40: once the kinds are known, only
+   * a weekly window.
    */
   const noteSensed = (sx: SessionCtx, s: CodexSensed): void => {
     if (!sx.root) return
     d.onSensed?.(s)
     if (s.attended && s.cfg.enabled && unsafeMode(s.view.turnContext, d.paths.data)) warnSensed(sx, 'CX9', () => codexText.unsafe, s.now)
+    if (s.attended && s.cfg.enabled && nodeExposed(s.view.turnContext, places)) warnSensed(sx, 'CX58', () => codexText.nodeExposed, s.now)
     if (s.blind || s.present.includes('five_hour') || !s.present.includes('seven_day')) return
     const id = s.cfg.weeklyReserve <= 0 ? 'CX13' : s.cfg.weeklyLastHours > 0 ? 'CX40' : undefined
     if (id === undefined) return

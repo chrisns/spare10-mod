@@ -1259,6 +1259,25 @@ function unsafeMode(tc, dataDir) {
   if ((tc.reviewer === "auto_review" || tc.reviewer === "guardian_subagent") && tc.approval !== "never") return true;
   return tc.roots.some((r) => within(dataDir, r) && !within(dataDir, `${bare(r) === "/" ? "" : bare(r)}/.codex`));
 }
+var NODE_FIXED = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+var NODE_HOME = [".volta", ".nvm", ".local/share/mise", ".asdf", ".local/share/fnm", "Library/Application Support/fnm", ".fnm"];
+function nodePlaces(env) {
+  const from = env["SPARE10_NODE_FROM"];
+  const out = [...NODE_FIXED];
+  if (from !== "home" && from !== "path") return out;
+  const home = env["HOME"] ?? "";
+  if (home.startsWith("/")) out.push(...NODE_HOME.map((d) => `${bare(home) === "/" ? "" : bare(home)}/${d}`));
+  if (from !== "path") return out;
+  const dirs = (env["PATH"] ?? "").split(":").filter((d) => d.startsWith("/"));
+  const node = env["SPARE10_NODE"] ?? "";
+  const at = dirs.findIndex((d) => bare(d) === bare(node.slice(0, node.lastIndexOf("/"))));
+  out.push(...at < 0 ? dirs : dirs.slice(0, at + 1));
+  return out;
+}
+function nodeExposed(tc, places) {
+  if (tc === void 0) return false;
+  return tc.roots.some((r) => places.some((p) => within(p, r)));
+}
 var bare = (p) => {
   const t = p.replace(/\/+$/, "");
   return t.startsWith("/private/") ? t.slice("/private".length) : t === "" ? "/" : t;
@@ -1443,6 +1462,11 @@ function shownPath(p, home) {
   const rest = afterHome(p, home);
   return rest === void 0 ? p : `~${rest}`;
 }
+function hideHome(text3, home) {
+  const h = (home ?? "").replace(/\/+$/, "");
+  if (!h.startsWith("/")) return text3;
+  return text3.split(`${h}/`).join("~/");
+}
 function shellPath(p, home) {
   const rest = afterHome(p, home);
   if (rest !== void 0) return `"$HOME${inDoubleQuotes(rest)}"`;
@@ -1486,6 +1510,8 @@ var codexText = {
   approvalNever: "Codex runs with approval never here, so spare10 cannot show its question. At a reserve, spare10 holds the work instead. Press Esc to stop it, or run !spare10 resume to continue (spare10 help says how).",
   /** CX9 (P1): the agent can act for the person. */
   unsafe: "the agent can send prompts for you in this mode, or write spare10's files. So spare10 cannot tell your spare10 resume from one that the agent sends. Run Codex with a sandbox that keeps ~/.codex read-only to keep that choice yours.",
+  /** CX58 (P1): the agent can write a folder where broker.sh looks for Node.js. */
+  nodeExposed: "the agent can write a folder where spare10 looks for Node.js, such as your home folder or a PATH folder. spare10 runs Node.js from there outside the Codex sandbox when a thread starts. So the agent can run its own code outside the sandbox. Do not start Codex in your home folder. Install Node.js 20 or later in /opt/homebrew/bin, /usr/local/bin or /usr/bin.",
   /** CX10 (P1): SPARE10 variables in the env of the daemon. */
   daemonEnv: (set2) => `this session runs on the Codex daemon, which has ${envList(set2)}. A daemon session gets such values from the environment of the daemon when it started, not from your terminal. To change them, restart the Codex daemon, or run codex --no-daemon.`,
   /** CX11: a bad value in config.json. */
@@ -2310,7 +2336,7 @@ function createSettings(d) {
       eff2.warnings = [...warnings, ...eff2.warnings];
       return eff2;
     }
-    const cx12 = "error" in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0];
+    const cx12 = "error" in read ? codexText.configUnread(shown, hideHome(read.error, d.paths.home)) : configOptions(shown, read.raw).warnings[0];
     const eff = withEnv(DEFAULTS, env, { simulateKind });
     if (eff.from.lastMinutes !== "env") {
       eff.lastMinutes = 0;
@@ -3158,6 +3184,24 @@ function raiseAtFloor(q, sNow) {
     q.ends[k.kind] = full;
     q.facts = byKind([...q.facts.filter((f) => (f.kind ?? "five_hour") !== k.kind), ...factsFrom([k], sNow.now, q.skip)]);
   }
+}
+function lowerAfterLimit(q, sNow) {
+  if (q.limit !== true) return;
+  let lowered = false;
+  for (const k of sNow.kinds) {
+    const end = q.ends[k.kind];
+    if (end === void 0 || end.to !== void 0 || k.limit || k.test !== end.test || Math.abs(k.windowEnd - end.end) > 6e4) continue;
+    const to = k.open || k.atFloor || k.point === null ? void 0 : k.point;
+    if (to === void 0) continue;
+    q.ends[k.kind] = { ...end, to };
+    q.facts = byKind([...q.facts.filter((f) => (f.kind ?? "five_hour") !== k.kind), ...factsFrom([k], sNow.now, q.skip, () => to)]);
+    lowered = true;
+  }
+  if (lowered) q.mode = modeOf(sNow.cfg);
+}
+function tierAtResume(q, sNow) {
+  raiseAtFloor(q, sNow);
+  lowerAfterLimit(q, sNow);
 }
 function resumeReadReply(s, absent2) {
   const read = s.kinds.filter((k) => k.basis.kind !== "none");
@@ -4373,6 +4417,7 @@ function codexWarnings(state, s, originator) {
   if (has("CX6") || has("CX7")) out.push(codexText.noDaemon(s.cfg.autoResume));
   if (has("CX8")) out.push(codexText.approvalNever);
   if (has("CX9")) out.push(codexText.unsafe);
+  if (has("CX58")) out.push(codexText.nodeExposed);
   if (has("CX42")) out.push(codexText.optInDaemon);
   if (has("CX43") && originator !== void 0) out.push(codexText.originator(originator));
   if (!s.blind && !s.present.includes("five_hour") && s.present.includes("seven_day")) {
@@ -4509,7 +4554,7 @@ function createCommands(d) {
     const tickerStale = sx0 !== void 0 && st?.work === true && st.auto === true && cfg.autoResume && !hosted && !heldLive(sx);
     const live = s.view.live;
     const liveError = s.view.liveError;
-    const liveRow = live !== void 0 ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === void 0 ? {} : { error: liveError.error });
+    const liveRow = live !== void 0 ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === void 0 ? {} : { error: hideHome(liveError.error, d.paths.home) });
     let daemonRow;
     if (sx0 !== void 0) daemonRow = codexText.daemonRow(hosted, cfg.autoResume);
     else {
@@ -4560,6 +4605,8 @@ function createCommands(d) {
       return resumeAskingReply(r.q ?? open, now);
     }
     const s = sNow ?? await d.sense.sense(sx);
+    const late = sNow === void 0 ? resumeAtLimit(s, void 0) : void 0;
+    if (late !== void 0) return late.reply;
     const mode = modeOf(cfg);
     const absent2 = absentOf(s);
     const early = resumeReadReply(s, absent2);
@@ -4690,7 +4737,7 @@ function createCommands(d) {
       old = r.old;
       if (r.repaired === true) repaired = codexText.setRepaired(shownPath(path, d.paths.home));
     } catch (e) {
-      return codexText.setFailed(shownPath(path, d.paths.home), errText3(e), e instanceof SyntaxError || e instanceof ConfigUnreadError);
+      return codexText.setFailed(shownPath(path, d.paths.home), hideHome(errText3(e), d.paths.home), e instanceof SyntaxError || e instanceof ConfigUnreadError);
     }
     const wins = envWins(eff, name) && d.env[option.env] !== void 0 ? codexText.setEnvWins(option.env) : "";
     if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}${repaired}`;
@@ -5489,10 +5536,12 @@ function createGate(d) {
       d.log.debug(codexDebug.writeFailed(`the warning ${id}`, errText5(e)));
     }
   };
+  const places = nodePlaces(d.env);
   const noteSensed = (sx, s) => {
     if (!sx.root) return;
     d.onSensed?.(s);
     if (s.attended && s.cfg.enabled && unsafeMode(s.view.turnContext, d.paths.data)) warnSensed(sx, "CX9", () => codexText.unsafe, s.now);
+    if (s.attended && s.cfg.enabled && nodeExposed(s.view.turnContext, places)) warnSensed(sx, "CX58", () => codexText.nodeExposed, s.now);
     if (s.blind || s.present.includes("five_hour") || !s.present.includes("seven_day")) return;
     const id = s.cfg.weeklyReserve <= 0 ? "CX13" : s.cfg.weeklyLastHours > 0 ? "CX40" : void 0;
     if (id === void 0) return;
@@ -6437,7 +6486,7 @@ function createQuestions(d) {
     const r = sx.store.locked((tx) => {
       const q = tx.question();
       if (q === void 0 || q.key !== key || tx.answer()?.key === key) return void 0;
-      if (o.raiseAt !== void 0) raiseAtFloor(q, o.raiseAt);
+      if (o.raiseAt !== void 0) tierAtResume(q, o.raiseAt);
       tx.setAnswer({ key, outcome, via, at: now, answered: answeredOf(q), ...o.noDialog === true ? { noDialog: true } : {} });
       tx.setQuestion(void 0);
       if (via === "elsewhere") return { q };
@@ -7390,7 +7439,7 @@ function createBroker(d) {
     const hostKind = hostKindOf(d.parentArgs(d.ppid));
     try {
       ensureDir(paths.data);
-      writeLauncher(paths, d.nodePath ?? process.execPath);
+      writeLauncher(paths, d.env.SPARE10_NODE_FROM === "path" ? "node" : d.nodePath ?? process.execPath);
     } catch (e) {
       log.debug(codexDebug.writeFailed(paths.launcher, errText10(e)));
     }

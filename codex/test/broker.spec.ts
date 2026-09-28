@@ -74,6 +74,35 @@ test('broker: initialize answers before any file work, and the background work s
   assert.equal(readFileSync(join(data, 'bin', 'spare10'), 'utf8'), launcherText('/usr/local/bin/node', join(root, 'plugin')))
 })
 
+test('broker: with a Node.js from PATH, the launcher runs the node of its shell and keeps no path (CX58)', async (t) => {
+  const root = tempDir(t)
+  const data = join(root, 'data')
+  const host = codexHost()
+  const env = { CODEX_HOME: root, SPARE10_CODEX_DATA: data, SPARE10_CODEX_TEST: '1', SPARE10_NODE_FROM: 'path', SPARE10_NODE: '/work/.venv/bin/node' }
+  const broker = createBroker({
+    input: host.input,
+    output: host.output,
+    env,
+    clock: fakeClock(T0),
+    wake: memoryWake(),
+    pid: 13,
+    ppid: 14,
+    selfFile: join(root, 'plugin', 'codex', 'dist', 'spare10.mjs'),
+    parentArgs: () => 'codex',
+    daemon: () => undefined,
+    pidAlive: () => true,
+    log: memoryLog(),
+    nodePath: '/work/.venv/bin/node',
+  })
+  t.after(() => broker.stop())
+  await host.initialize()
+  host.initialized()
+  await flush()
+  const text = readFileSync(join(data, 'bin', 'spare10'), 'utf8')
+  assert.equal(text, launcherText('node', join(root, 'plugin')))
+  assert.ok(!text.includes('/work/.venv'), 'no path that the agent can write')
+})
+
 test('broker: the background work logs the version and the test guard once (D10, the E2E runs read it)', async (t) => {
   const root = tempDir(t)
   const host = codexHost()

@@ -37,6 +37,8 @@ import type {
 //   usageFails   session.usage answers { deny }, so $.session.usage() rejects (w.usageFails)
 //   usageFailsAfter  session.usage answers this many more calls, then denies each one (w.usageFailsAfter
 //                counts down, undefined never denies): to fail the read that follows a given one
+//   usageFailsNext  session.usage denies this many more calls, then answers again (w.usageFailsNext
+//                counts down): to fail only the next read
 //   usageDelayMs  session.usage answers this many mock ms late (w.usageDelayMs), to keep a sense in flight
 //   envGetFails  env names whose env.get answers { deny } (w.envGetFails)
 //   envGetDelayMs  per env name: env.get reads the value at once and answers this many mock ms late
@@ -199,6 +201,7 @@ export type WorldOptions = {
   afterRefusals?: number
   everyRefusals?: number
   usageFailsAfter?: number
+  usageFailsNext?: number
   usageDelayMs?: number
   spans?: 'off'
   floors?: 'off'
@@ -233,6 +236,7 @@ export type World = {
   afterRefusals: number // $.clock.after dispatches of spare10 still to refuse
   everyRefusals: number // $.clock.every periods of spare10 still to refuse
   usageFailsAfter: number | undefined // session.usage calls still answered before it denies
+  usageFailsNext: number // session.usage calls still to deny before it answers again
   usageDelayMs: number // session.usage answers this many mock ms late
   settings: SettingsWorld
   env: Map<string, string>
@@ -299,6 +303,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     afterRefusals: opts.afterRefusals ?? 0,
     everyRefusals: opts.everyRefusals ?? 0,
     usageFailsAfter: opts.usageFailsAfter,
+    usageFailsNext: opts.usageFailsNext ?? 0,
     usageDelayMs: opts.usageDelayMs ?? 0,
     settings: opts.settings ?? {},
     env: new Map(
@@ -355,6 +360,10 @@ export function world(on: On, opts: WorldOptions = {}): World {
   // Session and reading.
   const usage = () => {
     w.usageReads += 1
+    if (w.usageFailsNext > 0) {
+      w.usageFailsNext -= 1
+      return { deny: 'usage unavailable' }
+    }
     if (w.usageFailsAfter !== undefined && w.usageFailsAfter <= 0) return { deny: 'usage unavailable' }
     if (w.usageFailsAfter !== undefined) w.usageFailsAfter -= 1
     return w.usageFails ? { deny: 'usage unavailable' } : { value: { startedAt: T0, context: { window: 200_000 }, rateLimits: limits() } }

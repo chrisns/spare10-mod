@@ -24,6 +24,8 @@ import {
   liveOf,
   nearTrip,
   nextPresence,
+  nodeExposed,
+  nodePlaces,
   offQuota,
   optionOf,
   optionText,
@@ -386,6 +388,7 @@ test('unsafeMode (P1): no sandbox, auto review, or a writable data dir', () => {
   assert.equal(unsafeMode({ reviewer: 'guardian_subagent', approval: 'on-request', roots: [] }, data), true)
   assert.equal(unsafeMode({ reviewer: 'guardian_subagent', approval: 'never', roots: [] }, data), false)
   // Codex keeps <root>/.codex of each writable root read-only: a writable home folder does not expose ~/.codex.
+  // It can still expose a Node.js that the broker runs: nodeExposed (CX58) below.
   assert.equal(unsafeMode({ roots: ['/Users/me'] }, data), false)
   assert.equal(unsafeMode({ roots: ['/Users/me/'] }, data), false)
   assert.equal(unsafeMode({ roots: ['/Users'] }, data), true)
@@ -396,6 +399,40 @@ test('unsafeMode (P1): no sandbox, auto review, or a writable data dir', () => {
   // /tmp is /private/tmp on macOS.
   assert.equal(unsafeMode(turnContextOf(CONTEXT_WRITE), '/private/tmp/h/.codex/plugins/data/spare10-spare10'), true)
   assert.equal(unsafeMode(undefined, data), false)
+})
+
+test('nodePlaces and nodeExposed (CX58): a writable folder where broker.sh looks for Node.js, by where it came from', () => {
+  const home = '/Users/me'
+  const nvm = { HOME: home, SPARE10_NODE_FROM: 'home', SPARE10_NODE: '/Users/me/.nvm/versions/node/v22.19.0/bin/node' }
+  const fixed = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+  assert.deepEqual(nodePlaces({ HOME: home }), fixed, 'a broker that broker.sh did not start')
+  assert.deepEqual(nodePlaces({ ...nvm, SPARE10_NODE_FROM: 'fixed' }), fixed)
+  assert.deepEqual(nodePlaces(nvm), [
+    ...fixed,
+    '/Users/me/.volta',
+    '/Users/me/.nvm',
+    '/Users/me/.local/share/mise',
+    '/Users/me/.asdf',
+    '/Users/me/.local/share/fnm',
+    '/Users/me/Library/Application Support/fnm',
+    '/Users/me/.fnm',
+  ])
+  assert.deepEqual(nodePlaces({ ...nvm, HOME: 'rel' }), fixed, 'broker.sh runs no node under a relative HOME')
+  // From PATH: the absolute folders up to the one that holds the Node.js. A later folder never runs.
+  const path = { HOME: home, SPARE10_NODE_FROM: 'path', SPARE10_NODE: '/w/p/.venv/bin/node', PATH: 'rel:/w/p/node_modules/.bin:/w/p/.venv/bin:/w/p/later' }
+  assert.deepEqual(nodePlaces(path).slice(fixed.length + 7), ['/w/p/node_modules/.bin', '/w/p/.venv/bin'])
+  // A writable home folder exposes a version manager, but not while a fixed Node.js runs the broker.
+  assert.equal(nodeExposed({ roots: [home] }, nodePlaces(nvm)), true)
+  assert.equal(nodeExposed({ roots: ['/Users/me/'] }, nodePlaces(nvm)), true)
+  assert.equal(nodeExposed({ roots: ['/Users/me/project'] }, nodePlaces(nvm)), false)
+  assert.equal(nodeExposed({ roots: [home] }, nodePlaces({ ...nvm, SPARE10_NODE_FROM: 'fixed' })), false)
+  assert.equal(nodeExposed({ roots: ['/usr/local'] }, nodePlaces({ ...nvm, SPARE10_NODE_FROM: 'fixed' })), true)
+  // A project folder exposes its .venv/bin when the Node.js comes from PATH.
+  assert.equal(nodeExposed({ roots: ['/w/p'] }, nodePlaces(path)), true)
+  assert.equal(nodeExposed({ roots: ['/w/p/later'] }, nodePlaces(path)), false)
+  assert.equal(nodeExposed({ roots: ['/w/p'] }, nodePlaces({ ...path, SPARE10_NODE_FROM: 'home' })), false)
+  assert.equal(nodeExposed(undefined, nodePlaces(nvm)), false)
+  assert.equal(nodeExposed(turnContextOf(CONTEXT_READ_ONLY), nodePlaces(path)), false)
 })
 
 // ---- Live reads ----

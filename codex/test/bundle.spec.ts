@@ -340,6 +340,27 @@ test('bundle: broker.sh takes the Node.js on PATH last, and its version probe ge
   assert.deepEqual(replies.find((m) => m.id === 1)?.result?.serverInfo, { name: 'spare10', version: VERSION })
 })
 
+test('bundle: broker.sh tells the broker where its Node.js came from: a fixed place, the home folder or PATH (CX58)', async (t) => {
+  for (const [from, where] of [
+    ['fixed', 'fixed'],
+    ['home', 'home/.nvm/versions/node/v22.19.0/bin/node'],
+    ['path', 'pathbin/node'],
+  ] as const) {
+    const w = world(t)
+    const script = movedBroker(w.dir, {})
+    const file = from === 'fixed' ? join(w.dir, 'fixed', '/usr/local/bin/node') : join(w.dir, where)
+    const log = join(w.dir, 'from.log')
+    // The stand-in writes what it gets from broker.sh when it runs the broker, not on the version probe.
+    standIn(file, `[ "$1" = -e ] || echo "\${SPARE10_NODE_FROM-none} \${SPARE10_NODE-none}" >> '${log}'`)
+    const r = await run(t, '/bin/sh', [script], { ...w.env, HOME: join(w.dir, 'home'), PATH: join(w.dir, 'pathbin') }, {
+      input: rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } } }),
+      waitFor: /"id":1/,
+    })
+    assert.equal(r.code, 0, r.stderr)
+    assert.equal(readFileSync(log, 'utf8'), `${from} ${file}\n`, from)
+  }
+})
+
 test('bundle: broker.sh runs no Node.js from a relative PATH folder or a relative HOME', async (t) => {
   const w = world(t)
   const script = movedBroker(w.dir, {})

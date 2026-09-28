@@ -657,6 +657,7 @@ function codexPrefixed(): string[] {
     codexText.noDaemon(false),
     codexText.approvalNever,
     codexText.unsafe,
+    codexText.nodeExposed,
     codexText.daemonEnv([['SPARE10', 'off']]),
     codexText.configBad(CFG, 'reserve', 0, '1 to 99', '10'),
     codexText.configUnread(CFG, 'bad JSON'),

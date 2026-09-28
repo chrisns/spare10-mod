@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { codexDebug, codexText } from '../../hooks/core/codex.ts'
 import type { Command } from '../../hooks/core/codex.ts'
@@ -266,6 +266,44 @@ test('commands: a resume whose first sense fails takes the absent kinds of the s
   assert.equal(w.state().weeklyConsent, undefined)
 })
 
+test('commands: a resume at the limit whose first sense fails keeps a Stop here, and writes no consent', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const lim = T0 + 10 * MIN
+  w.reading(SID, 100, { reset: lim })
+  const stop = formatStopped({ sessionId: SID, windowEnd: lim, at: T0, kinds: ['five_hour'], auto: false, work: true })
+  w.setState({ stopped: stop })
+  // The first sense of the resume fails, and the second one answers.
+  let calls = 0
+  const sense: SenseApi = {
+    ...b.sense,
+    async sense(sx, site) {
+      calls += 1
+      if (calls === 1) throw new Error('the quota read failed')
+      return b.sense.sense(sx, site)
+    },
+  }
+  const cmds = createCommands({
+    paths: w.paths,
+    clock: w.clock,
+    log: w.log,
+    owner: b.owner,
+    env: {},
+    settings: b.settings,
+    sense,
+    questions: b.questions,
+    sweep: b.sweep,
+    daemon: b.daemonLink,
+    attendance: createAttendance({ hostKind: 'tui', rollouts: b.rollouts }),
+    pidAlive: (p) => w.alive.has(p),
+  })
+  const resume: Command = { verb: 'resume', words: [], rest: '' }
+  assert.match(await cmds.exec(b.sx, resume, { cli: false }), /^nothing to resume now\. The quota limit is reached until \d\d:\d\d\. /)
+  assert.equal(calls, 2)
+  assert.equal(w.state().stopped, stop, 'the Stop here at the limit stays')
+  assert.equal(w.state().consent, undefined)
+})
+
 test('commands: `asking` replaces `stopped` while held work waits under a stop, and the stopped phase says so', async (t) => {
   const w = world(t)
   const b = await w.broker()
@@ -446,6 +484,16 @@ test('commands: the report, help and set never name the home folder: ~/... in a 
   writeFileSync(join(w.data, 'config.json'), '[1, 2]')
   assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed('~/data/config.json', 'it is not a JSON object', true))
   for (const text of [report, help]) assert.ok(!text.includes(w.root), 'no text names the home folder')
+  if (process.getuid?.() === 0) return // root reads a file with mode 000
+  // A config.json that nobody can read: the error text of Node.js names the full path, and spare10 shows it as ~/...
+  const file = join(w.data, 'config.json')
+  writeFileSync(file, JSON.stringify({ reserve: 12 }))
+  chmodSync(file, 0o000) // the temp folder goes with it: removing a file needs only its folder
+  const failed = await typed(b, 'spare10 set reserve 15')
+  assert.match(failed, /^could not write ~\/data\/config\.json: EACCES: permission denied, open '~\/data\/config\.json'/)
+  const warned = await typed(b, 'spare10')
+  assert.ok(warned.includes("(EACCES: permission denied, open '~/data/config.json')"), warned)
+  for (const text of [failed, warned]) assert.ok(!text.includes(w.root), 'no error text names the home folder')
 })
 
 test('commands: the report of 2.8 on a weekly-only plan hosted by the daemon', async (t) => {

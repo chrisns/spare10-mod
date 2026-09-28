@@ -587,6 +587,8 @@ Stop here on the dialog at the reserve after the quota reached 100% stops at the
 /spare10 stop at the limit over an auto stop drops its auto, and nothing continues the work after the reset => limit|spare10 stop over an auto stop at the limit
 a person prompt after Continue at the reset joins the held work with a line, and goes in after the reset => flow|continuesLine and promptWaitsLine ; limit|a typed prompt at the limit waits ; none:heldLine
 /spare10 resume on a limit question whose limit is gone settles it as Resume, and the held call runs => flow|resumeAtLimit: a limit question whose limit is gone
+/spare10 resume on a limit question after a new test below the floor consents only to the floor, and the floor question asks => limit|after a new test below the floor ; flow|lowerAfterLimit and tierAtResume
+/spare10 resume after a failed quota read at the limit keeps Stop here, and writes no consent => commands|a resume at the limit whose first sense fails
 after Continue at the reset, when all held work goes away, the next step asks the limit question again => limit|the chosen question outlives its held work for 90 s ; none:young
 /spare10 resume while the limit dialog is on its way withdraws it, and the held call runs after the reset => limit|spare10 resume chooses Continue ; none:withdraw
 /spare10 resume while a hand-off of the limit question waits for a new raiser shows no second dialog => limit|spare10 resume while a hand-off waits for a new leader

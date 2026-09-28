@@ -125,7 +125,6 @@ import {
   questionEdges,
   questionOf,
   quietOf,
-  raiseAtFloor,
   raisesInPlace,
   refusalText,
   resetTooRecent,
@@ -163,6 +162,7 @@ import {
   tellText,
   testReading,
   tickPlan,
+  tierAtResume,
   toldMainOf,
   toldNotice,
   unansweredGating,
@@ -1665,11 +1665,14 @@ async function resumeCommand($: EngineInterface): Promise<string> {
   const open = openQuestion()
   if (open !== undefined) {
     const q = questions.get(open)
-    if (q !== undefined && sNow !== undefined) raiseAtFloor(q, sNow)
+    if (q !== undefined && sNow !== undefined) tierAtResume(q, sNow) // each kind at its tier now (B50 item 4)
     await settle($, open, 'resume', 'command')
     return resumeAskingReply(q, now)
   }
   const s = sNow ?? (await sense($))
+  // A failed first sense skipped the limit check above, and no question is open: check it on this sense.
+  const late = sNow === undefined ? resumeAtLimit(s, undefined) : undefined
+  if (late !== undefined) return late.reply
   const mode = modeOf(cfg)
   const early = resumeReadReply(s)
   if (early !== undefined) return early

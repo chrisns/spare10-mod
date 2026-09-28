@@ -61,7 +61,7 @@ export type BrokerDeps = {
   pidAlive(pid: number): boolean
   /** The debug log. Default: the file log, only with SPARE10_CODEX_DEBUG=1. */
   log?: Log
-  /** The Node.js that the CLI launcher runs. Default: process.execPath. */
+  /** The Node.js that the CLI launcher runs. Default: process.execPath. With a Node.js from PATH, the launcher runs `node`. */
   nodePath?: string
   /** The Node.js version. Default: process.versions.node. */
   nodeVersion?: string
@@ -159,7 +159,9 @@ export function createBroker(d: BrokerDeps): Broker {
     const hostKind = hostKindOf(d.parentArgs(d.ppid))
     try {
       ensureDir(paths.data)
-      writeLauncher(paths, d.nodePath ?? process.execPath)
+      // A Node.js from PATH can sit in a folder that the agent writes, such as the .venv/bin of a project. So the
+      // shared launcher never keeps its path: it runs the node of the shell that calls it (CX58).
+      writeLauncher(paths, d.env.SPARE10_NODE_FROM === 'path' ? 'node' : (d.nodePath ?? process.execPath))
     } catch (e) {
       log.debug(codexDebug.writeFailed(paths.launcher, errText(e)))
     }

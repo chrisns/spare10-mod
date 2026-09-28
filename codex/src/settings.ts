@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, configOptions, shownPath } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, configOptions, hideHome, shownPath } from '../../hooks/core/codex.ts'
 import type { HostKind, OptionName } from '../../hooks/core/codex.ts'
 import { DEFAULTS, fromOptions, withEnv } from '../../hooks/core/config.ts'
 import type { Effective, EnvReads } from '../../hooks/core/config.ts'
@@ -117,7 +117,7 @@ export function createSettings(d: SettingsDeps): SettingsSource {
     }
     // 5.2: config.json does not read, does not parse, or is not an object. The defaults and the env, and
     // each span that no variable sets becomes 0, so each reserve holds until the reset (CX12).
-    const cx12 = 'error' in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0]
+    const cx12 = 'error' in read ? codexText.configUnread(shown, hideHome(read.error, d.paths.home)) : configOptions(shown, read.raw).warnings[0]
     const eff = withEnv(DEFAULTS, env, { simulateKind })
     if (eff.from.lastMinutes !== 'env') {
       eff.lastMinutes = 0
