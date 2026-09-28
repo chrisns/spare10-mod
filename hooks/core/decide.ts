@@ -190,22 +190,34 @@ export type Viewed = { kind: Kind; pct: number; test: boolean; end?: number }
 export type Answered = { kind: Kind; test: boolean; to?: number; end?: number }
 
 /**
- * B50: a Resume answers a kind on the same basis and in the same window (`sameWindow`) while its reading
+ * B50: the window of a Resume's answer is the window of the view: `sameWindow` of the two ends. `jitter`
+ * (Codex A22): a real window that ends more than the jitter after the answer's end is a new window, as
+ * `voidedByReset` voids a consent after a reset credit. Claude passes none.
+ */
+const answerWindow = (a: Answered, k: Viewed, jitter: number): boolean =>
+  sameWindow(k.kind, a.end ?? null, k.end ?? null) && (jitter <= 0 || k.test || a.end === undefined || k.end === undefined || k.end - a.end <= jitter)
+
+/**
+ * B50: a Resume answers a kind on the same basis and in the same window (`answerWindow`) while its reading
  * is below the Resume's end point for it. A window that reset after the question asks again, also past
  * its floor. An unknown end (no reset time, or an older answer) matches, as in TS1.
  */
-export const answers = (named: readonly Answered[], k: Viewed): boolean =>
-  named.some(
-    (a) => a.kind === k.kind && a.test === k.test && sameWindow(k.kind, a.end ?? null, k.end ?? null) && (a.to === undefined || k.pct < a.to),
-  )
+export const answers = (named: readonly Answered[], k: Viewed, jitter = 0): boolean =>
+  named.some((a) => a.kind === k.kind && a.test === k.test && answerWindow(a, k, jitter) && (a.to === undefined || k.pct < a.to))
 
 /**
  * B50: joinable with the floor and the basis. A loop joins an open question, or one settled as Stop
  * here, or one settled as Resume when that Resume answers every kind that gates now. Never after again.
+ * `jitter`: as in `answers`.
  */
-export function joinableAt(outcome: 'resume' | 'stop' | 'again' | undefined, named: readonly Answered[], gating: readonly Viewed[]): boolean {
+export function joinableAt(
+  outcome: 'resume' | 'stop' | 'again' | undefined,
+  named: readonly Answered[],
+  gating: readonly Viewed[],
+  jitter = 0,
+): boolean {
   if (outcome === undefined || outcome === 'stop') return true
-  return outcome === 'resume' && gating.every((k) => answers(named, k))
+  return outcome === 'resume' && gating.every((k) => answers(named, k, jitter))
 }
 
 /**

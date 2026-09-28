@@ -335,10 +335,11 @@ export function createSense(d: SenseDeps): SenseApi {
     holders,
     async act(sx, s, c) {
       // B38, B50: the round after a Resume leaves out the kinds it answered, on its basis and below its end point.
+      // A22: a reset credit after the question is a new window, so the Resume does not answer it.
       const resumed = c.resumed ?? []
-      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating) : []
+      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating, RESET_JITTER_MS) : []
       // TS1: the kinds whose real reading gates. They keep a stop past its end, and a Stop here names them.
-      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating)) : []
+      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating), RESET_JITTER_MS) : []
       let stopped = false
       if (checksStop(s, gating)) {
         try {

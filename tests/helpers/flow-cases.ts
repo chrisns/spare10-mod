@@ -594,6 +594,13 @@ const verdictCases: FlowCase[] = [
       eq(unansweredGating(answered5(R + 5 * HOUR), [k]).length, 1) // an earlier window than the Resume's
       eq(unansweredGating([{ kind: 'five_hour', test: false }], [nextWindow(99)]).length, 0) // no end: an older answer matches
       eq(unansweredGating(answeredOf(q96), [kindIn(sensed({ five: live(99, null) }), 'five_hour')]).length, 0) // no reset time: unknown
+      // Codex A22: a reset credit less than half a window later is a new window past the jitter.
+      const credit = sensed({ five: live(99, R + HOUR), now: R - HOUR })
+      const kc = kindIn(credit, 'five_hour')
+      const J = 10 * MIN
+      eq([unansweredGating(answeredOf(q96), [kc]).length, unansweredGating(answeredOf(q96), [kc], J).length], [0, 1]) // Claude: the same window
+      eq(unansweredHolders(credit, answeredOf(q96), [{ kind: 'five_hour', resetsAtMs: R + HOUR }], J).length, 1)
+      eq(unansweredGating(answeredOf(q96), [moved], J).length, 0) // within the jitter
       // A holder of a kind the sense does not list reads as 0% on the real basis.
       eq(unansweredHolders({ kinds: [] }, [{ kind: 'seven_day', test: false }], [{ kind: 'seven_day', resetsAtMs: W }]), [])
       eq(unansweredHolders({ kinds: [] }, [{ kind: 'seven_day', test: false, to: 95 }], [{ kind: 'seven_day', resetsAtMs: W }]), [])
@@ -650,6 +657,12 @@ const verdictCases: FlowCase[] = [
       eq(marks.five_hour, `${R - 30_000}:floor`)
       const junk = { five_hour: 7, seven_day: '' } as unknown as Record<Kind, string>
       eq(toldNotice(s, { gating: [k] }, junk, J), notice.told(factsFrom([k], NOW))) // a mark that is not text: shown now
+      // A shown kind keeps its first mark when another kind is new, so its end never drifts.
+      const two = sensed({ five: live(92, R), week: live(93, W) })
+      const both = [{ ...kindIn(two, 'five_hour'), windowEnd: R - 9 * MIN }, kindIn(two, 'seven_day')]
+      const kept: Record<Kind, string> = { five_hour: `${R}:reserve`, seven_day: '' }
+      eq(toldNotice(two, { gating: both }, kept, J), notice.told(factsFrom(both, NOW)))
+      eq(kept, { five_hour: `${R}:reserve`, seven_day: `${W}:reserve` })
       const um = { reserve: { five_hour: R, seven_day: 0 }, open: { five_hour: 0, seven_day: 0 } }
       eq(unattendedLines({ ...s, kinds: [moved] }, um, J), [])
       eq(unattendedLines({ ...s, kinds: [moved] }, um).length, 1) // Claude: exact

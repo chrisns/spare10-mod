@@ -857,6 +857,22 @@ test('answers: a Resume answers a kind only in the window of its question, and a
   expect(joinableAt('resume', asked, [{ kind: 'five_hour', pct: 99, test: false, end: R }])).toBe(true)
 })
 
+test('answers: on Codex, a real window that ends more than the jitter later is a new window (A22)', () => {
+  const J = 10 * 60_000
+  const asked: Answered[] = [{ kind: 'five_hour', test: false, end: R }]
+  const credit = { kind: 'five_hour' as const, pct: 99, test: false, end: R + HOUR } // a reset credit: less than half a window later
+  expect(answers(asked, credit)).toBe(true) // Claude: the same window
+  expect(answers(asked, credit, J)).toBe(false)
+  expect(answers(asked, { ...credit, end: R + J }, J)).toBe(true) // the reset jitter
+  expect(answers(asked, { ...credit, end: R - HOUR }, J)).toBe(true) // an earlier end, as voidedByReset
+  expect(answers(asked, { ...credit, end: undefined }, J)).toBe(true) // no reset time: unknown
+  expect(answers([{ kind: 'five_hour', test: false }], credit, J)).toBe(true) // an older answer
+  expect(answers([{ kind: 'five_hour', test: true, end: R }], { ...credit, test: true }, J)).toBe(true) // a test window keeps sameWindow
+  expect(joinableAt('resume', asked, [credit], J)).toBe(false)
+  expect(joinableAt('resume', asked, [credit])).toBe(true)
+  expect(joinableAt('stop', asked, [credit], J)).toBe(true)
+})
+
 test('joinableAt: a settled Resume at the reserve takes no joiner past its end point or on another basis, and joinable keeps its 0.2 result', () => {
   const named: Answered[] = [{ kind: 'five_hour', test: false, to: 95 }]
   expect(joinableAt('resume', named, [{ kind: 'five_hour', pct: 93, test: false }])).toBe(true)
