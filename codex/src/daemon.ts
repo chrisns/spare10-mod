@@ -68,11 +68,17 @@ export type DaemonFailure = 'connect' | 'protocol' | 'timeout' | 'closed' | 'rpc
 export class DaemonError extends Error {
   readonly kind: DaemonFailure
   readonly code: number | undefined
-  constructor(kind: DaemonFailure, message: string, code?: number) {
+  /**
+   * A connect that found no daemon: the socket file went away, or nothing listens on it (a daemon that
+   * crashed or got SIGKILL leaves its socket file).
+   */
+  readonly absent: boolean
+  constructor(kind: DaemonFailure, message: string, code?: number, absent = false) {
     super(message)
     this.name = 'DaemonError'
     this.kind = kind
     this.code = code
+    this.absent = absent
   }
 }
 
@@ -313,7 +319,11 @@ function upgrade(socketPath: string, clock: Clock, o: Opts): Promise<{ socket: D
       fail(new DaemonError('connect', `the daemon did not answer the handshake within ${o.connectMs} ms`))
       req.destroy()
     })
-    req.on('error', (e) => fail(new DaemonError('connect', `the daemon socket failed: ${e.message}`)))
+    req.on('error', (e: NodeJS.ErrnoException) => {
+      // Nothing listens on the socket, or the file went after the check: no daemon.
+      const none = e.code === 'ECONNREFUSED' || e.code === 'ENOENT'
+      fail(new DaemonError('connect', `the daemon socket failed: ${e.message}`, undefined, none))
+    })
     req.on('response', (res: IncomingMessage) => {
       res.resume()
       fail(new DaemonError('protocol', `the daemon answered the handshake with status ${res.statusCode ?? 0}`))
@@ -345,7 +355,7 @@ async function withConnection<T>(socketAlias: string, version: string, clock: Cl
   guardTestPath({}, 'daemon socket', socketAlias)
   // The check again at each connect: the socket can change after udsDaemon made the client.
   const at = socketAt(socketAlias, o.uid)
-  if ('missing' in at) throw new DaemonError('connect', `no daemon socket: ${at.missing}`)
+  if ('missing' in at) throw new DaemonError('connect', `no daemon socket: ${at.missing}`, undefined, true)
   if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
   const { socket, head } = await upgrade(at.real, clock, o)
   const reader = new FrameReader(o.maxMessage)
@@ -550,7 +560,10 @@ export type DaemonLink = {
   get(): Daemon | undefined
   /** True when the daemon lists the thread in `thread/loaded/list`. A failed read is false and is not kept. */
   hosted(threadId: string): Promise<boolean>
-  /** As `hosted`, but a failed read is undefined: nobody knows yet. With no daemon it is false. */
+  /**
+   * As `hosted`, but a failed read is undefined: nobody knows yet. With no daemon, or a socket file that
+   * nothing listens on, it is false.
+   */
   known(threadId: string): Promise<boolean | undefined>
 }
 
@@ -559,7 +572,8 @@ export type DaemonLink = {
  * that throws (a socket that is not safe to dial, the test guard) is no daemon, with one debug line for each
  * new reason. `hosted` keeps a list that names the thread for HOSTED_TTL_MS (60 s), and reads a list that
  * does not name it again after HOSTED_MISS_TTL_MS, so a thread that loaded later shows. Reads at the same
- * time share one call. A failed read writes a debug line.
+ * time share one call. A failed read writes a debug line. A read that finds no daemon on the socket (see
+ * DaemonError.absent) is a list with no thread, and is not kept.
  */
 export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { ttlMs?: number; missTtlMs?: number; log?: Log } = {}): DaemonLink {
   const ttl = o.ttlMs ?? HOSTED_TTL_MS
@@ -593,7 +607,9 @@ export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { tt
         },
         (e: unknown) => {
           o.log?.debug(codexDebug.readFailed('the loaded threads', errText(e)))
-          return undefined
+          // No daemon listens (a socket file that a crash left): no thread is on it. The answer is not kept,
+          // so a daemon that starts later shows at the next read.
+          return e instanceof DaemonError && e.absent ? new Set<string>() : undefined
         },
       )
       .finally(() => {

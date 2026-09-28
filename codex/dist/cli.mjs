@@ -1661,14 +1661,35 @@ function isStale(s, now, staleMs, alive) {
   return Math.abs(now - s.holder.at) > staleMs || !alive(s.holder.pid);
 }
 function breakStale(lockFile, s) {
+  const guard = `${lockFile}.break`;
+  let fd;
   try {
+    fd = openSync(guard, "wx", 384);
+  } catch (e) {
+    if (absent(e)) return true;
+    if (codeOf(e) !== "EEXIST") throw e;
+    try {
+      if (Math.abs(Date.now() - lstatSync(guard).mtimeMs) > LOCK_STALE_MS) unlinkSync(guard);
+    } catch (e2) {
+      if (!absent(e2)) throw e2;
+    }
+    return false;
+  }
+  try {
+    closeSync(fd);
     const st = lstatSync(lockFile);
-    if (Number(st.dev) !== s.dev || Number(st.ino) !== s.ino || st.mtimeMs !== s.mtimeMs) return;
-    if (readFileSync(lockFile, "utf8") !== s.text) return;
+    if (Number(st.dev) !== s.dev || Number(st.ino) !== s.ino || st.mtimeMs !== s.mtimeMs) return true;
+    if (readFileSync(lockFile, "utf8") !== s.text) return true;
     unlinkSync(lockFile);
   } catch (e) {
     if (!absent(e)) throw e;
+  } finally {
+    try {
+      unlinkSync(guard);
+    } catch {
+    }
   }
+  return true;
 }
 function createLock(lockFile) {
   for (let tries = 0; ; tries += 1) {
@@ -1713,10 +1734,7 @@ function withLock(lockFile, owner, fn, o = {}) {
     const seen = seeLock(lockFile);
     if (seen === void 0) continue;
     last = seen.holder;
-    if (isStale(seen, Date.now(), staleMs, alive)) {
-      breakStale(lockFile, seen);
-      continue;
-    }
+    if (isStale(seen, Date.now(), staleMs, alive) && breakStale(lockFile, seen)) continue;
     sleepSync(LOCK_SLEEP_MIN_MS + Math.random() * (LOCK_SLEEP_MAX_MS - LOCK_SLEEP_MIN_MS));
   }
   let result;
@@ -1747,8 +1765,7 @@ function tryLock(lockFile, owner, o = {}) {
     }
     const seen = seeLock(lockFile);
     if (seen === void 0) continue;
-    if (!isStale(seen, Date.now(), staleMs, alive)) return void 0;
-    breakStale(lockFile, seen);
+    if (!isStale(seen, Date.now(), staleMs, alive) || !breakStale(lockFile, seen)) return void 0;
   }
   return void 0;
 }
@@ -4183,11 +4200,17 @@ var OP = { continuation: 0, text: 1, binary: 2, close: 8, ping: 9, pong: 10 };
 var DaemonError = class extends Error {
   kind;
   code;
-  constructor(kind, message, code) {
+  /**
+   * A connect that found no daemon: the socket file went away, or nothing listens on it (a daemon that
+   * crashed or got SIGKILL leaves its socket file).
+   */
+  absent;
+  constructor(kind, message, code, absent2 = false) {
     super(message);
     this.name = "DaemonError";
     this.kind = kind;
     this.code = code;
+    this.absent = absent2;
   }
 };
 var isObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -4372,7 +4395,10 @@ function upgrade(socketPath, clock, o) {
       fail(new DaemonError("connect", `the daemon did not answer the handshake within ${o.connectMs} ms`));
       req.destroy();
     });
-    req.on("error", (e) => fail(new DaemonError("connect", `the daemon socket failed: ${e.message}`)));
+    req.on("error", (e) => {
+      const none = e.code === "ECONNREFUSED" || e.code === "ENOENT";
+      fail(new DaemonError("connect", `the daemon socket failed: ${e.message}`, void 0, none));
+    });
     req.on("response", (res) => {
       res.resume();
       fail(new DaemonError("protocol", `the daemon answered the handshake with status ${res.statusCode ?? 0}`));
@@ -4398,7 +4424,7 @@ function upgrade(socketPath, clock, o) {
 async function withConnection(socketAlias, version, clock, timeoutMs, o, fn) {
   guardTestPath({}, "daemon socket", socketAlias);
   const at = socketAt(socketAlias, o.uid);
-  if ("missing" in at) throw new DaemonError("connect", `no daemon socket: ${at.missing}`);
+  if ("missing" in at) throw new DaemonError("connect", `no daemon socket: ${at.missing}`, void 0, true);
   if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
   const { socket, head } = await upgrade(at.real, clock, o);
   const reader = new FrameReader(o.maxMessage);
@@ -4597,7 +4623,7 @@ function daemonLink(make, clock, o = {}) {
       },
       (e) => {
         o.log?.debug(codexDebug.readFailed("the loaded threads", errText4(e)));
-        return void 0;
+        return e instanceof DaemonError && e.absent ? /* @__PURE__ */ new Set() : void 0;
       }
     ).finally(() => {
       reading = void 0;
@@ -5225,13 +5251,21 @@ async function interruptTurn(daemon, thread, turn) {
     }
   }
 }
+var MARKS_KEPT = 64;
+function keptMarks(marks, now) {
+  const all = Object.entries(marks);
+  if (all.length <= MARKS_KEPT && all.every(([, v]) => Number.isFinite(v))) return marks;
+  const newest = all.filter(([, v]) => Number.isFinite(v)).sort((a, b) => b[1] - a[1]).filter(([, v], n) => n < MARKS_KEPT || Math.abs(now - v) < INTERRUPT_MARK_MS);
+  const keep = new Set(newest.map(([k]) => k));
+  return Object.fromEntries(all.filter(([k]) => keep.has(k)));
+}
 function markInterrupt(sx, turn, at, log) {
   try {
     return sx.store.locked((tx) => {
       const i = tx.state.interrupts ?? {};
       const prev = i[turn];
       if (prev !== void 0 && Math.abs(at - prev) < INTERRUPT_MARK_MS) return { kind: "taken" };
-      tx.state.interrupts = { ...i, [turn]: at };
+      tx.state.interrupts = keptMarks({ ...i, [turn]: at }, at);
       return prev === void 0 ? { kind: "mine" } : { kind: "mine", lost: prev };
     });
   } catch (e) {

@@ -157,6 +157,19 @@ test('files: two withLock callers in worker threads both finish, and never hold 
   assert.equal(existsSync(job.lock), false)
 })
 
+test('files: six waiters that find one stale lock at the same ms never hold the lock at once', async (t) => {
+  // Each round starts with a lock of a dead pid (a broker that got SIGKILL inside the lock), and all six
+  // waiters find it together. Without the .break guard, about one round in ten had two holders.
+  const dir = tempDir(t)
+  const n = 6
+  const stale = { sab: new SharedArrayBuffer(16), n, deadPid: DEAD_PID }
+  const job = { lock: join(dir, 'state.lock'), marker: join(dir, 'marker'), rounds: 40, holdMs: 1, stale }
+  const results = await Promise.all(Array.from({ length: n }, (_, i) => contender({ ...job, owner: `W${i}` })))
+  assert.deepEqual(results.map((r) => r.overlaps), Array.from({ length: n }, () => 0))
+  assert.equal(existsSync(job.lock), false)
+  assert.equal(existsSync(`${job.lock}.break`), false, 'no guard is left')
+})
+
 test('files: withLock writes { owner, pid, at } and removes the lock after fn', (t) => {
   const lock = join(tempDir(t), 'sessions', 'S1', 'state.lock')
   const seen = withLock(lock, 'broker-1', () => JSON.parse(readFileSync(lock, 'utf8')) as Record<string, unknown>)
@@ -186,6 +199,25 @@ test('files: a stale lock by a dead pid is removed at once', (t) => {
   assert.equal(withLock(lock, 'new', () => 7), 7)
   writeFileSync(lock, JSON.stringify({ owner: 'fake', pid: 4242, at: Date.now() }))
   assert.equal(withLock(lock, 'new', () => 8, { pidAlive: (p) => p !== 4242 }), 8)
+})
+
+test('files: a stale lock that another waiter breaks now is busy, and a guard of a dead breaker goes when it is stale', (t) => {
+  const lock = join(tempDir(t), 'state.lock')
+  const guard = `${lock}.break`
+  const dead = JSON.stringify({ owner: 'gone', pid: DEAD_PID, at: Date.now() })
+  writeFileSync(lock, dead)
+  // Another waiter holds the guard: it checks the stale lock now, and only it may remove the lock.
+  writeFileSync(guard, '')
+  assert.throws(() => withLock(lock, 'me', () => 1, { waitMs: 40 }), LockTimeout)
+  assert.equal(tryLock(lock, 'me'), undefined, 'tryLock never waits for the breaker')
+  assert.equal(readFileSync(lock, 'utf8'), dead, 'the stale lock stays for the breaker')
+  assert.equal(existsSync(guard), true)
+  // The breaker died in its short step: its guard is stale, and goes.
+  const old = (Date.now() - 6_000) / 1000
+  utimesSync(guard, old, old)
+  assert.equal(withLock(lock, 'me', () => 2), 2)
+  assert.equal(existsSync(guard), false)
+  assert.equal(existsSync(lock), false)
 })
 
 test('files: a live lock gives LockTimeout after the wait, and stays in place', (t) => {
