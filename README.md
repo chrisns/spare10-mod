@@ -97,7 +97,7 @@ You can switch each of these off.
 ### Codex CLI
 
 You need Node.js 20 or later.
-spare10 looks for it on your `PATH`, in Homebrew, in Volta and in nvm.
+spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin`, in Volta and in nvm, and then on your `PATH`.
 
 1. Install the plugin:
 
@@ -159,6 +159,8 @@ It spends no quota when you choose **Stop here**.
 
 If the 5-hour window resets in less than 20 minutes, the reserve is open, and spare10 does not ask.
 Then use `simulate 92 in 1h`.
+On a Codex plan with only a weekly window, the test reading is for the weekly window.
+If the weekly window resets in less than 8 hours, use `spare10 simulate 92 in 9h`.
 See [Test reading](docs/claude-code.md#test-reading).
 
 ## Screenshots

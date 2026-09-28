@@ -12,7 +12,7 @@ Only LCX-REAL reads the real account, and it makes no model request.
 **Release gate.**
 LCX1 to LCX8, LCX11, LCX17 and LCX-REAL must pass before the Codex PR leaves draft.
 They must also pass before each release and after each update of Codex.
-LCX9, LCX10, LCX12 to LCX16, LCX18 and LCX19 belong to the P1 features.
+LCX9, LCX10, LCX12 to LCX16, and LCX18 to LCX20 belong to the P1 features.
 Run each one when its feature ships.
 LCX14 and LCX19 are optional.
 
@@ -36,7 +36,7 @@ Do not run them again for spare10.
 
 ## Safety
 
-- Never use your real `~/.codex` for LCX1 to LCX19.
+- Never use your real `~/.codex` for LCX1 to LCX20.
 - Never type a test prompt in a real Codex session. If a gate fails, Codex sends the prompt to the model.
 - The isolated home has no `auth.json`. Its model provider is the mock.
 - Every command below sets `HOME` and `CODEX_HOME` to the isolated home.
@@ -50,7 +50,7 @@ Do these steps once, before the first check:
 
 ```sh
 cd spare10-mod                                    # the repo root
-mkdir -p /tmp/s10ver && env HOME=/tmp/s10ver CODEX_HOME=/tmp/s10ver codex --version   # must print codex-cli 0.157.0
+V=$(mktemp -d /tmp/s10ver-XXXXXX) && env HOME="$V" CODEX_HOME="$V" codex --version; rm -rf "$V"   # must print codex-cli 0.157.0
 npm ci
 npm run build:codex                               # codex/dist must match the branch
 scripts/check.sh                                  # must be green first
@@ -386,7 +386,8 @@ Run it only with the consent of the owner.
 1. Build the bundle on the branch: `npm run build:codex`.
 2. Check that the real daemon runs: `ls -l ~/.codex/app-server-control/app-server-control.sock`.
    If the socket does not exist, stop here. This version has no other live route, and the check needs one.
-3. From a plain terminal, run `node codex/dist/cli.mjs status --codex-home ~/.codex --data /tmp/s10real`.
+3. From a plain terminal, make a private data folder: `R=$(mktemp -d /tmp/s10real-XXXXXX)`.
+   Then run `node codex/dist/cli.mjs status --codex-home ~/.codex --data "$R"`.
    The terminal must not set `SPARE10_CODEX_TEST` or `CODEX_THREAD_ID`.
    Wait 31 seconds, and run the same command again.
    spare10 knows that a window is absent only after two live reads.
@@ -396,10 +397,10 @@ Run it only with the consent of the owner.
    - The `weekly reading` row shows the real percent and the real reset.
    - The phase is `tripped` when the weekly reading is at 90% or more.
    - The `session` row says `none`, and the `daemon` row says `reachable`.
-   - `/tmp/s10real` holds only `live.json` and `seed.json`, and `live.lock` is gone. The CLI writes no launcher.
+   - `$R` holds only `live.json` and `seed.json`, and `live.lock` is gone. The CLI writes no launcher.
    - Nothing under `~/.codex` changed. This command lists nothing from spare10:
-     `find ~/.codex -newer /tmp/s10real/live.json -not -path '*/sessions/*' -not -name '*.sqlite*'`
-5. Remove `/tmp/s10real`.
+     `find ~/.codex -newer "$R/live.json" -not -path '*/sessions/*' -not -name '*.sqlite*'`
+5. Remove the data folder: `rm -rf "$R"`.
 
 The daemon call is the read-only `account/rateLimits/read`, with `excludeResetCreditDetails: true`, on one short connection.
 It spends no quota.
@@ -423,6 +424,7 @@ Their steps can change when those features ship.
 | LCX16 | terminal | Run `codex exec` with each `SPARE10_HEADLESS` policy. | The texts and exit codes of the unattended policies are correct. |
 | LCX18 | embedded | Hold at a tool call. Then change `/permissions`. In a second run, change the folder. In a third run, update the plugin to a new version. | Record whether the held hook call stays, lets the work through, or refuses the work. Update docs/codex.md when a case lets the work through. |
 | LCX19 | desktop app or IDE, optional | Start a thread from a host whose `PATH` has no `node`, with Node.js in `/opt/homebrew/bin` or in nvm. | `codex/bin/broker.sh` finds Node.js, and the thread starts. With no Node.js at all, the thread fails with the error line of `broker.sh`. |
+| LCX20 | embedded, with `--sandbox danger-full-access` | Send the embedded start command with `--sandbox danger-full-access` after `--no-daemon`. Send `hello`. Then type `spare10`. | `↳ Hook · spare10: the agent can send prompts for you in this mode, ...` shows one time. The report shows the same text as a warning. The other checks use the read-only sandbox of the test home, so they do not show this line. |
 
 ## Clean up
 
@@ -461,3 +463,4 @@ Keep the old rows.
 | LCX16 `codex exec` policies (P1) | | | | Record the exit code of each run. |
 | LCX18 Broker replaced during a hold (P1) | | | | Record what each of the three runs did. |
 | LCX19 A host with no `node` on `PATH` (P1, optional) | | | | Record the host. |
+| LCX20 An unsafe mode (P1) | | | | |
