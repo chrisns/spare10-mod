@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawn } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { realClock } from '../src/clock.ts'
@@ -43,17 +44,21 @@ const alive = (pid: number): boolean => {
 }
 
 test('scripts: check.sh runs npm ci when tsc is missing or a dependency file changed, and stops with the npm error when npm ci fails', async (t) => {
-  const shasum = ['/usr/bin/shasum', '/bin/shasum'].find((f) => existsSync(f))
-  if (shasum === undefined) {
-    t.skip('this machine has no shasum')
-    return
-  }
   const dir = tempDir(t, 's10deps')
   const repo = join(dir, 'repo')
   const bin = join(dir, 'bin')
+  const tools = join(dir, 'tools')
   const log = join(dir, 'npm.log')
   mkdirSync(join(repo, 'node_modules', '.bin'), { recursive: true })
   mkdirSync(bin)
+  // Only the tools that deps and the npm stand-in need, and this Node.js. No shasum: some hosts have none.
+  mkdirSync(tools)
+  symlinkSync(process.execPath, join(tools, 'node'))
+  for (const tool of ['cat', 'cut', 'rm', 'mkdir', 'chmod']) {
+    const found = [`/bin/${tool}`, `/usr/bin/${tool}`].find((f) => existsSync(f))
+    assert.ok(found !== undefined, `${tool} exists`)
+    symlinkSync(found, join(tools, tool))
+  }
   writeFileSync(join(repo, 'package.json'), '{"devDependencies":{"typescript":"7.0.2"}}\n')
   writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3}\n')
   // A stand-in for npm. It logs each call. With NPM_FAIL it fails as npm ci does when package.json and the
@@ -74,9 +79,12 @@ test('scripts: check.sh runs npm ci when tsc is missing or a dependency file cha
   const script = join(dir, 'deps.sh')
   writeFileSync(script, `set -eu\n${shellFunction('scripts/check.sh', 'deps')}\ndeps\necho after\n`)
   const deps = (fail = false): Promise<Ran> =>
-    ran('/bin/sh', [script], { cwd: repo, env: { PATH: `${bin}:/usr/bin:/bin`, NPM_LOG: log, ...(fail ? { NPM_FAIL: '1' } : {}) } })
+    ran('/bin/sh', [script], { cwd: repo, env: { PATH: `${bin}:${tools}`, NPM_LOG: log, ...(fail ? { NPM_FAIL: '1' } : {}) } })
   const calls = (): number => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter((l) => l !== '').length : 0)
   const hashFile = join(repo, 'node_modules', '.spare10-lock-hash')
+  /** The sum of `cat package.json package-lock.json | shasum -a 256`, the form of the hash files so far. */
+  const sum = (): string =>
+    createHash('sha256').update(readFileSync(join(repo, 'package.json'))).update(readFileSync(join(repo, 'package-lock.json'))).digest('hex')
 
   // No tsc and no esbuild, and npm ci fails: the check stops at once, and the npm error shows.
   let r = await deps(true)
@@ -86,11 +94,12 @@ test('scripts: check.sh runs npm ci when tsc is missing or a dependency file cha
   assert.equal(readFileSync(log, 'utf8'), 'ci --no-audit --no-fund --loglevel=error\n')
   assert.ok(!existsSync(hashFile), 'a failed install writes no hash')
 
-  // npm ci passes: the check goes on. The next run installs nothing.
+  // npm ci passes: the check goes on, and writes the real sum. The next run installs nothing.
   r = await deps()
   assert.equal(r.code, 0, r.stderr)
   assert.equal(r.stdout, 'after\n')
   assert.equal(calls(), 2)
+  assert.equal(readFileSync(hashFile, 'utf8'), `${sum()}\n`, 'the hash is the sha-256 of both files')
   r = await deps()
   assert.equal(r.code, 0, r.stderr)
   assert.equal(calls(), 2, 'nothing changed')
@@ -100,6 +109,7 @@ test('scripts: check.sh runs npm ci when tsc is missing or a dependency file cha
   r = await deps()
   assert.equal(r.code, 0, r.stderr)
   assert.equal(calls(), 3, 'package.json changed')
+  assert.equal(readFileSync(hashFile, 'utf8'), `${sum()}\n`)
 
   // Only package-lock.json changes: npm ci runs.
   writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}\n')
@@ -120,6 +130,13 @@ test('scripts: check.sh runs npm ci when tsc is missing or a dependency file cha
   r = await deps(true)
   assert.equal(r.code, 1)
   assert.equal(calls(), 7)
+
+  // No package-lock.json: the sum fails, so the check stops before npm ci and before the next step.
+  rmSync(join(repo, 'package-lock.json'))
+  r = await deps()
+  assert.notEqual(r.code, 0)
+  assert.equal(r.stdout, '')
+  assert.equal(calls(), 7, 'npm ci does not run with no sum')
 })
 
 /**

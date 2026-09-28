@@ -24,8 +24,11 @@ export type Paths = {
   launcher: string
   /** The folder of the launcher, for the PATH line of CX19. */
   bin: string
-  /** The home folder: `$HOME`, else os.homedir(). The texts write a path under it as `~/...` or `"$HOME/..."`, never with its name. */
-  home: string
+  /**
+   * The home folder: `$HOME`, else os.homedir(). The texts write a path under it as `~/...` or `"$HOME/..."`, never
+   * with its name. Undefined with no HOME and no user record: then the texts show the full path.
+   */
+  home: string | undefined
 }
 
 /** The folder name of the data dir: `<plugin>-<marketplace>` (`core-plugins/src/store.rs` L141-146). */
@@ -136,15 +139,29 @@ const homeOfEnv = (raw: string, env: Env, pluginRoot: string): string =>
   isAbsolute(raw) ? resolve(raw) : (homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? resolve(raw))
 
 /**
+ * The home folder of the texts: HOME, else `homeDir()`, else undefined. os.homedir() throws with no HOME and no
+ * user record, and the texts only shorten a path with the home folder, so a missing one never stops a start.
+ */
+function homeOf(env: Env, homeDir: () => string): string | undefined {
+  if (set(env.HOME)) return resolve(env.HOME)
+  try {
+    return resolve(homeDir())
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * The paths of the broker and the CLI (3.9). CODEX_HOME comes from the env (`env_vars`), else from the arg0
  * folder on PATH, else from the plugin root in the plugin cache, else `$HOME/.codex`. A relative CODEX_HOME
  * in the env takes those first too. With SPARE10_CODEX_DATA set (tests, the real-account check), the data dir
  * is that folder, and CODEX_HOME must be in the env: there is no fallback. With SPARE10_CODEX_TEST=1, a
- * CODEX_HOME, data dir or socket under ~/.codex throws.
+ * CODEX_HOME, data dir or socket under ~/.codex throws. `homeDir` is os.homedir(), or a stand-in in a spec.
+ * Only the last fallback needs it: with no HOME and no user record, the other ways still start.
  */
-export function findPaths(env: Env, selfFile: string): Paths {
+export function findPaths(env: Env, selfFile: string, homeDir: () => string = homedir): Paths {
   const pluginRoot = pluginRootOf(selfFile)
-  const home = resolve(set(env.HOME) ? env.HOME : homedir())
+  const home = homeOf(env, homeDir)
   let codexHome: string
   let data: string
   if (set(env.SPARE10_CODEX_DATA)) {
@@ -154,7 +171,7 @@ export function findPaths(env: Env, selfFile: string): Paths {
   } else {
     codexHome = set(env.CODEX_HOME)
       ? homeOfEnv(env.CODEX_HOME, env, pluginRoot)
-      : (homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join(home, '.codex'))
+      : (homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join(home ?? homeDir(), '.codex'))
     data = join(codexHome, 'plugins', 'data', DATA_NAME)
   }
   const socket = join(codexHome, 'app-server-control', 'app-server-control.sock')
@@ -165,11 +182,19 @@ export function findPaths(env: Env, selfFile: string): Paths {
   return { codexHome, data, pluginRoot, socket, launcher: join(bin, 'spare10'), bin, home }
 }
 
-/** The command line of the process `ppid` (`ps -ww -o args=`), or an empty string when `ps` fails. */
+/**
+ * The places of `ps`. The broker runs outside the Codex sandbox, and the agent can write some PATH folders, such
+ * as the .venv/bin of a project. So a `ps` on PATH never runs.
+ */
+const PS = ['/bin/ps', '/usr/bin/ps', '/run/current-system/sw/bin/ps'] as const
+
+/** The command line of the process `ppid` (`ps -ww -o args=`), or an empty string when `ps` fails or is missing. */
 export function parentArgs(ppid: number): string {
   if (!Number.isSafeInteger(ppid) || ppid <= 0) return ''
+  const ps = PS.find((f) => existsSync(f))
+  if (ps === undefined) return ''
   try {
-    return execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(ppid)], {
+    return execFileSync(ps, ['-ww', '-o', 'args=', '-p', String(ppid)], {
       encoding: 'utf8',
       timeout: 2_000,
       stdio: ['ignore', 'pipe', 'ignore'],

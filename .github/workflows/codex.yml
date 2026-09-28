@@ -34,3 +34,43 @@ jobs:
         run: >-
           SPARE10_CODEX_TEST=1 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON
           --import ./codex/test/host-loader.mjs --test codex/test/*.spec.ts
+  node20:
+    # The bundle targets Node.js 20, and codex/bin/broker.sh takes any 20.x. The specs need Node.js 22.18, so
+    # this job runs no spec. It loads both bundles on Node.js 20.0.0. An import that Node.js 20.0 lacks then fails
+    # at load, also one that the DENY list of codex/test/bundle.spec.ts does not name.
+    # It runs node itself, not broker.sh: broker.sh takes the Node.js of the runner in /usr/local/bin first.
+    # Not a required check yet. Make it required only after it passes on GitHub.
+    name: Codex bundle on Node.js 20.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 20.0.0
+      - name: The broker answers initialize, tools/list and a gate
+        run: |
+          test "$(node --version)" = v20.0.0
+          t=$(mktemp -d)
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+            '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gate","arguments":{"site":"prompt","session":"s1","turn":"t1","transcript":null,"mode":"default","model":"m","cwd":"/","prompt":"spare10 help"},"_meta":{"threadId":"s1"}}}' |
+            env HOME="$t/home" CODEX_HOME="$t/codex-home" SPARE10_CODEX_DATA="$t/data" SPARE10_CODEX_TEST=1 SPARE10_CODEX_DEBUG=1 \
+              node "$PWD/codex/dist/spare10.mjs" > "$t/out"
+          cat "$t/out"
+          grep -q '"id":2,"result":{"tools":\[\]}' "$t/out"
+          grep -q '"id":3,"result":{"content":\[{"type":"text","text":"{\\"decision\\":\\"block\\"' "$t/out"
+          ls "$t/data/log"
+      - name: The CLI prints the usage for a bad verb
+        run: |
+          t=$(mktemp -d)
+          code=0
+          env HOME="$t/home" CODEX_HOME="$t/codex-home" SPARE10_CODEX_TEST=1 \
+            node codex/dist/cli.mjs bogus --data "$t/data" > "$t/usage" || code=$?
+          cat "$t/usage"
+          test "$code" = 2
+          grep -q '^usage: spare10 ' "$t/usage"

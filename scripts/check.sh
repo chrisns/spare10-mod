@@ -5,9 +5,10 @@ cd "$(dirname "$0")/.."
 export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1
 # Dependencies, before the first tsc: npm ci when tsc or esbuild is missing, or when package.json or
 # package-lock.json changed since the last install. npm ci is a command of its own, so set -e stops the
-# check when it fails, and npm shows its error.
+# check when it fails, and npm shows its error. Node.js makes the sum, the same as `cat package.json
+# package-lock.json | shasum -a 256`: some hosts have no shasum, and a failed sum also stops the check.
 deps() {
-  deps_sum=$(cat package.json package-lock.json | shasum -a 256 | cut -d' ' -f1)
+  deps_sum=$(node -e 'const h = require("node:crypto").createHash("sha256"); for (const f of ["package.json", "package-lock.json"]) h.update(require("node:fs").readFileSync(f)); process.stdout.write(h.digest("hex"))')
   if [ ! -x node_modules/.bin/tsc ] || [ ! -x node_modules/.bin/esbuild ] || [ "$(cat node_modules/.spare10-lock-hash 2>/dev/null)" != "$deps_sum" ]; then
     npm ci --no-audit --no-fund --loglevel=error
     echo "$deps_sum" > node_modules/.spare10-lock-hash

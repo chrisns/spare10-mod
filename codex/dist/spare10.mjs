@@ -4435,9 +4435,17 @@ function guardTestPath(env, what, p) {
   }
 }
 var homeOfEnv = (raw, env, pluginRoot) => isAbsolute(raw) ? resolve(raw) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? resolve(raw);
-function findPaths(env, selfFile) {
+function homeOf(env, homeDir) {
+  if (set(env.HOME)) return resolve(env.HOME);
+  try {
+    return resolve(homeDir());
+  } catch {
+    return void 0;
+  }
+}
+function findPaths(env, selfFile, homeDir = homedir) {
   const pluginRoot = pluginRootOf(selfFile);
-  const home = resolve(set(env.HOME) ? env.HOME : homedir());
+  const home = homeOf(env, homeDir);
   let codexHome;
   let data;
   if (set(env.SPARE10_CODEX_DATA)) {
@@ -4445,7 +4453,7 @@ function findPaths(env, selfFile) {
     codexHome = homeOfEnv(env.CODEX_HOME, env, pluginRoot);
     data = resolve(env.SPARE10_CODEX_DATA);
   } else {
-    codexHome = set(env.CODEX_HOME) ? homeOfEnv(env.CODEX_HOME, env, pluginRoot) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join7(home, ".codex");
+    codexHome = set(env.CODEX_HOME) ? homeOfEnv(env.CODEX_HOME, env, pluginRoot) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join7(home ?? homeDir(), ".codex");
     data = join7(codexHome, "plugins", "data", DATA_NAME);
   }
   const socket = join7(codexHome, "app-server-control", "app-server-control.sock");
@@ -4455,10 +4463,13 @@ function findPaths(env, selfFile) {
   const bin = join7(data, "bin");
   return { codexHome, data, pluginRoot, socket, launcher: join7(bin, "spare10"), bin, home };
 }
+var PS = ["/bin/ps", "/usr/bin/ps", "/run/current-system/sw/bin/ps"];
 function parentArgs(ppid) {
   if (!Number.isSafeInteger(ppid) || ppid <= 0) return "";
+  const ps = PS.find((f) => existsSync2(f));
+  if (ps === void 0) return "";
   try {
-    return execFileSync("ps", ["-ww", "-o", "args=", "-p", String(ppid)], {
+    return execFileSync(ps, ["-ww", "-o", "args=", "-p", String(ppid)], {
       encoding: "utf8",
       timeout: 2e3,
       stdio: ["ignore", "pipe", "ignore"]
@@ -5386,21 +5397,50 @@ function createGate(d) {
 }
 
 // codex/src/log.ts
-import { appendFileSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { appendFileSync, mkdirSync as mkdirSync2, readdirSync as readdirSync3, statSync as statSync4, unlinkSync as unlinkSync3 } from "node:fs";
 import { join as join9 } from "node:path";
 var noLog = { debug() {
 } };
 var debugOn = (env) => env.SPARE10_CODEX_DEBUG === "1";
-var logFileOf = (dataDir, at) => join9(dataDir, "log", `broker-${new Date(at).toISOString().slice(0, 10)}.log`);
+var LOG_KEEP_DAYS = 7;
+var LOG_DAY_MAX_BYTES = 50 * 1024 * 1024;
+var DAY_MS2 = 864e5;
+var dayOf = (at) => new Date(at).toISOString().slice(0, 10);
+var DAY_FILE = /^broker-(\d{4}-\d{2}-\d{2})\.log$/;
+var logFileOf = (dataDir, at) => join9(dataDir, "log", `broker-${dayOf(at)}.log`);
+function pruneLogs(dataDir, at) {
+  const oldest = dayOf(at - (LOG_KEEP_DAYS - 1) * DAY_MS2);
+  const dir = join9(dataDir, "log");
+  let names;
+  try {
+    names = readdirSync3(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const day = DAY_FILE.exec(name)?.[1];
+    if (day === void 0 || day >= oldest) continue;
+    try {
+      unlinkSync3(join9(dir, name));
+    } catch {
+    }
+  }
+}
 function fileLog(dataDir, on, clock, o = {}) {
   if (!on) return noLog;
   const tag = o.tag === void 0 ? "" : ` [${o.tag}]`;
+  let pruned = "";
   return {
     debug(line) {
       try {
         const at = clock.now();
         const file = logFileOf(dataDir, at);
         mkdirSync2(join9(dataDir, "log"), { recursive: true, mode: 448 });
+        if (pruned !== dayOf(at)) {
+          pruned = dayOf(at);
+          pruneLogs(dataDir, at);
+        }
+        if ((statSync4(file, { throwIfNoEntry: false })?.size ?? 0) >= LOG_DAY_MAX_BYTES) return;
         appendFileSync(file, `${new Date(at).toISOString()}${tag} ${line.replace(/\r?\n/g, "\\n")}
 `, { mode: 384 });
       } catch {
@@ -6246,12 +6286,12 @@ function createRefusal(d) {
 }
 
 // codex/src/rollout.ts
-import { statSync as statSync4 } from "node:fs";
+import { statSync as statSync5 } from "node:fs";
 var TURN_ENDS_KEPT = 64;
 var FRESH_KEPT = 64;
 var statOf = (file) => {
   try {
-    const st = statSync4(file);
+    const st = statSync5(file);
     return { ino: Number(st.ino), size: Number(st.size) };
   } catch (e) {
     const code = e.code;
@@ -6710,12 +6750,12 @@ function createTicker(d) {
 }
 
 // codex/src/wake.ts
-import { statSync as statSync5, watch } from "node:fs";
+import { statSync as statSync6, watch } from "node:fs";
 import { join as join11, resolve as resolve2 } from "node:path";
 var WAKE_FILES = ["state.json", "question.json", "answer.json"];
 function markOf2(file) {
   try {
-    const st = statSync5(file);
+    const st = statSync6(file);
     return `${st.ino}:${st.size}:${st.mtimeMs}`;
   } catch {
     return "-";
