@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { codexDebug } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, withPrefix } from '../../hooks/core/codex.ts'
 import { VERSION } from '../../hooks/core/text.ts'
 import { realClock } from '../src/clock.ts'
 import {
@@ -25,6 +25,7 @@ import { memoryLog } from './helpers/log.ts'
 import { memoryDaemon } from './helpers/memory-daemon.ts'
 import { tempDir } from './helpers/tmp.ts'
 import { DROP, fakeDaemon, HANG, RpcFail, type FakeDaemon } from './helpers/uds-daemon.ts'
+import { parsed, world } from './helpers/world.ts'
 
 // The daemon client (Codex design 3.5, 8.2 daemon.spec) against the WebSocket-over-UDS fake, on the real clock
 // (the timeout cases drive a fake clock while the socket runs for real).
@@ -38,6 +39,9 @@ const client = (fake: FakeDaemon, clock = realClock, o: { maxMessage?: number; c
 }
 
 const isDaemonError = (kind: string) => (e: unknown): boolean => e instanceof DaemonError && e.kind === kind
+
+/** A connect error that found no daemon (`absent`), or one that did not know (`absent` false). */
+const isConnect = (absent: boolean) => (e: unknown): boolean => isDaemonError('connect')(e) && (e as DaemonError).absent === absent
 
 /** The text messages of one connection, without their ids. */
 const shapeOf = (m: Json): string => `${String(m['method'] ?? 'reply')}${m['id'] === undefined ? '' : ' (request)'}`
@@ -278,7 +282,7 @@ test('the timeout of thread/loaded/list is its own', async (t) => {
 test('a handshake with no answer rejects after the connect timeout', async (t) => {
   const fake = await fakeDaemon(t, { silent: true })
   const clock = fakeClock(0)
-  const failed = assert.rejects(client(fake, clock).loaded(), isDaemonError('connect'))
+  const failed = assert.rejects(client(fake, clock).loaded(), isConnect(false))
   while (fake.conns.length === 0) await new Promise<void>((resolve) => setImmediate(resolve))
   await clock.advance(DAEMON_CONNECT_MS)
   await failed
@@ -297,11 +301,41 @@ test('no socket file means no daemon, and a dangling alias too', (t) => {
   assert.equal(udsDaemon({ socket: join(home, 'app-server-control', 'app-server-control.sock') }, VERSION, realClock), undefined)
 })
 
-test('a call on a socket that went away rejects as a connect error', async (t) => {
+test('a call on a socket that went away rejects as a connect error that found no daemon', async (t) => {
   const fake = await fakeDaemon(t)
   const d = client(fake)
   await fake.close()
-  await assert.rejects(d.loaded(), isDaemonError('connect'))
+  await assert.rejects(d.loaded(), isConnect(true))
+})
+
+test('a socket file that nothing listens on (a daemon that crashed) is no daemon: known() and hosted() are false', async (t) => {
+  const fake = await fakeDaemon(t)
+  const d = client(fake)
+  await fake.crash()
+  assert.equal(statSync(fake.real).isSocket(), true, 'the socket file stays')
+  await assert.rejects(d.loaded(), (e: unknown) => isConnect(true)(e) && /ECONNREFUSED/.test(String(e)))
+  const log = memoryLog()
+  const link = daemonLink(() => udsDaemon({ socket: fake.alias }, VERSION, realClock), realClock, { log })
+  assert.ok(link.get() !== undefined, 'the socket file passes the trust check')
+  assert.equal(await link.known('T1'), false, 'no daemon listens: not hosted')
+  assert.equal(await link.hosted('T1'), false)
+  assert.equal(log.lines.length, 2, 'each read writes its debug line: the answer is not kept')
+  const head = codexDebug.readFailed('the loaded threads', 'the daemon socket failed: ')
+  for (const l of log.lines) assert.ok(l.startsWith(head) && l.includes('ECONNREFUSED'), l)
+})
+
+test('the first root gate: a daemon socket that nothing listens on counts as no daemon, so CX6 shows', async (t) => {
+  // codex --no-daemon after the daemon crashed: its socket file stays. Before, the read failed as unknown,
+  // and the first root gate (once per session) never showed CX6.
+  const w = world(t, { daemon: true })
+  w.daemon.script.loaded = new DaemonError('connect', 'the daemon socket failed: connect ECONNREFUSED /tmp/d.sock', undefined, true)
+  const b = await w.broker({ start: false })
+  assert.equal(
+    parsed(await b.gate('start'))['systemMessage'],
+    [codexText.noDaemon(true), codexText.cliHint(w.paths.launcher, w.paths.bin, w.paths.home)].map(withPrefix).join('\n'),
+  )
+  assert.ok((w.state().warned ?? []).includes('CX6'), 'a lasting CX6')
+  assert.ok(w.log.lines.includes(codexDebug.readFailed('the loaded threads', 'the daemon socket failed: connect ECONNREFUSED /tmp/d.sock')))
 })
 
 test('the socket trust check: the fake passes, and the real layout of this user passes', async (t) => {
@@ -317,7 +351,7 @@ test('the socket trust check: a folder that every user can write to, another own
   const fake = await fakeDaemon(t, { handlers: { 'account/rateLimits/read': () => ({ rateLimits: { usedPercent: 0 } }) } })
   const unsafe = (re: RegExp) => (e: unknown): boolean => isDaemonError('connect')(e) && /is not safe to dial/.test(String(e)) && re.test(String(e))
   // Another user as the owner of the socket and its folder (the uid seam).
-  assert.throws(() => udsDaemon({ socket: fake.alias }, VERSION, realClock, { uid: uid + 1 }), unsafe(/the user \d+ owns it/))
+  assert.throws(() => udsDaemon({ socket: fake.alias }, VERSION, realClock, { uid: uid + 1 }), unsafe(/the user \d+ owns it$/))
   // The folder of the socket is open to every user, as a folder that another user made in /tmp can be.
   chmodSync(dirname(fake.real), 0o777)
   assert.throws(() => udsDaemon({ socket: fake.alias }, VERSION, realClock), unsafe(/every user can write to its folder/))
@@ -345,6 +379,24 @@ test('the socket trust check: a folder that another user owns is no daemon, also
   }
   assert.deepEqual(socketAt(fake.alias, uid, stat), { unsafe: `the daemon socket ${real} is not safe to dial: the user ${uid + 1} owns its folder` })
   assert.deepEqual(socketAt(fake.alias, uid, statSync), { real }, 'with the real stats, the same socket passes')
+  assert.equal(fake.calls.length, 0, 'no socket was dialled')
+})
+
+test('the socket trust check: a socket that another user owns is no daemon, also in a group-writable folder of this user (the stat seam)', async (t) => {
+  const uid = process.getuid?.()
+  if (uid === undefined) return t.skip('no POSIX uids')
+  const fake = await fakeDaemon(t)
+  const real = realpathSync(fake.real)
+  const folder = dirname(real)
+  // The real stats, except that the user uid + 1 owns the socket, and the folder of this user is open to
+  // its group (umask 002). There only the owner check of the socket stops a member of the group.
+  const stat = (p: string) => {
+    const s = statSync(p)
+    if (p === real) return { isSocket: () => s.isSocket(), uid: uid + 1, mode: s.mode }
+    if (p === folder) return { isSocket: () => s.isSocket(), uid, mode: (s.mode & ~0o777) | 0o770 }
+    return s
+  }
+  assert.deepEqual(socketAt(fake.alias, uid, stat), { unsafe: `the daemon socket ${real} is not safe to dial: the user ${uid + 1} owns it` })
   assert.equal(fake.calls.length, 0, 'no socket was dialled')
 })
 

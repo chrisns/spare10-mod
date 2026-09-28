@@ -85,8 +85,30 @@ export async function interruptTurn(daemon: Pick<Daemon, 'interrupt' | 'newestTu
 export type Mark = { kind: 'mine'; lost?: number } | { kind: 'taken' } | { kind: 'failed' }
 
 /**
+ * The most interrupt marks that state.json keeps. CX39 reads only the newest mark, and the Interrupt gate
+ * reads the mark that was just made. So a long session does not add one mark for each turn for ever.
+ */
+export const MARKS_KEPT = 64
+
+/**
+ * The newest MARKS_KEPT marks, and each mark younger than INTERRUPT_MARK_MS (the marks that stop a second
+ * interrupt), in their order. A value that is not a finite number goes.
+ */
+export function keptMarks(marks: Record<string, number>, now: number): Record<string, number> {
+  const all = Object.entries(marks)
+  if (all.length <= MARKS_KEPT && all.every(([, v]) => Number.isFinite(v))) return marks
+  const newest = all
+    .filter(([, v]) => Number.isFinite(v))
+    .sort((a, b) => b[1] - a[1])
+    .filter(([, v], n) => n < MARKS_KEPT || Math.abs(now - v) < INTERRUPT_MARK_MS)
+  const keep = new Set(newest.map(([k]) => k))
+  return Object.fromEntries(all.filter(([k]) => keep.has(k)))
+}
+
+/**
  * Under the lock: marks the turn as interrupted by spare10 (CX39, 4.4), before the interrupt goes out. A
  * mark older than INTERRUPT_MARK_MS is lost (its process died, or it could not unmark), so this call takes it.
+ * The map keeps only the marks that keptMarks names.
  */
 export function markInterrupt(sx: Pick<SweepCtx, 'store'>, turn: string, at: number, log: Log): Mark {
   try {
@@ -94,7 +116,7 @@ export function markInterrupt(sx: Pick<SweepCtx, 'store'>, turn: string, at: num
       const i = tx.state.interrupts ?? {}
       const prev = i[turn]
       if (prev !== undefined && Math.abs(at - prev) < INTERRUPT_MARK_MS) return { kind: 'taken' }
-      tx.state.interrupts = { ...i, [turn]: at }
+      tx.state.interrupts = keptMarks({ ...i, [turn]: at }, at)
       return prev === undefined ? { kind: 'mine' } : { kind: 'mine', lost: prev }
     })
   } catch (e) {
