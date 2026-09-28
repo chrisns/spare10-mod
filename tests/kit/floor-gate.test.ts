@@ -390,6 +390,36 @@ test('after a reset credit, a consent of the old window is void: the new window 
   expect(w.env.get('SPARE10_CONSENT')).toBe(consentRec('S1', newReset, 95))
 })
 
+test('a failed consent unset after an early reset still holds: the old Resume never answers the new question (A22)', async ($, on) => {
+  const w = world(on, { pct: 91 })
+  await begin($, w)
+  await resumeAtReserve($, w)
+  const old = consentRec('S1', RESETS, 95)
+  const newReset = T0 + 360 * MIN
+  await w.clock.advance(60 * MIN)
+  w.resetsAt = new Date(newReset).toISOString()
+  w.pct = 5
+  expect((await bash($)).result).toBe('ran')
+  w.envSetFails.push('SPARE10_CONSENT') // the compare-and-set unset of the void value fails
+  w.pct = 91
+  let done = false
+  const held = bash($).then((r) => {
+    done = true
+    return r
+  })
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(2)
+  expect(w.env.get('SPARE10_CONSENT')).toBe(old) // still in the env: the question's own read must void it too
+  await w.clock.advance(2 * TICK)
+  expect(done).toBe(false)
+  expect(w.ran).toEqual(['Bash:main', 'Bash:main'])
+  w.envSetFails.length = 0
+  w.release('Resume')
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_CONSENT')).toBe(consentRec('S1', newReset, 95))
+})
+
 test('a reading that jumps from 89% to 96% asks only the second question, and its Resume lasts until the reset', async ($, on) => {
   const w = world(on, { pct: 89 })
   await begin($, w)

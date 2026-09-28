@@ -407,7 +407,7 @@ function badWarning(name, raw, used) {
   if (name === "SPARE10_HEADLESS") return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`;
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`;
 }
-var simulateWarning = (raw, weeklyOff = false) => weeklyOff ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses none.` : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`;
+var simulateWarning = (raw, weeklyOff = false) => weeklyOff ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses it only when the weekly reserve is more than 0.` : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`;
 var floorWarning = (kind, floor, reserve) => kind === "seven_day" ? `the weekly resume floor (${fmtPct(floor)}%) is not below the weekly reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the weekly reserve, or to 0.` : `the resume floor (${fmtPct(floor)}%) is not below the reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the reserve, or to 0.`;
 var AGAIN = `Type a prompt to be asked again, or run ${HOST.command} resume.`;
 var HELD_WAITS = `Held work waits. Run ${HOST.anytime} resume to continue it now.`;

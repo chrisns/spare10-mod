@@ -389,6 +389,16 @@ test('a failed child policy write at the start keeps the start warnings, and the
   expect(failed[0]).toContain('env.set SPARE10_HEADLESS failed')
 })
 
+test('a failed session id read at the start still registers /spare10 and shows the start warnings', async ($, on) => {
+  const w = world(on, { pct: 50, env: { CLAUDE_AFK_TIMEOUT_MS: '60000' }, sessionIdFails: true })
+  await begin($, w)
+  expect(w.commands).toEqual(['spare10'])
+  expect(count(transcript(w), timeoutWarning('CLAUDE_AFK_TIMEOUT_MS'))).toBe(1)
+  expect(w.env.get('SPARE10_HEADLESS')).toBe('stop')
+  // The id read has a fallback, so no step failed: the debug log names no start failure.
+  expect(debug(w).filter((t) => t.startsWith('spare10: a step of the session start failed: '))).toEqual([])
+})
+
 test('an unattended run sets no SPARE10_HEADLESS for children', async ($, on) => {
   const w = world(on, { pct: 50, surfaces: [] })
   await begin($, w)
