@@ -7,7 +7,7 @@ import type { HostKind } from '../../hooks/core/codex.ts'
 import { DEFAULTS } from '../../hooks/core/config.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 import { badWarning } from '../../hooks/core/text.ts'
-import { ENV_NAMES, configPath, createSettings, envReadsOf, ownsSimulate, readConfig, setOption } from '../src/settings.ts'
+import { ConfigUnreadError, ENV_NAMES, configPath, createSettings, envReadsOf, ownsSimulate, readConfig, setOption } from '../src/settings.ts'
 import type { Env } from '../src/paths.ts'
 import { memoryLog } from './helpers/log.ts'
 import { tempDir } from './helpers/tmp.ts'
@@ -97,6 +97,18 @@ test('settings: a bad value in config.json warns with CX11 and uses the default,
   ])
 })
 
+test('settings: SPARE10_LIMIT_PAUSE wins over config.json, and a bad value warns and keeps the option', (t) => {
+  assert.deepEqual([setup(t).settings.get().limitPause, setup(t).settings.get().from.limitPause], [true, 'option'])
+  const file = setup(t, { config: JSON.stringify({ limitPause: false }) }).settings.get()
+  assert.deepEqual([file.limitPause, file.from.limitPause], [false, 'option'])
+  const wins = setup(t, { config: JSON.stringify({ limitPause: false }), env: { SPARE10_LIMIT_PAUSE: 'on' } }).settings.get()
+  assert.deepEqual([wins.limitPause, wins.from.limitPause], [true, 'env'])
+  const bad = setup(t, { config: JSON.stringify({ limitPause: false }), env: { SPARE10_LIMIT_PAUSE: 'yes' } }).settings.get()
+  assert.deepEqual([bad.limitPause, bad.from.limitPause, bad.warnings], [false, 'option', [badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'off')]])
+  const { settings, path } = setup(t, { config: JSON.stringify({ limitPause: 'maybe' }) })
+  assert.deepEqual([settings.get().limitPause, settings.get().warnings], [true, [`${path} sets limitPause to "maybe", which is not on or off. spare10 uses on.`]])
+})
+
 test('settings: a config.json that does not parse keeps the variables, and zeroes only the spans that no variable sets (CX12)', (t) => {
   const { settings, path } = setup(t, { config: '{"reserve": 15,', env: { SPARE10_RESERVE: '20', SPARE10_LAST_MINUTES: '25' } })
   const eff = settings.get()
@@ -110,7 +122,10 @@ test('settings: a config.json that does not parse keeps the variables, and zeroe
   const err = readConfig(path)
   assert.ok('error' in err)
   assert.equal(eff.warnings[0], codexText.configUnread(path, err.error))
-  assert.match(eff.warnings[0] ?? '', /^cannot read .*config\.json \(.+\)\. spare10 uses the default options, and keeps each reserve until the reset\.$/)
+  assert.match(
+    eff.warnings[0] ?? '',
+    /^cannot read .*config\.json \(.+\)\. spare10 uses the default options, and keeps each reserve until the reset\. Correct the file, or remove it to use the defaults\.$/,
+  )
 })
 
 test('settings: a config.json that is not an object is unread too', (t) => {
@@ -153,8 +168,28 @@ test('settings: setOption never overwrites a config.json that does not parse or 
   assert.throws(() => setOption({ data }, 'cli', 'reserve', 20), SyntaxError)
   assert.equal(readFileSync(path, 'utf8'), '{"reserve": 15,')
   writeFileSync(path, '[1]')
+  assert.throws(() => setOption({ data }, 'cli', 'reserve', 20), ConfigUnreadError)
   assert.throws(() => setOption({ data }, 'cli', 'reserve', 20), /not a JSON object/)
   assert.equal(readFileSync(path, 'utf8'), '[1]')
+})
+
+test('settings: setOption repairs a torn config.json (empty, only white space, or with a NUL byte), which the broker reads as CX12, and says so (CX54)', (t) => {
+  for (const torn of ['', '  \n', '{"reserve": 15\0\0\0']) {
+    const { settings, data, path } = setup(t, { config: torn })
+    // The broker still fails closed on the torn file: CX12, and both spans 0.
+    const before = settings.get()
+    assert.equal(before.lastMinutes, 0, JSON.stringify(torn))
+    assert.equal(before.from.lastMinutes, 'unread')
+    assert.equal(before.warnings.length, 1)
+    // CX54: the result says that the torn file was replaced, so the reply names the lost options.
+    assert.deepEqual(setOption({ data }, 'cli', 'lastMinutes', 20), { old: undefined, repaired: true }, JSON.stringify(torn))
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { lastMinutes: 20 })
+    assert.deepEqual(setOption({ data }, 'cli', 'reserve', 15), { old: undefined }, 'a file that reads needs no repair')
+    const after = settings.get()
+    assert.equal(after.lastMinutes, 20)
+    assert.equal(after.weeklyLastHours, DEFAULTS.weeklyLastHours, 'the file reads again, so the other span is back to its default')
+    assert.deepEqual(after.warnings, [])
+  }
 })
 
 test('settings: SPARE10_SIMULATE is ignored with a debug line on the daemon and an app-server, and honoured on tui and exec', (t) => {
@@ -209,10 +244,10 @@ test('settings: a parent state that cannot be read is logged and ignored', (t) =
   assert.deepEqual(log.lines, [codexDebug.readFailed('the parent session', 'bad JSON')])
 })
 
-test('settings: envReadsOf takes the eleven names, empty values included', () => {
-  assert.equal(ENV_NAMES.length, 11)
+test('settings: envReadsOf takes the twelve names, empty values included', () => {
+  assert.equal(ENV_NAMES.length, 12)
   assert.deepEqual(
-    envReadsOf({ SPARE10: 'on', SPARE10_PAUSE_PROMPT: '', SPARE10_RESERVE: '15', SPARE10_SIMULATE: '92', OTHER: 'x', SPARE10_CONSENT: 'S 2026' }),
-    { onOff: 'on', pausePrompt: '', reserve: '15', simulate: '92' },
+    envReadsOf({ SPARE10: 'on', SPARE10_PAUSE_PROMPT: '', SPARE10_RESERVE: '15', SPARE10_SIMULATE: '92', SPARE10_LIMIT_PAUSE: 'off', OTHER: 'x', SPARE10_CONSENT: 'S 2026' }),
+    { onOff: 'on', pausePrompt: '', reserve: '15', simulate: '92', limitPause: 'off' },
   )
 })

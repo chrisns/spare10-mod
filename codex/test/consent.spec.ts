@@ -2,10 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { formatConsent } from '../../hooks/core/decide.ts'
 import type { KindSense } from '../../hooks/core/flow.ts'
-import { clearConsent, consentField, consentsIn, consentsOf, endFloors, removeDead, writeConsent } from '../src/consent.ts'
+import { codexDebug } from '../../hooks/core/codex.ts'
+import { clearConsent, consentField, consentsIn, consentsOf, endFloors, parentOf, removeDead, writeConsent } from '../src/consent.ts'
 import { freshState } from '../src/store.ts'
 import type { SessionState } from '../src/store.ts'
 import { HOST_PID, HOUR, MIN, SID, T0, logicWorld } from './helpers/logic.ts'
+import { memoryLog } from './helpers/log.ts'
 
 // Consent on Codex (Codex design 3.7, 4.1, 4.8, 7.2 consent.ts): the Claude env values as fields of
 // state.json, written in one lock. The floor tiers (B49), the tombs (B52), the test consents (3.5), the
@@ -40,6 +42,7 @@ function kind(pct: number, o: Partial<KindSense> = {}): KindSense {
     point: 95,
     atFloor: pct >= 95,
     realPct: pct,
+    limit: false,
     ...o,
   }
 }
@@ -155,6 +158,28 @@ test('consent: consentsOf reads with no lock and removes a dead value under the 
   assert.deepEqual(consentsOf(b.sx, { kind: 'five_hour', attended: true, testBasis: false, realEnd: RESET }), [])
   assert.equal(w.state().consent, undefined)
   assert.equal(w.state().weeklyConsent, formatConsent(SID, RESET + HOUR), 'the other kind stays')
+})
+
+test('consent: parentOf reads the parent only for an unattended reader, and logs a failed read (3.10)', () => {
+  const parent = { ...freshState('parent'), consent: formatConsent('parent', RESET) }
+  let reads = 0
+  const good = { parent: { read: () => (reads++, parent) } }
+  const log = memoryLog()
+  assert.equal(parentOf(good, true, log), undefined, 'an attended reader')
+  assert.equal(reads, 0, 'an attended reader reads nothing')
+  assert.deepEqual(parentOf(good, false, log), parent)
+  assert.equal(reads, 1)
+  assert.equal(parentOf({}, false, log), undefined, 'no parent')
+  assert.deepEqual(log.lines, [])
+  const bad = {
+    parent: {
+      read: (): never => {
+        throw new Error('bad JSON')
+      },
+    },
+  }
+  assert.equal(parentOf(bad, false, log), undefined, 'a failed read gives none: the parent consent does not count')
+  assert.deepEqual(log.lines, [codexDebug.readFailed('the parent session', 'bad JSON')])
 })
 
 test('consent: endFloors ends a consent to the floor at its point, with a tomb, and keeps it below (B52)', () => {

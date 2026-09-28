@@ -14,8 +14,9 @@ export function badgeLabel(reserve: number, test: boolean): string {
 /**
  * The table in B21. Only the tripped row pulses, by swapping its glyph for one space. `until`: the
  * clock at which a stop or an open question continues by itself, or, in the open row, the reset that
- * ends the open reserve first (2.6). `to` (floor 2.6): the end point now of the consent to the floor
- * nearest its end, such as '95'. The consented row names it.
+ * ends the open reserve first (2.6), or, in the limit row, the time at which held work continues after
+ * the quota limit. `to` (floor 2.6): the end point now of the consent to the floor nearest its end, such
+ * as '95'. The consented row names it.
  */
 export function badgeView(
   phase: Phase,
@@ -32,6 +33,8 @@ export function badgeView(
       return { text: `⧗ ${label}`, color: 'inactive', pulse: false }
     case 'armed':
       return { text: `● ${label}`, color: 'success', pulse: false }
+    case 'limit':
+      return { text: `‖ ${label}: at the limit${until}`, color: 'warning', pulse: false }
     case 'consented':
       return { text: i.to === undefined ? `⨯ ${label}` : `⨯ ${label}: resumed until ${i.to}% used`, color: 'warning', pulse: false }
     case 'open':

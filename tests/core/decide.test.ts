@@ -27,6 +27,7 @@ import {
   joinable,
   joinableAt,
   keyStage,
+  limitVerdict,
   mergeStopped,
   noteSlot,
   parseConsent,
@@ -173,6 +174,20 @@ test('parseStopped reads the three fields and refuses junk', () => {
   for (const junk of [undefined, '', 'S1', `S1 ${R}`, `S1 ${R} x`, ` ${R} ${T0}`, `S1 ${R} ${T0} extra`, `S1  ${R} ${T0}`, `S1 -1 ${T0}`]) {
     expect(parseStopped(junk)).toBeUndefined()
   }
+})
+
+test('parseStopped refuses a time that no Date can hold, and keeps the last one', () => {
+  for (const junk of [
+    `S1 99999999999999999 ${T0}`,
+    `S1 ${R} 99999999999999999`,
+    `S1 99999999999999999 ${T0} five_hour,auto`,
+    `S1 8640000000000001 ${T0} five_hour`,
+    `S1 ${'9'.repeat(400)} ${T0} five_hour,auto`,
+  ]) {
+    expect(parseStopped(junk)).toBeUndefined()
+  }
+  expect(parseStopped('S1 8640000000000000 8640000000000000 five_hour')?.windowEnd).toBe(8.64e15)
+  expect(new Date(8.64e15).toISOString()).toBe('+275760-09-13T00:00:00.000Z')
 })
 
 test('shouldAbortTurn: attended always, unattended only on a repeat', () => {
@@ -828,6 +843,37 @@ test('answers: a Resume answers a kind only on its basis and below its end point
   expect(answers([], { kind: 'five_hour', pct: 91, test: false })).toBe(false)
 })
 
+test('answers: a Resume answers a kind only in the window of its question, and an unknown end matches', () => {
+  const asked: Answered[] = [{ kind: 'five_hour', test: false, end: R }]
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R })).toBe(true)
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R + 30_000 })).toBe(true) // a reset that moved a little
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R + 5 * HOUR })).toBe(false) // the next window asks again
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false, end: R - 5 * HOUR })).toBe(false)
+  expect(answers(asked, { kind: 'five_hour', pct: 99, test: false })).toBe(true) // no reset time: unknown
+  expect(answers([{ kind: 'five_hour', test: false }], { kind: 'five_hour', pct: 99, test: false, end: R + 5 * HOUR })).toBe(true) // an older answer
+  const week: Answered[] = [{ kind: 'seven_day', test: false, to: 95, end: R + 3 * DAY }]
+  expect(answers(week, { kind: 'seven_day', pct: 93, test: false, end: R + 3 * DAY + HOUR })).toBe(true)
+  expect(answers(week, { kind: 'seven_day', pct: 93, test: false, end: R + 10 * DAY })).toBe(false)
+  expect(joinableAt('resume', asked, [{ kind: 'five_hour', pct: 99, test: false, end: R + 5 * HOUR }])).toBe(false)
+  expect(joinableAt('resume', asked, [{ kind: 'five_hour', pct: 99, test: false, end: R }])).toBe(true)
+})
+
+test('answers: on Codex, a real window that ends more than the jitter later is a new window (A22)', () => {
+  const J = 10 * 60_000
+  const asked: Answered[] = [{ kind: 'five_hour', test: false, end: R }]
+  const credit = { kind: 'five_hour' as const, pct: 99, test: false, end: R + HOUR } // a reset credit: less than half a window later
+  expect(answers(asked, credit)).toBe(true) // Claude: the same window
+  expect(answers(asked, credit, J)).toBe(false)
+  expect(answers(asked, { ...credit, end: R + J }, J)).toBe(true) // the reset jitter
+  expect(answers(asked, { ...credit, end: R - HOUR }, J)).toBe(true) // an earlier end, as voidedByReset
+  expect(answers(asked, { ...credit, end: undefined }, J)).toBe(true) // no reset time: unknown
+  expect(answers([{ kind: 'five_hour', test: false }], credit, J)).toBe(true) // an older answer
+  expect(answers([{ kind: 'five_hour', test: true, end: R }], { ...credit, test: true }, J)).toBe(true) // a test window keeps sameWindow
+  expect(joinableAt('resume', asked, [credit], J)).toBe(false)
+  expect(joinableAt('resume', asked, [credit])).toBe(true)
+  expect(joinableAt('stop', asked, [credit], J)).toBe(true)
+})
+
 test('joinableAt: a settled Resume at the reserve takes no joiner past its end point or on another basis, and joinable keeps its 0.2 result', () => {
   const named: Answered[] = [{ kind: 'five_hour', test: false, to: 95 }]
   expect(joinableAt('resume', named, [{ kind: 'five_hour', pct: 93, test: false }])).toBe(true)
@@ -908,4 +954,66 @@ test('phaseOf with bases: a weekly-only plan is armed, all none waits, all blind
   expect(phase({ ...idle, basis: blind })).toBe('blind')
   expect(phase({ ...idle, basis: BELOW })).toBe('armed')
   expect(phase({ ...idle, basis: none, bases: undefined })).toBe('waiting')
+})
+
+// ---- The pause at the quota limit (limit design 1.2, 1.3, 6.1) ----
+
+test('row 7b: at the limit every loop holds in hold and tell mode, a person prompt holds, another prompt passes', () => {
+  for (const mode of ['hold', 'tell'] as const) {
+    expect(at('tool', { limit: true, mode })).toEqual(HOLD)
+    expect(at('step', { limit: true, mode })).toEqual(HOLD)
+    expect(at('prompt', { limit: true, mode, person: true })).toEqual(HOLD)
+    expect(at('prompt', { limit: true, mode, person: false })).toEqual(THROUGH)
+    expect(at('prompt', { limit: true, mode, person: true, mainTold: true })).toEqual(HOLD) // tell mode: a told main still holds
+  }
+  // Without the limit, tell mode tells and passes: row 8.
+  expect(at('tool', { mode: 'tell' })).toEqual({ kind: 'tell' })
+  expect(at('step', { mode: 'tell' })).toEqual(THROUGH)
+})
+
+test('row 7b: a stop still wins at the limit (row 7), and it refuses, never spends', () => {
+  expect(at('tool', { limit: true, stopped: true })).toEqual({ kind: 'refuse', text: 'stop' })
+  expect(at('step', { limit: true, stopped: true })).toEqual({ kind: 'refuse', text: 'paused' })
+  expect(at('prompt', { limit: true, stopped: true, person: true })).toEqual(HOLD)
+})
+
+test('row 7b: the unattended rows come first and do not change at the limit', () => {
+  const un = (site: Site, headless: Headless, over: Partial<Snapshot> = {}) => at(site, { limit: true, attended: false, headless, ...over })
+  expect(un('tool', 'off')).toEqual(THROUGH)
+  expect(un('step', 'off')).toEqual(THROUGH)
+  expect(un('tool', 'stop')).toEqual({ kind: 'refuse', text: 'headless' })
+  expect(un('prompt', 'stop')).toEqual(THROUGH)
+  expect(un('tool', 'prompt')).toEqual({ kind: 'tell' })
+  expect(un('tool', 'wait')).toEqual(HOLD)
+  expect(un('step', 'wait', { seedOnly: true })).toEqual(THROUGH)
+  // A consented or unguarded snapshot never reaches row 7b.
+  expect(at('tool', { limit: true, consented: true })).toEqual(THROUGH)
+  expect(at('tool', { limit: true, enabled: false })).toEqual(THROUGH)
+})
+
+test('answers and joinableAt: a Resume never answers a kind at the limit, full or to the floor, on any basis', () => {
+  const full: Answered[] = [{ kind: 'five_hour', test: false, end: R }]
+  const atLimit = { kind: 'five_hour' as const, pct: 100, test: false, end: R, limit: true }
+  expect(answers(full, { ...atLimit, limit: undefined })).toBe(true) // the same kind below the limit: answered
+  expect(answers(full, atLimit)).toBe(false)
+  expect(answers([{ kind: 'five_hour', test: true, end: R }], { ...atLimit, test: true })).toBe(false)
+  expect(joinableAt('resume', full, [atLimit])).toBe(false) // a loop at the limit never joins a settled Resume
+  expect(joinableAt(undefined, full, [atLimit])).toBe(true) // an open question takes it
+  expect(joinableAt('stop', full, [atLimit])).toBe(true) // a Stop here stands
+})
+
+test('limitVerdict: only the exact Stop here label stops, every other answer continues at the reset', () => {
+  expect(limitVerdict('Stop here', 'Stop here')).toBe('stop')
+  for (const a of ['Continue at the reset', 'Resume', 'stop here', 'Stop here ', 'Chat about this', 'please stop', '']) expect(limitVerdict(a, 'Stop here')).toBe('continue')
+})
+
+test('phaseOf: limit comes after armed and before consented, never over a stop, never unattended, and asking outranks it', () => {
+  expect(phase({ limit: true })).toBe('limit')
+  expect(phase({ limit: true, consented: true, told: true })).toBe('limit')
+  expect(phase({ limit: true, open: true })).toBe('limit')
+  expect(phase({ limit: true, asking: true })).toBe('asking')
+  expect(phase({ limit: true, stopped: true })).toBe('stopped')
+  expect(phase({ limit: true, attended: false })).toBe('reserve')
+  expect(phase({ limit: true, tripped: false, basis: BELOW })).toBe('armed')
+  expect(phase({ limit: true, enabled: false })).toBe('off')
 })

@@ -27,6 +27,7 @@
 ! surfaces = Codex has no $.session.surfaces: attendance comes from the host kind and the session log (3.10).
 ! remote = Codex has no remote bridge surface.
 ! typing = The Codex ticker never reads the prompt box: it continues only an idle hosted thread (4.6, 7.3).
+! young = On Codex a question with no held call stays until it is 90 s old, for a new call of any broker (4.3). A step in that time joins a chosen limit question with no form.
 ! ticker = The Codex root ticker is a Node timer through the Clock seam, started at the first root gate: no refused timer to heal and no watch timer (3.8).
 ! edges = Codex has no badge, so the ticker keeps no redraw edges (7.3).
 ! sessionEnd = Codex needs no session.end: a thread unload or an exit ends its broker and its ticker (design 1.2).
@@ -36,6 +37,9 @@
 ! sweepAll = On Codex a stop interrupts every running turn of the session, subagents too (A18, 4.23).
 ! seedRead = The Claude module reads its $.store seed once per activation, and each Codex sense reads seed.json (3.6).
 ! seedWrite = On Codex each view writes seed.json from its own readings (3.6), and consent never goes there.
+! startStep = On Codex no start step can fail alone (4.22). The env is a snapshot, and the session id comes with the hook input. One store transaction writes the child policy and the warnings.
+! limitNoun = Codex has no $.spare10 noun and no older copy in a session: each gate reads config.json, so spare10 set limitPause applies at the next step (5.2).
+! heldLine = At the limit every root hook of Codex is held, and a queued line shows only when a root hook answers: Codex shows no line when a prompt joins the held work (docs/codex.md).
 
 # Codex cases that many lines name.
 @parse = core-codex|parseCommand: every form of 2.8
@@ -44,6 +48,7 @@
 @cmdBlind = commands|the blind phase after two live reads
 @cmdHelp = commands|help, unknown verb, unknown option
 @cmdResumeStop = commands|resume and stop replies below the reserve
+@cmdStopConsent = floor|a stop after a Resume clears both consents
 @cmdAsking = commands|`asking` replaces `stopped`
 @cmdSim = commands|simulate sets, rejects and clears
 @cmdSet = commands|set lists, changes, rejects
@@ -147,6 +152,7 @@
 @flFirst = floor|a Resume at the reserve asks again at the floor
 @flCmd = floor|spare10 resume before the floor consents
 @flSeam = floor|a test reading raised in place
+@flNewTest = floor|the same value, a lower value or in starts a new test
 @flTombs = floor|a consent to the floor that ended at its point never comes back
 @skLast = skip|in the last 20 min before the reset every step passes
 @skStart = skip|a question whose skip start passes continues the held work
@@ -186,7 +192,7 @@
 @setKept = settings|the result is kept until config.json changes
 @setSimHost = settings|SPARE10_SIMULATE is ignored with a debug line on the daemon
 @setNested = settings|a nested run takes the child policy of its parent
-@setEnvReads = settings|envReadsOf takes the eleven names
+@setEnvReads = settings|envReadsOf takes the twelve names
 @wiring = wiring|a trip, Stop here, turn/interrupt on the socket
 @fSenses = flow|sensesOf: a 5-hour reading in the reserve with its skip start
 @fOpen = flow|sensesOf: in the last span a tripped kind is open
@@ -248,7 +254,7 @@
 @fGatesAfter = flow|gatesAfter, takeoverSense and withRealEntries
 @fRaises = flow|raisesInPlace
 @fSimOpens = flow|simulateOpens:
-@fSimText = flow|simulateText:
+@fSimText = flow|simulateText: the reply of a test reading
 @fSeenSplit = flow|seenSplit:
 @fSeenOf = flow|seenOf:
 @fUntil = flow|untilOf:
@@ -284,14 +290,14 @@ an unattended run is not guarded: resume and stop change nothing and the report 
 in a stopped session an open prompt question takes the open-question row of stop and resume => @fStopOverdue ; @cmdAsking
 without resetsAt the replies say for one hour, and the fallback window end holds for the episode => @fFallback ; @fResumeCase
 an unattended run with the default policy reports off from /config => @cmdStatus ; @set1
-a SPARE10_CONSENT set for this window at launch reads as consented until a stop clears it => @sConsent ; @consClear
+a SPARE10_CONSENT set for this window at launch reads as consented until a stop clears it => @sConsent ; @consClear ; @cmdStopConsent
 after /clear the old stop no longer counts, and a stop names the new session => @stopNow ; none:clear
 a /clear while a question is open: /spare10 stop stamps the new session id => none:clear
 /spare10 resume after the window end releases the held work and writes no consent => @consEnded ; @fResumeCase
 SPARE10_SIMULATE at launch trips an unattended run the same way => @sSimEnv ; @setSimHost
 /spare10 stop settles a question that a crossing opened during its writes => @qStopNewer
 /spare10 stop during an in-flight consent read denies that call => none:env
-a Resume on a test reading stays in this copy: the env keeps no consent, and a lower test reading asks again => @consTest ; @sTestHost
+a Resume on a test reading stays in this copy: the env keeps no consent, and a lower test reading asks again => @consTest ; @sTestHost ; @flNewTest
 a Resume on a test reading does not cover a real reading that climbs past it => @consTestIn ; @fHolders
 /spare10 resume on a test reading also stays in this copy => @consTest
 /spare10 stop with Continue at the reset off and no reset time stops for the one-hour fallback (0.1) => @fStopWrite ; @fFallback
@@ -302,6 +308,8 @@ weekly: a Resume at 91% runs to 94.9%, and at 95% the weekly second question ask
 two windows at their floors at once: one second question names both, and one Resume makes both full => @qResume ; @fResumeTo
 floors per window: a weekly floor of 3 ends the weekly consent at 97% and leaves the 5-hour consent to 95% => @fFloorPts ; @consEndFloors
 two windows at different stages: the reserve until 95% used and the last 4% of the weekly window => @fFacts ; @fResumeTo
+after a reset credit, a consent of the old window is void: the new window asks again at its reserve (A22) => floor|after a reset credit, a consent of the old window is void ; @consDead
+a failed consent unset after an early reset still holds: the old Resume never answers the new question (A22) => floor|after a reset credit, a consent of the old window is void ; none:env
 a reading that jumps from 89% to 96% asks only the second question, and its Resume lasts until the reset => @flFirst ; @fResumeTo
 after a Resume at the reserve, a jump past the floor asks the second question with what is left now => @flFirst ; @sFloor
 a reading that passes the floor while the first question waits: its Resume runs nothing, and the second question follows => @fUnanswered ; @qFloor
@@ -409,7 +417,7 @@ with ${c.name} /spare10 resume consents until the reset, as in 0.2 => @fResumeCa
 a 5-hour floor never changes the weekly value: a weekly Resume with the 5-hour floor off still ends at its point => @fFloorPts
 /spare10 stop clears a consent to the floor, and a prompt while stopped asks the first question, whose Resume writes the point and the note => @consClear ; @pResume
 /spare10 stop past the floor: its reply says at the reserve, the stop names the floor, and a prompt asks the second question => @fStopCase ; @fStopWrite
-/spare10 stop clears the consents of both windows, a consent to the floor and a full one => @consClear
+/spare10 stop clears the consents of both windows, a consent to the floor and a full one => @consClear ; @cmdStopConsent
 /spare10 stop clears a test consent to the floor => @consClear
 /spare10 shows the floor rows after the open rows, and the floor help line => @cmdReport
 /spare10 walks the consent row: until the point, ended at the point, none once a gate ends it, then until the reset => @fSeenSplit ; @fUntil ; @fStatus2
@@ -427,7 +435,7 @@ the test seam: simulate 91, Resume, simulate 96 raises in place and asks the sec
 a raise below the floor keeps the consent to the floor, and no question comes => @fRaises ; @flSeam
 a first test reading past the floor says so and asks the second question at once => @fSimText ; @flSeam
 the floor sentence starts at the point: 95 has it, 94.9 does not => @fSimText
-the same value, a lower value or a value with in starts a new test and clears the consent => @fRaises ; @cmdSim
+the same value, a lower value or a value with in starts a new test and clears the consent => @fRaises ; @flNewTest
 a raise keeps a stop on the test reading => @fRaises
 with the floors off a raise keeps a full test consent, and the reply has no floor sentence => @fRaises ; @fSimText
 a floor at or above the reserve gives no floor sentence => @fSimText
@@ -477,7 +485,7 @@ the prompt question at the floor: Stop here gives the prompt back with the floor
 a Resume on a prompt question at the floor in a stopped session carries the floor note => @pResume ; @fResumeNotice
 a Resume on a prompt question at the reserve in a stopped session carries the note with the end point => @pResume ; @fResumeNotice
 the test seam: simulate 91, Resume, simulate 96 asks the second question => @flSeam
-simulate raises in place only upward and without in: the same value, a lower value or in starts a new test => @fRaises ; @flSeam
+simulate raises in place only upward and without in: the same value, a lower value or in starts a new test => @fRaises ; @flSeam ; @flNewTest
 /spare10 resume before the floor consents to the floor, past the floor until the reset => @flCmd
 /spare10 resume on an open first question whose reading passed the floor consents until the reset => @qRaise ; @fRaiseFloor
 /spare10 resume on an open first question below the floor replies with the end point => @fResumeCase ; @cliRelease
@@ -542,6 +550,51 @@ session.end other stops the ticker, and logout keeps it => none:sessionEnd
 -p wait shows the reserve phase, never asking => @cmdStatus ; @fSeenOf
 a guarded session with headless wait sets SPARE10_HEADLESS=stop for children => @gateChild
 -p wait holds a step when a live reading gates beside a seed, and releases it at the reset => @hWait ; @fVerdictTell
+
+[limit.test.ts]
+at 100% in the open reserve a held call asks the limit question, and with no answer it runs after the reset => limit|asks the limit form, and with no answer
+Continue at the reset closes the dialog, a held step joins with no second dialog, and both go on after the reset => limit|keeps the call held with no second form ; none:withdraw
+Stop here at the limit refuses the held work, writes a stop with no auto, and sends nothing after the reset => limit|writes a stop with no auto, and the ticker
+a full consent after a second Resume does not let work past the limit => flow|a limit kind gates also with a full consent
+a Resume on the floor question that comes at 100% leads to the limit question, and no request goes out => flow|a full Resume never answers a limit kind
+a question at the reserve gives way to the limit question at the next step => limit|gives way to the limit form at the next step
+another copy's consent never answers the limit question, and the held call stays held => limit|a consent in the state never answers the limit question ; none:env
+an auto stop at the reserve that is due at the limit lasts until the reset, and then continues => limit|an auto stop at the reserve that is due at the limit
+a question at the reserve gives way to the limit question at the next check => flow|a reserve question gives way to the limit
+tell mode holds at the limit and asks the limit question => flow|verdictOf: at the limit every loop holds
+both windows at the limit: the question names both, and the work waits for the weekly reset => limit|both windows wait for the later reset
+the 5-hour limit with the weekly window in its reserve: after the 5-hour reset the weekly question asks => limit|asks the weekly question after the 5-hour reset
+/spare10 simulate 100 in 2m holds in the open test window, and the work goes on 60 s after it ends => flow|simulateText: 100 is the quota limit ; flow|a test reading at 100% over a real reading
+/spare10 resume on the limit question chooses Continue at the reset and writes no consent => limit|spare10 resume chooses Continue
+/spare10 resume at the limit with an auto stop keeps the stop and changes nothing => flow|an open limit question is chosen, and else nothing is written
+/spare10 stop at the limit writes a stop with no auto, and replies with the limit text => limit|spare10 stop writes a stop with no auto
+a person prompt at the limit waits after Continue at the reset, and goes in after the reset => limit|a typed prompt at the limit waits
+Stop here on a prompt question at the limit drops the prompt, puts the text back, and names the limit => flow|refusalText and notStartedFor: the limit texts ; none:fill
+Esc on the limit dialog counts as Continue at the reset => limit|Esc and a decline
+a dialog that cannot show continues at the reset => limit|approval never session holds at the limit
+autoResume off: with no answer the held work waits past the reset with one note, and Continue at the reset then lets it go => flow|a chosen limit question releases by time
+unattended wait holds at the limit in the open reserve until the reset => limit|unattended wait holds and stop refuses
+unattended stop refuses at the limit in the open reserve with the limit text => limit|unattended wait holds and stop refuses
+unattended off lets the work through at the limit => flow|verdictOf: at the limit every loop holds
+SPARE10_LIMIT_PAUSE=off lets the open reserve through at 100%, and the report shows the limit row => limit|limitPause off lets the open reserve through
+SPARE10_LIMIT_PAUSE with a bad value warns at the start and keeps the option => settings|SPARE10_LIMIT_PAUSE wins over config.json
+a Stop here at the limit survives a reload: a new copy refuses work until the reset => limit|writes a stop with no auto, and the ticker ; none:env
+the badge shows the limit row while held work waits for the reset => none:badge ; limit|the report shows the limit phase line
+a reading at 100% without a reset time keeps the rules of today => flow|a kind at 100% in its last span is a limit kind
+$.spare10.limit answers the option of the newest copy => none:limitNoun
+/spare10 stop on a question at the reserve after the quota reached 100% stops until the reset, and nothing continues it => limit|spare10 stop on a question at the reserve after the quota reached 100%
+Stop here on the dialog at the reserve after the quota reached 100% stops at the limit, until the reset => limit|Stop here on the form at the reserve after the quota reached 100%
+/spare10 stop at the limit over an auto stop drops its auto, and nothing continues the work after the reset => limit|spare10 stop over an auto stop at the limit
+a person prompt after Continue at the reset joins the held work with a line, and goes in after the reset => flow|continuesLine and promptWaitsLine ; limit|a typed prompt at the limit waits ; none:heldLine
+/spare10 resume on a limit question whose limit is gone settles it as Resume, and the held call runs => flow|resumeAtLimit: a limit question whose limit is gone
+/spare10 resume on a limit question after a new test below the floor consents only to the floor, and the floor question asks => limit|after a new test below the floor ; flow|lowerAfterLimit and tierAtResume
+/spare10 resume after a failed quota read at the limit keeps Stop here, and writes no consent => commands|a resume at the limit whose first sense fails
+after Continue at the reset, when all held work goes away, the next step asks the limit question again => limit|the chosen question outlives its held work for 90 s ; none:young
+/spare10 resume while the limit dialog is on its way withdraws it, and the held call runs after the reset => limit|spare10 resume chooses Continue ; none:withdraw
+/spare10 resume while a hand-off of the limit question waits for a new raiser shows no second dialog => limit|spare10 resume while a hand-off waits for a new leader
+autoResume off: Stop here after the reset names no passed time => limit|Stop here after the reset with autoResume off
+autoResume off: /spare10 resume after the reset names no passed time, and the held call runs => limit|Stop here after the reset with autoResume off
+Esc on the dialog at the reserve after the quota reached 100% stops until the reset, and spare10 continues the work then => flow|stopPlan: a question at the reserve that ends with no answer at the limit
 
 [headless.test.ts]
 -p default off: inside the reserve everything runs, nothing asks, the seed is still written => @hOff ; @qtSeedWrite
@@ -764,6 +817,9 @@ B29 names askUserQuestionTimeout first when both limits are set => none:flag
 no B29 without a positive time limit => none:flag
 a guarded session sets SPARE10_HEADLESS=stop for children when unset, and leaves a set value alone => @gateChild
 a guarded session leaves a set SPARE10_HEADLESS=${set} alone => @gateChild ; @setNested
+a failed read for a start warning still gives children SPARE10_HEADLESS=stop => @gateChild ; none:startStep
+a failed child policy write at the start keeps the start warnings, and the debug log names the step => none:startStep
+a failed session id read at the start still registers /spare10 and shows the start warnings => none:startStep
 an unattended run sets no SPARE10_HEADLESS for children => @gateChild
 a run switched off by SPARE10=off sets no SPARE10_HEADLESS for children => @gateChild
 a fresh module honours SPARE10_CONSENT for this window, not an earlier or a far-future one => @sConsent ; @fSplitFail
@@ -800,6 +856,7 @@ an attended session ignores a consent stamped with another session's id => @sOth
 a consent stamped with this session id counts in a fresh module, as after a reload => @sConsent
 a --bg session asks despite a bare consent from the daemon, and its own Resume counts => none:bg
 a --bg session warns about SPARE10 switches that it got from the daemon, also when they switch spare10 off => none:bg
+a --bg session names a SPARE10_SIMULATE that it got from the daemon => none:bg
 no background warning outside a --bg session => none:bg
 no background warning in a --bg session without SPARE10 switches => none:bg
 /clear keeps consent at once, and then moves its stamp to the new session id => none:clear
@@ -1023,6 +1080,6 @@ both windows tripped: Stop here stops until the later reset and names both => @f
 /spare10 stop with a weekly question open refuses the held work until the weekly reset => @cmdStopQ
 /spare10 resume and stop below both reserves name both readings => @fResumeRead ; @cmdResumeStop
 autoResume off: a weekly question waits past its reset, says so once, and a late Resume continues on the new weekly window => @qSkipOff ; @fResumeNotice
-/spare10 stop after a weekly Resume clears the weekly consent, and the next call is refused => @consClear ; @cmdResumeStop
+/spare10 stop after a weekly Resume clears the weekly consent, and the next call is refused => @consClear ; @cmdStopConsent
 /spare10 simulate off clears a real weekly consent too => @cmdSim
 a question that names both windows is not settled by another copy's consent for one of them => @fAnswers

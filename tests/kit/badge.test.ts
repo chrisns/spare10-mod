@@ -162,6 +162,31 @@ test('the pulse redraws once a second only while tripped', async ($, on) => {
   })
 })
 
+test('a pulse reads the quota at most once in 5 s, and a new reading still shows within 5 s', async ($, on) => {
+  const w = world(on, { pct: 91 })
+  await begin($, w)
+  const ui = await mountBadge($)
+  await w.clock.settle()
+  expect(await badge(ui)).toEqual(shown(' ⚠ Pausing at next step', 'warning'))
+  const r = w.renders
+  const i = w.invalidations
+  const reads = w.usageReads
+  const drawn: Array<string | undefined> = []
+  for (let n = 0; n < 10; n += 1) {
+    await w.clock.advance(1000)
+    drawn.push((await badge(ui)).text)
+  }
+  expect({ renders: w.renders - r, invalidations: w.invalidations - i }).toEqual({ renders: 10, invalidations: 10 })
+  const dim = '   Pausing at next step' // the glyph swapped for one space
+  const lit = ' ⚠ Pausing at next step'
+  expect(drawn).toEqual([dim, lit, dim, lit, dim, lit, dim, lit, dim, lit])
+  expect(w.usageReads - reads).toBe(2) // at 5 s and 10 s: the other pulses only swap the glyph
+  // A new reading with no measure and no redraw: a pulse shows it within 5 s.
+  w.pct = 20
+  await w.clock.advance(5000)
+  expect(await badge(ui)).toEqual(shown(' ● spare10', 'success'))
+})
+
 test('a run that is not enabled shows off in the inactive colour and never pulses', async ($, on) => {
   const w = world(on, { pct: 93, env: { SPARE10: 'off', SPARE10_RESERVE: '40' } })
   await begin($, w)
@@ -569,9 +594,13 @@ test('two surfaces share one pulse: one redraw a second, one render per surface'
   await w.clock.settle()
   const r = w.renders
   const i = w.invalidations
+  const reads = w.usageReads
   await w.clock.advance(5000)
   expect({ renders: w.renders - r, invalidations: w.invalidations - i }).toEqual({ renders: 10, invalidations: 5 })
   expect(await badge(terminal)).toEqual(await badge(desktop))
+  await w.clock.advance(5000)
+  // Each render of a pulse reuses the inputs on both surfaces: reads at 5 s and 10 s, not one a second.
+  expect(w.usageReads - reads).toBe(2)
 })
 
 test('a failed stopped read draws the waiting mark', async ($, on) => {

@@ -11,6 +11,7 @@ import {
   debugLine,
   floorWarning,
   headlessText,
+  limitQuestionText,
   notPerson,
   notStarted,
   notice,
@@ -47,6 +48,8 @@ const F: Facts = { used: 92, left: 8, resetsAtMs: R, reserve: 10, timeZone: TZ }
 const FW: Facts = { used: 93, left: 7, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0 }
 const LEAD: Facts = { ...F, span: 20 * MIN } // a skip owner: its question names {lead}
 const FIVE: Named[] = [{ kind: 'five_hour', test: false }]
+const LF: Facts = { ...F, used: 100, left: 0, limit: true } // at the quota limit
+const LW: Facts = { ...FW, used: 100, left: 0, limit: true }
 
 const status = (over: Partial<StatusInput> = {}): StatusInput => ({
   phase: 'armed',
@@ -107,9 +110,20 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
   ['simulateReply bad', () => simulateReply('bad'), 'simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'],
   ['simulateReply set', () => simulateReply('set', F), 'test reading set to 92% used, resets 15:00. It can only raise the real reading. Run spare10 simulate off to clear it.'],
   ['simulateReply raised', () => simulateReply('raised', F), 'test reading raised to 92% used, resets 15:00. Your earlier answers stay. It can only raise the real reading. Run spare10 simulate off to clear it.'],
+  ['simulateReply replaced', () => simulateReply('replaced', F), 'test reading set to 92% used, resets 15:00. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. Run spare10 simulate off to clear it.'],
   ['commandFailed', () => commandFailed('boom'), 'the command failed: boom'],
+  ['limitQuestionText, prompt opener, auto', () => limitQuestionText(LF, 'prompt', true), 'The quota limit is reached: 100% used · 0% left · resets 15:00. spare10 holds your prompt and any other work. Continue the work at the reset? If you do not answer, all of it continues after 15:00, unless a reserve is still reached. Stop here drops your prompt and stops other work. After the reset, type a prompt to continue. To let work run past the limit, run spare10 set limitPause off.'],
+  ['limitQuestionText, prompt opener, no auto', () => limitQuestionText(LF, 'prompt', false), 'The quota limit is reached: 100% used · 0% left · resets 15:00. spare10 holds your prompt and any other work. Continue the work at the reset? Until you answer, all of it waits. Stop here drops your prompt and stops other work. After the reset, type a prompt to continue. To let work run past the limit, run spare10 set limitPause off.'],
+  ['limitQuestionText, loop opener, auto', () => limitQuestionText(LF, 'loop', true), 'The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. After the reset, type a prompt to continue. To let work run past the limit, run spare10 set limitPause off.'],
+  ['notStarted at the limit', () => notStarted([LF, FW]), 'spare10: not started. The quota limit is reached until 15:00. Send the prompt again after the reset.'],
+  ['headlessText at the limit', () => headlessText(LF, 'S1'), 'spare10 stopped this unattended run at the quota limit (100% of quota used · resets 15:00). No further model requests were sent. To pick it up later: codex exec resume S1'],
+  ['notice.limitContinues', () => notice.limitContinues(LF), 'held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. To let work run past the limit, run spare10 set limitPause off.'],
+  ['report: a stop at the limit', () => statusReport(status({ phase: 'stopped', limit: { ms: LF.resetsAtMs ?? 0, kinds: ['five_hour'], held: false } })).split('\n')[2] ?? '', '  ■ stopped        you chose Stop here, until 15:00. Type a prompt to be asked again. To let work run past the limit, run spare10 set limitPause off.'],
+  ['resumeReply limit', () => resumeReply('limit', [LF, LW]), 'nothing to resume now. The quota limits of both windows are reached until Sun 15:00. spare10 holds all work until then. To let work run past the limit, run spare10 set limitPause off.'],
+  ['simulateReply at the limit', () => simulateReply('set', { ...LF, test: true }, undefined, undefined, undefined, true), 'test reading set to 100% used, resets 15:00. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run spare10 simulate off to clear it.'],
+  ['report: the at the limit row, from spare10 set', () => statusReport(status({ limitPause: { on: false, from: 'option' } })).split('\n').filter((l) => l.includes('at the limit')).join('\n'), '  · at the limit   off. spare10 does not pause at the limit (from spare10 set)'],
   ['report: armed, the claude -p row and both help lines', () => statusReport(status()), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -123,7 +137,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: every row from its option, and the floor help line', () => statusReport(full()), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -145,7 +159,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the unattended row', () => statusReport(full({ attended: false, phase: 'reserve', headless: 'stop' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ⚠ tripped        unattended run, policy stop.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -166,7 +180,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: spans the env could not read', () => statusReport(full({ spans: { lastMinutes: 0, lastMinutesFrom: 'unread', weeklyLastHours: 0, weeklyLastHoursFrom: 'unread' } })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -188,7 +202,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: weekly off', () => statusReport(status({ weekly: 'off' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -203,7 +217,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the asking phase', () => statusReport(status({ phase: 'asking' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ? asking         a question is open. Held work waits until you answer. If no form shows, run !spare10 resume or !spare10 stop.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -217,7 +231,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the asking phase with a continue time', () => statusReport(full({ phase: 'asking', at: { ms: R, kinds: ['five_hour'] } })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ? asking         a question is open. Held work waits until you answer, or until 15:00. If no form shows, run !spare10 resume or !spare10 stop.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -239,7 +253,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the stopped phase', () => statusReport(status({ phase: 'stopped' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run spare10 resume.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -253,7 +267,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the stopped phase with a continue time', () => statusReport(full({ phase: 'stopped', at: { ms: R, kinds: ['five_hour'] }, autoStop: true, work: true })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ■ stopped        you chose Stop here. spare10 continues the work after 15:00. Type a prompt to be asked again, or run spare10 resume.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -275,7 +289,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the blind phase and reading', () => statusReport(status({ phase: 'blind', basis: { kind: 'none', why: 'blind' }, facts: undefined })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ⚠ blind          Codex reports no quota windows for this login. spare10 lets all work through.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -289,7 +303,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: scope opt-in', () => statusReport(status({ phase: 'off', enabled: false, scope: 'opt-in' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ○ off            spare10 only watches in this run.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -313,6 +327,7 @@ test('HOST has the Codex words under the host loader', () => {
     child: 'codex exec',
     resume: 'codex exec resume',
     keepOpen: 'run spare10 set lastMinutes 0, or spare10 set weeklyLastHours 0',
+    limitOff: 'run spare10 set limitPause off',
     backIt: 'drops it',
     backPrompt: 'drops your prompt',
     blind: 'Codex reports no quota windows for this login.',
@@ -398,7 +413,7 @@ test('the Codex report equals the sample of 2.8', () => {
   assert.equal(
     `spare10: ${statusReport(SAMPLE)}`,
     [
-      'spare10: version 0.3.0',
+      'spare10: version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -428,7 +443,7 @@ test('the Codex report equals the sample of 2.8', () => {
   )
 })
 
-// ---- The texts of CX1 to CX48 ----
+// ---- The texts of CX1 to CX57 ----
 
 const HOME = '/Users/me'
 const L = '/Users/me/.codex/plugins/data/spare10-spare10/bin/spare10'
@@ -440,6 +455,13 @@ test('the CX texts read as in the design', () => {
   assert.equal(codexText.statusStart, 'spare10 reads the quota.')
   assert.equal(codexText.turnEnds, 'spare10: the turn ends here, because work stopped at the quota reserve.')
   assert.equal(codexText.turnEndsHold, 'spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.')
+  assert.equal(codexText.turnEndsLimit, 'spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.')
+  assert.equal(codexText.turnEndsAtLimit, 'spare10: the turn ends here, because work stopped at the quota limit.')
+  assert.equal(codexText.turnEndsLimitHeld('15:00'), 'spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until 15:00.')
+  assert.equal(
+    codexText.hardStop,
+    'past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.',
+  )
   assert.equal(codexText.steerNote, 'spare10: the last user line was a command for the spare10 plugin, and spare10 handled it. Ignore that line.')
   assert.equal(
     codexText.interruptedNote,
@@ -459,7 +481,7 @@ test('the CX texts read as in the design', () => {
   )
   assert.equal(
     codexText.configUnread(CFG, 'Unexpected token } in JSON at position 12'),
-    `cannot read ${CFG} (Unexpected token } in JSON at position 12). spare10 uses the default options, and keeps each reserve until the reset.`,
+    `cannot read ${CFG} (Unexpected token } in JSON at position 12). spare10 uses the default options, and keeps each reserve until the reset. Correct the file, or remove it to use the defaults.`,
   )
   assert.equal(
     codexText.daemonEnv([['SPARE10', 'off'], ['SPARE10_RESERVE', '15']]),
@@ -514,12 +536,34 @@ test('the CX texts read as in the design', () => {
     codexText.setOk('reserve', '15', '10') + codexText.setEnvWins('SPARE10_RESERVE'),
     'reserve is now 15. It was 10. It applies from the next step. SPARE10_RESERVE is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.',
   )
+  assert.equal(
+    codexText.setOk('reserve', '15', '10') + codexText.setRepaired(CFG),
+    `reserve is now 15. It was 10. It applies from the next step. spare10 could not read ${CFG}, so it wrote a new file. The other options are back to their defaults. Run spare10 set to check them.`,
+  )
   assert.equal(codexText.setBad('reserve', '1 to 99'), 'reserve takes 1 to 99. Nothing changed.')
+  assert.equal(codexText.setBlankPause, 'pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.')
   assert.equal(
     codexText.setUnknown('foo'),
-    'unknown option "foo". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.',
+    'unknown option "foo". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, limitPause, headless and scope.',
   )
   assert.equal(codexText.setFailed(CFG, 'EACCES'), `could not write ${CFG}: EACCES. Nothing changed.`)
+  assert.equal(
+    codexText.setFailed(CFG, 'it is not a JSON object', true),
+    `could not write ${CFG}: it is not a JSON object. Nothing changed. Correct the file, or remove it to use the defaults.`,
+  )
+  assert.equal(codexText.unknown('pause'), 'unknown command "pause". Nothing changed. Run spare10 help to list the commands.')
+  assert.equal(codexText.heldStopOver, 'the stop is over. Held work continues now.')
+  assert.equal(codexText.heldStopEnded, 'the stop is over. Held work waits. Run !spare10 resume to continue it now.')
+  assert.equal(codexText.heldStopEndedTail, ' The stop is over. Held work waits. Run !spare10 resume to continue it now.')
+  assert.equal(codexText.stopAskingWaits(), 'stopped. Held work waits. Run !spare10 resume to continue it now.')
+  assert.equal(
+    codexText.stopAskingWaits({ at: '15:00' }),
+    'stopped. Held work waits. spare10 continues it after 15:00. Run !spare10 resume to continue it now.',
+  )
+  assert.equal(
+    codexText.stopAskingWaits({ at: '14:40', lead: '20 min before the reset' }),
+    'stopped. Held work waits. spare10 continues it at 14:40, 20 min before the reset. Run !spare10 resume to continue it now.',
+  )
   assert.equal(
     codexText.setList(CFG, [
       ['reserve', '15', 'config.json'],
@@ -613,6 +657,7 @@ function codexPrefixed(): string[] {
     codexText.noDaemon(false),
     codexText.approvalNever,
     codexText.unsafe,
+    codexText.nodeExposed,
     codexText.daemonEnv([['SPARE10', 'off']]),
     codexText.configBad(CFG, 'reserve', 0, '1 to 99', '10'),
     codexText.configUnread(CFG, 'bad JSON'),
@@ -629,10 +674,20 @@ function codexPrefixed(): string[] {
     codexText.consentBeyond('seven_day', Date.UTC(2026, 9, 9, 16), Date.UTC(2026, 8, 26, 10), TZ),
     codexText.setOk('reserve', '15', '10'),
     codexText.setOk('reserve', '15', '10') + codexText.setEnvWins('SPARE10_RESERVE'),
+    codexText.setOk('reserve', '15', '10') + codexText.setRepaired(CFG),
     codexText.setDefault('pausePrompt', 'an empty text'),
+    codexText.setDefault('reserve', '10') + codexText.setRepaired(CFG),
     codexText.setBad('headless', 'off, prompt, stop or wait'),
+    codexText.setBlankPause,
     codexText.setUnknown('foo'),
+    codexText.unknown('pause'),
+    codexText.heldStopOver,
+    codexText.heldStopEnded,
+    codexText.stopAskingWaits(),
+    codexText.stopAskingWaits({ at: '15:00' }),
+    codexText.stopAskingWaits({ at: '14:40', lead: '20 min before the reset' }),
     codexText.setFailed(CFG, 'EROFS'),
+    codexText.setFailed(CFG, 'bad JSON', true),
     codexText.setList(CFG, [['reserve', '10', 'default']]),
     codexText.help(D, HOME),
   ]
@@ -667,6 +722,12 @@ function corePrefixed(): string[] {
     statusReport(SAMPLE),
   ]
   for (const kinds of [['five_hour'], ['seven_day'], ['five_hour', 'seven_day']] as Kind[][]) out.push(notice.newWindowFor(kinds))
+  // The pause at the quota limit.
+  out.push(notice.limitReached, notice.limitOver, notice.limitStopped('15:00'), notice.limitHoldLimit('15:00', true), notice.limitHoldLimit('15:00', false))
+  out.push(notice.limitStopped('15:00', true), notice.limitStopped(), notice.limitHoldLimit(undefined, false), resumeReply('limit-late'))
+  for (const f of [LF, LW, [LF, LW]] as Array<Facts | Facts[]>) out.push(notice.limitPromptWaits(f))
+  out.push(badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'on'), stopReply('limit', undefined, undefined, { at: '15:00' }))
+  for (const f of [LF, LW, [LF, LW]] as Array<Facts | Facts[]>) out.push(notice.limitContinues(f), resumeReply('limit-asking', f), resumeReply('limit', f))
   for (const named of NAMED) {
     out.push(notice.resetWaitingFor(named), notice.resetContinues(named), notice.resetResumes(named), notice.resetStopOver(named))
     out.push(notice.stopTakenOver(named), resumeReply('overdue', F, named))
@@ -679,7 +740,7 @@ function corePrefixed(): string[] {
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off', 'overdue', 'overdue-open', 'overdue-skip', 'open'] as const) {
       out.push(stopReply(c, f, 90, { at: 'Mon 09:00' }, 90), stopReply(c, f), stopReply(c, f, 90, undefined, 90, undefined, ['five_hour']))
     }
-    if (!Array.isArray(f)) out.push(simulateReply('set', f), simulateReply('raised', f))
+    if (!Array.isArray(f)) out.push(simulateReply('set', f), simulateReply('raised', f), simulateReply('replaced', f))
   }
   return out
 }
@@ -704,6 +765,12 @@ test('model texts, drop reasons, CLI lines and debug lines keep their own spare1
     codexText.turnEndsHold,
     codexText.cliDone('stop'),
     ...DEBUG,
+    codexText.turnEndsLimit,
+    codexText.turnEndsAtLimit,
+    codexText.turnEndsLimitHeld('15:00'),
+    stopText(LF),
+    pausedText(LF),
+    notStarted(LF),
     STOP_GENERIC,
     NOT_STARTED_GENERIC,
     stopText(F),
@@ -741,6 +808,9 @@ function everyCodexText(): string[] {
     codexText.statusStart,
     codexText.turnEnds,
     codexText.turnEndsHold,
+    codexText.turnEndsLimit,
+    codexText.turnEndsAtLimit,
+    codexText.turnEndsLimitHeld('Mon 09:00'),
     codexText.steerNote,
     codexText.interruptedNote,
     codexText.notStartedNoDialog([F, FW]),
@@ -758,6 +828,7 @@ function everyCodexText(): string[] {
     codexText.liveRow({ agoMs: 1 }),
     codexText.liveRow({ error: 'x' }),
     codexText.liveRow({}),
+    `● armed          spare10 steps in at 90% used.${codexText.heldStopEndedTail}`,
     ...DEBUG,
   ]
   return texts

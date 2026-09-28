@@ -54,3 +54,40 @@ test('tell: a person prompt asks until the main loop is told, then passes', asyn
   assert.equal(await b.gate('prompt', { prompt: 'and now?' }), '')
   assert.equal(b.forms().length, 1)
 })
+
+test('tell: a reset that moves within its jitter keeps each loop told, and a told prompt passes (3.6)', async (t) => {
+  const w = world(t, { config: { pausePrompt: 'Wind down now.' } })
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  const first = parsed(await b.gate('tool'))
+  assert.match((first['hookSpecificOutput'] as Record<string, unknown>)['additionalContext'] as string, TELL)
+  assert.match(first['systemMessage'] as string, /^spare10: your 10% reserve is reached\./)
+  // The next reading has a reset 30 s earlier: the same window, so no second tell and no second told line.
+  await w.advance(1000)
+  w.reading(SID, 92.5, { reset: RESET - 30_000 })
+  assert.equal(await b.gate('tool'), '')
+  // A reset 20 s later: the main loop is still told, so a person prompt passes with no form.
+  await w.advance(1000)
+  w.reading(SID, 92.6, { reset: RESET + 20_000 })
+  assert.equal(await b.gate('prompt', { prompt: 'next task' }), '')
+  assert.equal(b.forms().length, 0)
+  assert.deepEqual(w.notices(), [])
+  assert.deepEqual(w.state().told, { five_hour: { windowEnd: RESET, keys: [`${SID}:main`] } })
+})
+
+test('tell: a subagent that reads a reset within its jitter is told, and the told line does not come again (3.6)', async (t) => {
+  const w = world(t, { config: { pausePrompt: 'Wind down now.' } })
+  const root = await w.broker()
+  const child = await w.broker({ thread: CHILD })
+  w.reading(SID, 92, { reset: RESET })
+  const first = parsed(await root.gate('tool'))
+  assert.match(first['systemMessage'] as string, /^spare10: your 10% reserve is reached\./)
+  // The child's first tool reads a reset 30 s earlier: a new loop in the same window.
+  await w.advance(1000)
+  w.reading(CHILD, 92.5, { reset: RESET - 30_000 })
+  const c = parsed(await child.gate('tool'))
+  assert.match((c['hookSpecificOutput'] as Record<string, unknown>)['additionalContext'] as string, TELL)
+  assert.equal(c['systemMessage'], undefined)
+  assert.deepEqual(w.notices(), [], 'no second told line is queued')
+  assert.deepEqual(w.state().told, { five_hour: { windowEnd: RESET, keys: [`${SID}:main`, `${SID}:${CHILD}`] } })
+})

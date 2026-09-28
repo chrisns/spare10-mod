@@ -94,7 +94,7 @@ test('manifest: codex/mcp.json equals design 3.2, and passes every option variab
     'CODEX_HOME', 'CODEX_SESSION_ID',
     'SPARE10', 'SPARE10_RESERVE', 'SPARE10_WEEKLY_RESERVE', 'SPARE10_LAST_MINUTES', 'SPARE10_WEEKLY_LAST_HOURS',
     'SPARE10_RESUME_FLOOR', 'SPARE10_WEEKLY_RESUME_FLOOR', 'SPARE10_PAUSE_PROMPT', 'SPARE10_AUTO_RESUME',
-    'SPARE10_HEADLESS', 'SPARE10_SIMULATE', 'SPARE10_CODEX_DEBUG', 'SPARE10_CODEX_TEST',
+    'SPARE10_LIMIT_PAUSE', 'SPARE10_HEADLESS', 'SPARE10_SIMULATE', 'SPARE10_CODEX_DEBUG', 'SPARE10_CODEX_TEST',
   ]
   assert.deepEqual(json('codex/mcp.json'), {
     mcpServers: {
@@ -125,14 +125,14 @@ test('manifest: codex/bin/broker.sh is an executable POSIX sh script that runs c
   const sh = text(file)
   assert.ok(sh.startsWith('#!/bin/sh\n'))
   // The cwd is the plugin root (codex/mcp.json). The full path puts the install in the argv of the broker.
-  assert.match(sh, /exec "\$n" "\$PWD\/codex\/dist\/spare10\.mjs"/)
+  assert.match(sh, /exec "\$2" "\$PWD\/codex\/dist\/spare10\.mjs"/)
   assert.match(sh, /process\.versions\.node\.split\("\."\)\[0\] >= 20/)
   assert.match(sh, /^echo "spare10: no Node\.js 20 or later found\. .*" >&2\nexit 1\n$/m)
 })
 
 test('manifest: codex/bin/broker.sh tries the nvm versions newest first, by the version numbers only (CX-R6)', (t) => {
-  const m = /^(nvm_nodes\(\) \{.*\})$/m.exec(text('codex/bin/broker.sh'))
-  assert.ok(m !== null, 'broker.sh has the nvm_nodes function on one line')
+  const m = /^(version_nodes\(\) \{.*\})$/m.exec(text('codex/bin/broker.sh'))
+  assert.ok(m !== null, 'broker.sh has the version_nodes function on one line')
   // A 'v' in the home folder and in the version folders: only the numbers of the version folder count.
   const home = join(mkdtempSync(join(tmpdir(), 's10v')), 'dave v1')
   t.after(() => rmSync(dirname(home), { recursive: true, force: true }))
@@ -141,11 +141,41 @@ test('manifest: codex/bin/broker.sh tries the nvm versions newest first, by the 
     mkdirSync(join(home, '.nvm', 'versions', 'node', v, 'bin'), { recursive: true })
     writeFileSync(join(home, '.nvm', 'versions', 'node', v, 'bin', 'node'), '')
   }
-  const out = execFileSync('/bin/sh', ['-c', `${m[1]}\nnvm_nodes`], { env: { PATH: '/usr/bin:/bin', HOME: home }, encoding: 'utf8' })
+  const out = execFileSync('/bin/sh', ['-c', `${m[1]}\nversion_nodes`], { env: { PATH: '/usr/bin:/bin', HOME: home }, encoding: 'utf8' })
   const node = (v: string) => join(home, '.nvm', 'versions', 'node', v, 'bin', 'node')
   assert.deepEqual(out.split('\n').filter((l) => l !== ''), ['v24.21.0', 'v22.19.0', 'v22.9.0', 'v20.1.0', 'v9.0.0'].map(node))
-  // No nvm folder: nothing.
-  assert.equal(execFileSync('/bin/sh', ['-c', `${m[1]}\nnvm_nodes`], { env: { PATH: '/usr/bin:/bin', HOME: dirname(home) }, encoding: 'utf8' }), '')
+  // No version folder: nothing.
+  assert.equal(execFileSync('/bin/sh', ['-c', `${m[1]}\nversion_nodes`], { env: { PATH: '/usr/bin:/bin', HOME: dirname(home) }, encoding: 'utf8' }), '')
+})
+
+test('manifest: codex/bin/broker.sh also tries the mise, asdf and fnm versions, newest first across all of them', (t) => {
+  const m = /^(version_nodes\(\) \{.*\})$/m.exec(text('codex/bin/broker.sh'))
+  assert.ok(m !== null, 'broker.sh has the version_nodes function on one line')
+  const home = join(mkdtempSync(join(tmpdir(), 's10v')), 'erin v2')
+  t.after(() => rmSync(dirname(home), { recursive: true, force: true }))
+  // The fnm folder of macOS has a space. A mise alias such as `lts` has no three numbers, so it is not a version.
+  const places = [
+    '.nvm/versions/node/v18.20.4/bin/node',
+    '.local/share/mise/installs/node/22.19.0/bin/node',
+    '.local/share/mise/installs/node/lts/bin/node',
+    '.asdf/installs/nodejs/24.1.0/bin/node',
+    '.local/share/fnm/node-versions/v20.5.1/installation/bin/node',
+    'Library/Application Support/fnm/node-versions/v26.0.0/installation/bin/node',
+    '.fnm/node-versions/v22.20.0/installation/bin/node',
+  ]
+  for (const p of places) {
+    mkdirSync(dirname(join(home, p)), { recursive: true })
+    writeFileSync(join(home, p), '')
+  }
+  const out = execFileSync('/bin/sh', ['-c', `${m[1]}\nversion_nodes`], { env: { PATH: '/usr/bin:/bin', HOME: home }, encoding: 'utf8' })
+  assert.deepEqual(out.split('\n').filter((l) => l !== ''), [
+    'Library/Application Support/fnm/node-versions/v26.0.0/installation/bin/node',
+    '.asdf/installs/nodejs/24.1.0/bin/node',
+    '.fnm/node-versions/v22.20.0/installation/bin/node',
+    '.local/share/mise/installs/node/22.19.0/bin/node',
+    '.local/share/fnm/node-versions/v20.5.1/installation/bin/node',
+    '.nvm/versions/node/v18.20.4/bin/node',
+  ].map((p) => join(home, p)))
 })
 
 test('manifest: codex/hooks.json has the nine gate handlers of design 3.2', () => {

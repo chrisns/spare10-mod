@@ -4,6 +4,8 @@ import {
   BLIND_AFTER,
   FALLBACK_MS,
   KINDS,
+  LIMIT_PCT,
+  RESET_JITTER_MS,
   RESET_MARGIN_MS,
   TEST_MARGIN_MS,
   TEST_WINDOW_MS,
@@ -11,6 +13,7 @@ import {
   WINDOW_MS,
   anchoredOf,
   asAnchored,
+  atLimit,
   basis,
   fiveHour,
   holdEndOf,
@@ -35,6 +38,9 @@ import {
   windowMs,
   atPoint,
   pointOf,
+  simulateWords,
+  voidedByReset,
+  withoutVoided,
 } from '../../hooks/core/reading.ts'
 import type { Basis, Memory } from '../../hooks/core/reading.ts'
 
@@ -396,6 +402,11 @@ test('parseSimulateEnv splits on white space, and off or junk is no test reading
   for (const junk of [undefined, '', ' ', 'off', 'abc', '95 later', '95%']) expect(parseSimulateEnv(junk)).toBeUndefined()
 })
 
+test('simulateWords splits SPARE10_SIMULATE on white space, and a blank value has no words', () => {
+  expect(simulateWords(' 95\tweekly  in 2m ')).toEqual(['95', 'weekly', 'in', '2m'])
+  for (const blank of [undefined, '', ' \t ']) expect(simulateWords(blank)).toEqual([])
+})
+
 // ---- Skip near the reset (skip design B41, B42, B45, 6.1) ----
 
 const SPAN = 20 * 60_000
@@ -506,4 +517,42 @@ test('parseSimulate and parseSimulateEnv take a default kind', () => {
   expect(parseSimulate(['92'])).toEqual({ pct: 92, kind: 'five_hour' })
   expect(parseSimulateEnv('92')).toEqual({ pct: 92, kind: 'five_hour' })
   expect(parseSimulate(['92', 'in', '9h'])).toEqual({ pct: 92, kind: 'five_hour', inMs: 5 * HOUR })
+})
+
+// A22: an early reset voids a real consent of the old window. A reset time moves by seconds.
+test('voidedByReset: the same window with jitter keeps a consent, a window that ends much later voids it', () => {
+  expect(RESET_JITTER_MS).toBe(600_000)
+  expect(voidedByReset({ until: R }, R)).toBe(false)
+  expect(voidedByReset({ until: R }, R + 30_000)).toBe(false)
+  expect(voidedByReset({ until: R }, R - HOUR)).toBe(false) // an earlier end is consentCovers' part
+  const toFloor = { until: R, to: 95 } // a consent to the floor
+  expect(voidedByReset(toFloor, R + RESET_JITTER_MS)).toBe(false)
+  expect(voidedByReset({ until: R }, R + RESET_JITTER_MS + 1)).toBe(true)
+  expect(voidedByReset({ until: R }, T0 + 6 * HOUR)).toBe(true) // the early reset of the kit test
+})
+
+test('withoutVoided drops each slot that an early reset voided, and keeps all with an unknown reset', () => {
+  const slots = { full: R, floor: { until: R, to: 95 } }
+  expect(withoutVoided(slots, null)).toBe(slots)
+  expect(withoutVoided(undefined, R + 6 * HOUR)).toBeUndefined()
+  expect(withoutVoided(slots, R + 30_000)).toEqual(slots)
+  expect(withoutVoided(slots, R + 3 * HOUR)).toBeUndefined()
+  // Each slot on its own: a full consent of the new window stays beside a void consent to the floor.
+  const later = R + 3 * HOUR
+  expect(withoutVoided({ full: later, floor: { until: R, to: 95 } }, later)).toEqual({ full: later })
+  expect(withoutVoided({ full: R, floor: { until: later, to: 95 } }, later)).toEqual({ floor: { until: later, to: 95 } })
+})
+
+// ---- The quota limit (limit design 1.1) ----
+
+test('atLimit: 100% or more with a known reset, on any basis, and never without a reset time or a reading', () => {
+  expect(LIMIT_PCT).toBe(100)
+  const R = Date.parse('2026-09-24T15:00:00.000Z')
+  expect(atLimit({ kind: 'live', pct: 100, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'live', pct: 103, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'live', pct: 99.9, resetsAtMs: R })).toBe(false)
+  expect(atLimit({ kind: 'live', pct: 100, resetsAtMs: null })).toBe(false)
+  expect(atLimit({ kind: 'seed', pct: 100, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'test', pct: 100, resetsAtMs: R })).toBe(true)
+  expect(atLimit({ kind: 'none', why: 'window-reset' })).toBe(false)
 })

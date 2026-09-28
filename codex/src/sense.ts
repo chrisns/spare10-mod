@@ -1,4 +1,4 @@
-import { codexDebug } from '../../hooks/core/codex.ts'
+import { RESET_JITTER_MS, codexDebug } from '../../hooks/core/codex.ts'
 import type { CodexCredits, GateSite } from '../../hooks/core/codex.ts'
 import { floorOf, reserveOf, watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective, Spans } from '../../hooks/core/config.ts'
@@ -30,7 +30,7 @@ import { BLIND_AFTER, KINDS, basis, initialMemory, inWindow, pctOf, pointOf, saw
 import type { Anchored, Kind, Memory } from '../../hooks/core/reading.ts'
 import { debugLine } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
-import { consentField, consentsIn, endFloors, removeDead } from './consent.ts'
+import { consentField, consentsIn, endFloors, parentOf, removeDead } from './consent.ts'
 import type { Dead } from './consent.ts'
 import type { Deps } from './deps.ts'
 import { noRollout } from './quota.ts'
@@ -223,7 +223,8 @@ export function createSense(d: SenseDeps): SenseApi {
     }
     const present = KINDS.filter((k) => view.present.includes(k) || inForce(k))
     const spans = spansOf(cfg, bases, view.creditsUsable)
-    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present))
+    // A23: credits that pay past 100% make no kind a limit kind.
+    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable })
     const tripped = kinds.some((k) => k.tripped)
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
     return {
@@ -250,14 +251,7 @@ export function createSense(d: SenseDeps): SenseApi {
       d.log.debug(codexDebug.readFailed('the consents', errText(e)))
       return {}
     }
-    let parent: SessionState | undefined
-    if (!attended && sx.parent !== undefined) {
-      try {
-        parent = sx.parent.read()
-      } catch (e) {
-        d.log.debug(codexDebug.readFailed('the parent session', errText(e)))
-      }
-    }
+    const parent = parentOf(sx, attended, d.log) // 3.10: the shared read, logged when it fails
     return { state, ...(parent === undefined ? {} : { parent }) }
   }
 
@@ -310,13 +304,13 @@ export function createSense(d: SenseDeps): SenseApi {
     )
   }
 
-  /** B15, skip 2.5: the debug lines of an unattended run, once per kind and window. The marks live in the state. */
+  /** B15, skip 2.5: the debug lines of an unattended run, once per kind and window (within the reset jitter, 3.6). The marks live in the state. */
   const noteUnattended = (sx: SessionCtx, s: Sensed): void => {
     try {
-      if (unattendedLines(s, unattendedMarksOf(sx.store.read())).length === 0) return
+      if (unattendedLines(s, unattendedMarksOf(sx.store.read()), RESET_JITTER_MS).length === 0) return
       const lines = sx.store.locked((tx) => {
         const m = unattendedMarksOf(tx.state)
-        const ls = unattendedLines(s, m)
+        const ls = unattendedLines(s, m, RESET_JITTER_MS)
         if (ls.length > 0) {
           tx.state.unattendedNote = m.reserve
           tx.state.openNote = m.open
@@ -335,10 +329,11 @@ export function createSense(d: SenseDeps): SenseApi {
     holders,
     async act(sx, s, c) {
       // B38, B50: the round after a Resume leaves out the kinds it answered, on its basis and below its end point.
+      // A22: a reset credit after the question is a new window, so the Resume does not answer it.
       const resumed = c.resumed ?? []
-      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating) : []
+      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating, RESET_JITTER_MS) : []
       // TS1: the kinds whose real reading gates. They keep a stop past its end, and a Stop here names them.
-      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating)) : []
+      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating), RESET_JITTER_MS) : []
       let stopped = false
       if (checksStop(s, gating)) {
         try {
@@ -349,7 +344,7 @@ export function createSense(d: SenseDeps): SenseApi {
       }
       let toldMain = false
       try {
-        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid)
+        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid, RESET_JITTER_MS) // 3.6: a reset that moves a little is the same window
       } catch (e) {
         d.log.debug(codexDebug.readFailed('the told loops', errText(e)))
       }
@@ -362,10 +357,10 @@ export function createSense(d: SenseDeps): SenseApi {
       try {
         const fresh = sx.store.locked((tx) => {
           const told = toldOf(tx.state)
-          if (!claimToldCore(told, namedKinds(s, a), key)) return false
+          if (!claimToldCore(told, namedKinds(s, a), key, RESET_JITTER_MS)) return false
           tx.state.told = toldBack(told)
           const marks = marksOf(tx.state.toldNotice)
-          const text = toldNotice(s, a, marks)
+          const text = toldNotice(s, a, marks, RESET_JITTER_MS)
           tx.state.toldNotice = marks
           if (text !== undefined) noticeIn(tx.state, text, s.now)
           return true

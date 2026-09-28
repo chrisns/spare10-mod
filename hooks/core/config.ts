@@ -1,7 +1,7 @@
 import type { PluginOptions, Settings as HostSettings } from 'claude-code'
-import { KINDS, parseSimulateEnv } from './reading.ts'
+import { KINDS, parseSimulate, simulateWords } from './reading.ts'
 import type { Kind } from './reading.ts'
-import { badWarning, floorWarning, fmtPct } from './text.ts'
+import { badWarning, floorWarning, fmtPct, simulateWarning } from './text.ts'
 
 // Options, per-run env overrides, scope and the start-up checks (design section 8). No $ here.
 // Precedence, highest first: SPARE10_* in the process env, pluginConfigs (managed, then --settings,
@@ -18,6 +18,7 @@ export type Settings = {
   weeklyResumeFloor: number // B48: the weekly floor. 0 is off
   pausePrompt: string | null
   autoResume: boolean
+  limitPause: boolean // at 100% used, spare10 holds all work until the reset (the quota limit). Off: work runs into the limit
   headless: Headless
   scope: Scope
   badge: boolean
@@ -29,6 +30,11 @@ export type SpanSource = Source | 'unread'
 export type Spans = { lastMinutes: number; weeklyLastHours: number }
 /** Both spans off: the guard holds until the reset. Every unknown gives this. */
 export const NO_SPANS: Spans = Object.freeze({ lastMinutes: 0, weeklyLastHours: 0 })
+/**
+ * The pause at the limit that a copy answers through $.spare10.limit() until its first successful settings
+ * read, as NO_SPANS (B47): on, so an older copy's held loop never lets work past 100% on a guess.
+ */
+export const LIMIT_UNREAD: boolean = true
 export type Effective = Settings & {
   enabled: boolean
   from: {
@@ -40,6 +46,7 @@ export type Effective = Settings & {
     weeklyResumeFloor: Source
     pausePrompt: Source
     autoResume: Source
+    limitPause: Source
     headless: Source
     enabled: 'scope' | 'SPARE10'
   }
@@ -57,6 +64,7 @@ export type EnvReads = {
   weeklyResumeFloor?: string
   pausePrompt?: string
   autoResume?: string
+  limitPause?: string
   headless?: string
   onOff?: string
   simulate?: string
@@ -71,6 +79,7 @@ export const DEFAULTS: Settings = {
   weeklyResumeFloor: 5,
   pausePrompt: null,
   autoResume: true,
+  limitPause: true,
   headless: 'off',
   scope: 'all',
   badge: true,
@@ -156,7 +165,10 @@ export const parseBadge = (raw: unknown): boolean => raw !== false
 /** As parseBadge: only an explicit false turns autoResume off. */
 export const parseAutoResume = (raw: unknown): boolean => raw !== false
 
-/** The eleven declared fields, defaults filled. Extra stored keys are ignored. */
+/** As parseBadge: only an explicit false turns the pause at the limit off. */
+export const parseLimitPause = (raw: unknown): boolean => raw !== false
+
+/** The twelve declared fields, defaults filled. Extra stored keys are ignored. */
 export function fromOptions(options: PluginOptions): Settings {
   return {
     reserve: parseReserve(options['reserve']) ?? DEFAULTS.reserve,
@@ -167,6 +179,7 @@ export function fromOptions(options: PluginOptions): Settings {
     weeklyResumeFloor: parseResumeFloor(options['weeklyResumeFloor']) ?? DEFAULTS.weeklyResumeFloor,
     pausePrompt: parsePausePrompt(options['pausePrompt']),
     autoResume: parseAutoResume(options['autoResume']),
+    limitPause: parseLimitPause(options['limitPause']),
     headless: parseHeadless(options['headless']) ?? DEFAULTS.headless,
     scope: parseScope(options['scope']) ?? DEFAULTS.scope,
     badge: parseBadge(options['badge']),
@@ -206,6 +219,7 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
       weeklyResumeFloor: 'option',
       pausePrompt: 'option',
       autoResume: 'option',
+      limitPause: 'option',
       headless: 'option',
       enabled: 'scope',
     },
@@ -272,6 +286,14 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
       out.from.autoResume = 'env'
     }
   }
+  if (env.limitPause !== undefined) {
+    const l = parseSwitch(env.limitPause)
+    if (l === undefined) warnings.push(badWarning('SPARE10_LIMIT_PAUSE', env.limitPause, base.limitPause ? 'on' : 'off'))
+    else {
+      out.limitPause = l === 'on'
+      out.from.limitPause = 'env'
+    }
+  }
   if (env.headless !== undefined) {
     const h = parseHeadless(env.headless)
     if (h === undefined) warnings.push(badWarning('SPARE10_HEADLESS', env.headless, base.headless))
@@ -288,8 +310,15 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
       out.from.enabled = 'SPARE10'
     }
   }
-  const spec = parseSimulateEnv(env.simulate, o.simulateKind)
+  // SPARE10_SIMULATE: a blank value or `off` is no test reading and no warning. Junk is B27. A weekly test
+  // reading while the weekly reserve is 0 changes nothing yet, so it is B27 too. It stays set, as before: a
+  // weekly reserve that the person sets later puts it in force, and the warning says so.
+  const words = simulateWords(env.simulate)
+  const parsed = parseSimulate(words, o.simulateKind)
+  if (parsed === undefined && words.length > 0) warnings.push(simulateWarning(env.simulate ?? ''))
+  const spec = parsed === 'off' ? undefined : parsed
   if (spec !== undefined) {
+    if (spec.kind === 'seven_day' && out.weeklyReserve <= 0) warnings.push(simulateWarning(env.simulate ?? '', true))
     out.testPct = spec.pct
     if (spec.kind !== 'five_hour') out.testKind = spec.kind
     if (spec.inMs !== undefined) out.testInMs = spec.inMs

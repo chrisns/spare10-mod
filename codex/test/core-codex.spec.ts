@@ -1,47 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DEFAULTS, fromOptions } from '../../hooks/core/config.ts'
-import {
-  HARD_STOP_MAX_AGE_MS,
-  LIVE_LUNA_MAX_AGE_MS,
-  OPTIONS,
-  RESET_JITTER_MS,
-  UNATTENDED_ORIGINATORS,
-  answerOf,
-  attendedFrom,
-  blindFrom,
-  codexLimits,
-  codexText,
-  configOptions,
-  elicitParams,
-  hardStopOf,
-  hostKindOf,
-  initialPresence,
-  isCodexBucket,
-  isObservation,
-  kindOfMinutes,
-  liveOf,
-  nearTrip,
-  nextPresence,
-  offQuota,
-  optionOf,
-  optionText,
-  parseAutoResumeOption,
-  parseCommand,
-  parseSetValue,
-  pickSeed,
-  refuseModeOf,
-  render,
-  rootOnly,
-  sessionMetaOf,
-  tokenCountOf,
-  turnContextOf,
-  turnEndOf,
-  unsafeMode,
-  usableCredits,
-  voidedByReset,
-  withPrefix,
-} from '../../hooks/core/codex.ts'
+import { answerOf, attendedFrom, blindFrom, codexLimits, codexText, configOptions, elicitParams, HARD_STOP_MAX_AGE_MS, hardStopOf, hideHome, hostKindOf, initialPresence, isCodexBucket, isObservation, kindOfMinutes, limitAnswerOf, LIVE_LUNA_MAX_AGE_MS, liveOf, nearTrip, nextPresence, nodeExposed, nodePlaces, offQuota, optionOf, OPTIONS, optionText, parseAutoResumeOption, parseCommand, parseSetValue, pickSeed, refuseModeOf, render, RESET_JITTER_MS, rootOnly, sessionMetaOf, tokenCountOf, turnContextOf, turnEndOf, UNATTENDED_ORIGINATORS, unsafeMode, usableCredits, voidedByReset, withInterruptedNote, withPrefix } from '../../hooks/core/codex.ts'
 import type { CodexSnapshot, GateResult, GateSite, HostKind, LiveRead, OptionName, Presence } from '../../hooks/core/codex.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 
@@ -258,12 +218,23 @@ test('voidedByReset: the same window with jitter keeps a consent, a reset credit
   const R = Date.parse(RESET_ISO)
   assert.equal(voidedByReset({ until: R }, R + 30_000), false)
   assert.equal(voidedByReset({ until: R }, R - 30_000), false)
-  assert.equal(voidedByReset({ until: R, to: 95 }, R + RESET_JITTER_MS), false)
+  const toFloor = { until: R, to: 95 } // a consent to the floor
+  assert.equal(voidedByReset(toFloor, R + RESET_JITTER_MS), false)
   // A reset credit: the new weekly window ends 7 days from now.
   assert.equal(voidedByReset({ until: R }, NOW + 7 * DAY), true)
   // A consent with the one-hour fallback end (no reset known), then a real reset 4 h later.
   assert.equal(voidedByReset({ until: NOW + HOUR }, NOW + 5 * HOUR), true)
   assert.equal(voidedByReset({ until: R }, R + RESET_JITTER_MS + 1), true)
+})
+
+test('withInterruptedNote: CX39 comes first only after an interrupt mark of this stop', () => {
+  const note = 'B34 text.'
+  const cx39 = `${codexText.interruptedNote} ${note}`
+  assert.equal(withInterruptedNote({ t1: NOW }, NOW, note), cx39, 'a mark at the stop time')
+  assert.equal(withInterruptedNote({ t0: NOW - HOUR, t1: NOW + MIN }, NOW, note), cx39, 'a newer mark wins over an older one')
+  assert.equal(withInterruptedNote({ t0: NOW - MIN }, NOW, note), note, 'a mark of an earlier stop')
+  assert.equal(withInterruptedNote(undefined, NOW, note), note, 'no marks')
+  assert.equal(withInterruptedNote({ t1: NOW }, undefined, note), note, 'no stop time')
 })
 
 // ---- Rollout lines ----
@@ -367,11 +338,57 @@ test('unsafeMode (P1): no sandbox, auto review, or a writable data dir', () => {
   assert.equal(unsafeMode({ sandbox: 'external-sandbox', roots: [] }, data), true)
   assert.equal(unsafeMode({ reviewer: 'auto_review', approval: 'on-request', roots: [] }, data), true)
   assert.equal(unsafeMode({ reviewer: 'auto_review', approval: 'never', roots: [] }, data), false)
-  assert.equal(unsafeMode({ roots: ['/Users/me'] }, data), true)
+  // Auto review approves for the person with any approval but never, and guardian_subagent is its old name.
+  assert.equal(unsafeMode({ reviewer: 'auto_review', roots: [] }, data), true)
+  assert.equal(unsafeMode({ reviewer: 'auto_review', approval: 'on-failure', roots: [] }, data), true)
+  assert.equal(unsafeMode({ reviewer: 'guardian_subagent', approval: 'on-request', roots: [] }, data), true)
+  assert.equal(unsafeMode({ reviewer: 'guardian_subagent', approval: 'never', roots: [] }, data), false)
+  // Codex keeps <root>/.codex of each writable root read-only: a writable home folder does not expose ~/.codex.
+  // It can still expose a Node.js that the broker runs: nodeExposed (CX58) below.
+  assert.equal(unsafeMode({ roots: ['/Users/me'] }, data), false)
+  assert.equal(unsafeMode({ roots: ['/Users/me/'] }, data), false)
+  assert.equal(unsafeMode({ roots: ['/Users'] }, data), true)
+  assert.equal(unsafeMode({ roots: ['/Users/me/.codex'] }, data), true)
+  assert.equal(unsafeMode({ roots: ['/Users/me/.codex/plugins'] }, data), true)
+  assert.equal(unsafeMode({ roots: ['/'] }, data), true)
   assert.equal(unsafeMode({ roots: ['/Users/me/project'] }, data), false)
   // /tmp is /private/tmp on macOS.
   assert.equal(unsafeMode(turnContextOf(CONTEXT_WRITE), '/private/tmp/h/.codex/plugins/data/spare10-spare10'), true)
   assert.equal(unsafeMode(undefined, data), false)
+})
+
+test('nodePlaces and nodeExposed (CX58): a writable folder where broker.sh looks for Node.js, by where it came from', () => {
+  const home = '/Users/me'
+  const nvm = { HOME: home, SPARE10_NODE_FROM: 'home', SPARE10_NODE: '/Users/me/.nvm/versions/node/v22.19.0/bin/node' }
+  const fixed = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+  assert.deepEqual(nodePlaces({ HOME: home }), fixed, 'a broker that broker.sh did not start')
+  assert.deepEqual(nodePlaces({ ...nvm, SPARE10_NODE_FROM: 'fixed' }), fixed)
+  assert.deepEqual(nodePlaces(nvm), [
+    ...fixed,
+    '/Users/me/.volta',
+    '/Users/me/.nvm',
+    '/Users/me/.local/share/mise',
+    '/Users/me/.asdf',
+    '/Users/me/.local/share/fnm',
+    '/Users/me/Library/Application Support/fnm',
+    '/Users/me/.fnm',
+  ])
+  assert.deepEqual(nodePlaces({ ...nvm, HOME: 'rel' }), fixed, 'broker.sh runs no node under a relative HOME')
+  // From PATH: the absolute folders up to the one that holds the Node.js. A later folder never runs.
+  const path = { HOME: home, SPARE10_NODE_FROM: 'path', SPARE10_NODE: '/w/p/.venv/bin/node', PATH: 'rel:/w/p/node_modules/.bin:/w/p/.venv/bin:/w/p/later' }
+  assert.deepEqual(nodePlaces(path).slice(fixed.length + 7), ['/w/p/node_modules/.bin', '/w/p/.venv/bin'])
+  // A writable home folder exposes a version manager, but not while a fixed Node.js runs the broker.
+  assert.equal(nodeExposed({ roots: [home] }, nodePlaces(nvm)), true)
+  assert.equal(nodeExposed({ roots: ['/Users/me/'] }, nodePlaces(nvm)), true)
+  assert.equal(nodeExposed({ roots: ['/Users/me/project'] }, nodePlaces(nvm)), false)
+  assert.equal(nodeExposed({ roots: [home] }, nodePlaces({ ...nvm, SPARE10_NODE_FROM: 'fixed' })), false)
+  assert.equal(nodeExposed({ roots: ['/usr/local'] }, nodePlaces({ ...nvm, SPARE10_NODE_FROM: 'fixed' })), true)
+  // A project folder exposes its .venv/bin when the Node.js comes from PATH.
+  assert.equal(nodeExposed({ roots: ['/w/p'] }, nodePlaces(path)), true)
+  assert.equal(nodeExposed({ roots: ['/w/p/later'] }, nodePlaces(path)), false)
+  assert.equal(nodeExposed({ roots: ['/w/p'] }, nodePlaces({ ...path, SPARE10_NODE_FROM: 'home' })), false)
+  assert.equal(nodeExposed(undefined, nodePlaces(nvm)), false)
+  assert.equal(nodeExposed(turnContextOf(CONTEXT_READ_ONLY), nodePlaces(path)), false)
 })
 
 // ---- Live reads ----
@@ -574,7 +591,7 @@ test('parseAutoResumeOption takes a boolean, on or off', () => {
   assert.equal(parseAutoResumeOption(null), undefined)
 })
 
-test('OPTIONS names the ten options of 5.1 with their variables and ranges', () => {
+test('OPTIONS names the eleven options of 5.1 with their variables and ranges', () => {
   assert.deepEqual(
     OPTIONS.map((o) => [o.name, o.env, o.range]),
     [
@@ -586,6 +603,7 @@ test('OPTIONS names the ten options of 5.1 with their variables and ranges', () 
       ['weeklyResumeFloor', 'SPARE10_WEEKLY_RESUME_FLOOR', '0 to 99'],
       ['pausePrompt', 'SPARE10_PAUSE_PROMPT', 'any text'],
       ['autoResume', 'SPARE10_AUTO_RESUME', 'on or off'],
+      ['limitPause', 'SPARE10_LIMIT_PAUSE', 'on or off'],
       ['headless', 'SPARE10_HEADLESS', 'off, prompt, stop or wait'],
       ['scope', 'SPARE10', 'all or opt-in'],
     ],
@@ -597,7 +615,7 @@ test('OPTIONS names the ten options of 5.1 with their variables and ranges', () 
 const PATH = '/h/.codex/plugins/data/spare10-spare10/config.json'
 
 test('configOptions: good values pass to fromOptions', () => {
-  const raw = { reserve: 15, weeklyReserve: 5, lastMinutes: 30, weeklyLastHours: 0, resumeFloor: 3, weeklyResumeFloor: 2.5, pausePrompt: 'Commit, then stop.', autoResume: false, headless: 'wait', scope: 'opt-in' }
+  const raw = { reserve: 15, weeklyReserve: 5, lastMinutes: 30, weeklyLastHours: 0, resumeFloor: 3, weeklyResumeFloor: 2.5, pausePrompt: 'Commit, then stop.', autoResume: false, limitPause: false, headless: 'wait', scope: 'opt-in' }
   const { options, warnings } = configOptions(PATH, raw)
   assert.deepEqual(warnings, [])
   assert.deepEqual(options, raw)
@@ -610,6 +628,7 @@ test('configOptions: good values pass to fromOptions', () => {
     weeklyResumeFloor: 2.5,
     pausePrompt: 'Commit, then stop.',
     autoResume: false,
+    limitPause: false,
     headless: 'wait',
     scope: 'opt-in',
     badge: true,
@@ -651,7 +670,7 @@ test('configOptions: unknown keys are ignored, a value that is not an object giv
   for (const raw of [null, [], 'x', 5, true]) {
     assert.deepEqual(configOptions(PATH, raw), {
       options: {},
-      warnings: [`cannot read ${PATH} (it is not a JSON object). spare10 uses the default options, and keeps each reserve until the reset.`],
+      warnings: [`cannot read ${PATH} (it is not a JSON object). spare10 uses the default options, and keeps each reserve until the reset. Correct the file, or remove it to use the defaults.`],
     })
   }
 })
@@ -674,6 +693,10 @@ test('parseSetValue: each option and its range, the stored JSON type', () => {
   ok('weeklyResumeFloor', '2.5', 2.5)
   ok('pausePrompt', 'Finish this, then stop.', 'Finish this, then stop.')
   no('pausePrompt', '   ')
+  // A pair of quotes is no text: stored, it would turn on tell mode, where spare10 stops nothing.
+  no('pausePrompt', '""')
+  no('pausePrompt', " '' ")
+  ok('pausePrompt', '"Wind down."', '"Wind down."')
   ok('autoResume', 'off', false)
   ok('autoResume', 'ON', true)
   no('autoResume', 'false')
@@ -689,6 +712,8 @@ test('optionText shows a value as the texts do', () => {
   assert.equal(optionText('weeklyResumeFloor', 2.5), '2.5')
   assert.equal(optionText('autoResume', false), 'off')
   assert.equal(optionText('autoResume', true), 'on')
+  assert.equal(optionText('limitPause', false), 'off')
+  assert.equal(optionText('limitPause', true), 'on')
   assert.equal(optionText('pausePrompt', null), 'an empty text')
   assert.equal(optionText('pausePrompt', 'Commit, then stop.'), '"Commit, then stop."')
   assert.equal(optionText('headless', 'wait'), 'wait')
@@ -827,6 +852,41 @@ test('answerOf maps each row of 2.2', () => {
   assert.equal(answerOf('accept', false), 'decline')
 })
 
+test('elicitParams of the limit question: Continue at the reset first and the default, and never the credits line', () => {
+  const msg = 'The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold.'
+  const LIMIT_SCHEMA = {
+    type: 'object',
+    required: ['choice'],
+    properties: {
+      choice: {
+        type: 'string',
+        title: 'spare10',
+        oneOf: [
+          { const: 'continue', title: 'Continue at the reset' },
+          { const: 'stop', title: 'Stop here' },
+        ],
+        default: 'continue',
+      },
+    },
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(elicitParams(msg, undefined, true))), { message: msg, requestedSchema: LIMIT_SCHEMA })
+  assert.deepEqual(JSON.parse(JSON.stringify(elicitParams(msg, '497', true))), { message: msg, requestedSchema: LIMIT_SCHEMA })
+})
+
+test('limitAnswerOf: only an accepted stop stops, cancel is for the caller, and everything else continues at the reset', () => {
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'stop' } }, false), 'stop')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'continue' } }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'Stop here' } }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'resume' } }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept' }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'cancel' }, false), 'cancel')
+  assert.equal(limitAnswerOf({ action: 'decline' }, false), 'continue')
+  assert.equal(limitAnswerOf({ action: 'accept', content: { choice: 'stop' } }, true), 'continue') // a JSON-RPC error
+  assert.equal(limitAnswerOf(undefined, true), 'continue')
+  assert.equal(limitAnswerOf({ action: 'later' }, false), 'continue')
+  assert.equal(limitAnswerOf('accept', false), 'continue')
+})
+
 // ---- The gate answer (3.3, 4.4) ----
 
 const SITES: GateSite[] = ['start', 'prompt', 'tool', 'step', 'compact', 'spawn', 'stop', 'interrupt']
@@ -915,6 +975,16 @@ test('refuseModeOf follows the order of 4.4', () => {
 test('withPrefix prefixes each line that has text', () => {
   assert.equal(withPrefix('one'), 'spare10: one')
   assert.equal(withPrefix('one\ntwo'), 'spare10: one\nspare10: two')
-  assert.equal(withPrefix('version 0.3.0\n\n  ● armed'), 'spare10: version 0.3.0\n\nspare10:   ● armed')
+  assert.equal(withPrefix('version 0.4.0\n\n  ● armed'), 'spare10: version 0.4.0\n\nspare10:   ● armed')
   assert.equal(withPrefix(''), '')
+})
+
+test('core-codex: hideHome shows each path under the home folder as ~/, and leaves other text alone', () => {
+  const err = "EACCES: permission denied, open '/Users/me/.codex/plugins/data/spare10-spare10/config.json'"
+  assert.equal(hideHome(err, '/Users/me'), "EACCES: permission denied, open '~/.codex/plugins/data/spare10-spare10/config.json'")
+  assert.equal(hideHome(err, '/Users/me/'), "EACCES: permission denied, open '~/.codex/plugins/data/spare10-spare10/config.json'")
+  assert.equal(hideHome('connect ENOENT /Users/me/a.sock and /Users/me/b.sock', '/Users/me'), 'connect ENOENT ~/a.sock and ~/b.sock')
+  assert.equal(hideHome('open /Users/meta/x', '/Users/me'), 'open /Users/meta/x', 'a folder that only starts with the home name stays')
+  assert.equal(hideHome(err, undefined), err)
+  assert.equal(hideHome(err, '/'), err, 'the root folder hides nothing')
 })

@@ -10,7 +10,12 @@ Some parts work in a different way, because Codex has other hooks.
 ## Install in Codex
 
 You need Node.js 20 or later.
-spare10 looks for it on your `PATH`, in Homebrew, in Volta and in nvm.
+spare10 looks for it in Homebrew, in `/usr/local/bin`, in `/usr/bin` and in Volta.
+Then it tries the versions of nvm, mise, asdf and fnm, newest first.
+It takes a Node.js from your `PATH` only when none of these is Node.js 20 or later.
+spare10 runs that Node.js outside the Codex sandbox.
+So install Node.js 20 or later in one of these places.
+[Differences in Codex](#differences-in-codex) item 26 says why.
 
 ```sh
 codex plugin marketplace add chrisns/spare10-mod
@@ -50,7 +55,13 @@ Start a new Codex session after you change the file.
 Then `!spare10 status`, `!spare10 resume` and `!spare10 stop` work at any time, also while spare10 holds work.
 Codex gives the output of each `!` command to the model.
 So spare10 prints only one short line there.
-The full answer shows in the transcript.
+`!spare10 status` prints only the phase line.
+To see the full report during a turn, run `!spare10 status --full`.
+The model reads this report too.
+A command that changes something, such as `!spare10 resume`, prints only that it is done.
+Its full answer shows in the transcript at the next step.
+If the command changes nothing, spare10 prints its answer in the `!` output.
+A `spare10 resume`, `stop` or `simulate` from another terminal that changes something also shows its answer in the transcript.
 
 spare10 has no badge in Codex.
 To see the quota in the Codex footer, open `/statusline`, and add `five-hour-limit` and `weekly-limit`.
@@ -106,6 +117,48 @@ Then spare10 holds the work, and asks nothing.
 Run `!spare10 resume` to continue, or press Esc to stop.
 On the Codex daemon, `!spare10 stop` also ends the held work.
 
+At 100% used, spare10 holds all work until the reset, as in [At the quota limit](claude-code.md#at-the-quota-limit).
+It does this also while a reserve is open, and after a **Resume**.
+The first held step asks the limit question in a Codex form:
+
+```
+  The quota limit is reached: 100% used · 0% left · resets 15:00. All work is on hold. ...
+
+  spare10
+  › 1. Continue at the reset
+    2. Stop here
+  enter to submit | esc to cancel
+```
+
+**Continue at the reset** is first, and it is selected.
+Only **Stop here** stops the work.
+Esc on the limit form is **Continue at the reset**.
+If the step that asked went away, another held step asks again.
+With approval `never`, no form shows, and the work continues at the reset.
+`spare10 resume` on the limit form counts as **Continue at the reset**.
+At other times at the limit, its reply names `spare10 set limitPause off`.
+`spare10 stop` counts as **Stop here**, also on a form at the reserve when the quota is at 100% used.
+
+Codex shows a spare10 line only when a hook of the main thread answers.
+At the limit, spare10 holds every such hook.
+So after **Continue at the reset**, Codex shows no line until the held work continues.
+The form closes, and the work stays on hold. This is not a hang.
+When the hold lasts more than 30 minutes, Codex then shows only `spare10: the 5-hour window reset. Held work continues.`
+
+When a turn ends at the limit, Codex shows one of these lines:
+
+```
+spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.
+spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until 15:00.
+spare10: the turn ends here, because work stopped at the quota limit.
+```
+
+The second line comes after **Continue at the reset**.
+The third line comes after **Stop here**.
+
+If you can spend Codex credits past 100%, spare10 does not pause at the limit.
+Then the question at the reserve names the balance.
+
 ## Commands in Codex
 
 Type a command as the whole prompt.
@@ -116,13 +169,17 @@ spare10 sends no model request for it.
 | `spare10` or `spare10 status` | Shows the status report. |
 | `spare10 resume` | Continues on the reserve until the floor, or past the floor until the reset. |
 | `spare10 stop` | Stops at the reserve now. |
-| `spare10 simulate ...` | Sets a test reading, as `/spare10 simulate` does. See [Test reading](claude-code.md#test-reading). |
+| `spare10 simulate ...` | Sets a test reading, as `/spare10 simulate` does. On a plan with only a weekly window, it is weekly by default. See [Test reading](claude-code.md#test-reading). |
 | `spare10 set` | Shows the options and where each value comes from. |
 | `spare10 set <option> <value>` | Changes an option, such as `spare10 set reserve 15`. |
 | `spare10 set <option> default` | Puts an option back to its default. |
 | `spare10 help` | Lists the commands. |
 
-A prompt is a command only in these forms.
+A prompt of two words that starts with spare10 is always a command, such as `spare10 pause`.
+For an unknown word, the reply names `spare10 help`.
+`spare10 set <word>` and `spare10 simulate` with at most four more words are always commands too.
+For a bad word, the reply says what is wrong.
+spare10 answers these prompts itself, as it does for the commands in the table.
 Other text that starts with the word spare10 goes to the model as usual.
 Only you can run `resume`, `stop`, `simulate` and `set`, and only from the main thread.
 A subagent cannot run them.
@@ -136,8 +193,13 @@ Codex has no screen for plugin options.
 spare10 keeps its options in `~/.codex/plugins/data/spare10-spare10/config.json`.
 Change them with `spare10 set`.
 The options, defaults and values are the same as in [Configure](configure.md#options), without **Status badge**.
-Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `pausePrompt`, `autoResume`, `headless` and `scope`.
+Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `pausePrompt`, `autoResume`, `limitPause`, `headless` and `scope`.
 A `SPARE10_*` variable with a valid value wins over the file, as in Claude Code.
+`limitPause` is **Pause at the limit**. Switch it off with `spare10 set limitPause off`.
+While it is off, the report warns when a window is at 100% used and no credits can pay:
+`past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.`
+If spare10 cannot read the file, it warns you, and keeps each reserve until the reset.
+Correct the file, or remove it to use the defaults.
 
 The Codex TUI runs its sessions on a shared daemon by default.
 A daemon session gets its variables from the daemon, not from your terminal.
@@ -151,6 +213,10 @@ Then spare10 watches the weekly window only, and the report says `Codex reports 
 On such a plan, no 5-hour guard holds work in the last hours before the weekly reset.
 By default, spare10 lets all work through in the last 8 hours of the weekly window.
 To keep the weekly reserve until the reset, run `spare10 set weeklyLastHours 0`.
+On such a plan, `spare10 simulate` without a window word sets a weekly test reading.
+`SPARE10_SIMULATE` does the same.
+By default, a weekly test window shorter than 8 hours is open at once.
+To see the question, use `spare10 simulate 92 in 9h`.
 
 After a Codex reset credit, a window starts again early.
 Then an earlier **Resume** does not cover the new window.
@@ -187,7 +253,7 @@ The `headless` option works as in [Unattended runs](configure.md#unattended-runs
 11. Some model requests have no hook, so spare10 cannot hold them. One is the request after a failed tool call. Others are the checks of a shell command that runs longer than 10 seconds. Codex review, title and memory requests, and the internal steps of `/review`, have no hook too. After a daemon restart, the first request of the restored turn also goes through. On the daemon, **Stop here** ends such turns.
 12. Without the daemon, spare10 sees the quota one model response later than in Claude Code.
 13. The unattended `stop` policy costs one more model request for each running loop.
-14. In the Codex sandbox, only you can run `spare10 resume` and `spare10 set`. In some modes the agent can run them by itself. These modes are no sandbox, a writable folder that holds `~/.codex`, and the automatic review of approvals. `--sandbox danger-full-access` is one mode with no sandbox. This version of spare10 does not warn you about these modes.
+14. In the Codex sandbox, only you can run `spare10 resume` and `spare10 set`. In some modes the agent can run them by itself. These modes are no sandbox, a sandbox that lets the agent write in `~/.codex`, and the automatic review of approvals. `--sandbox danger-full-access` is one mode with no sandbox. In a guarded session, spare10 warns you once when it sees one of these modes. spare10 also warns once when the agent can write a folder where spare10 looks for Node.js (item 26). A command that you approve to run outside the sandbox can also run them. This includes a script that the agent wrote. Another MCP server or tool that runs commands for the agent can also run them. Outside the sandbox, a command can also change or remove the spare10 files. spare10 cannot see these cases, and gives no warning for them.
 15. When spare10 continues held work by itself, the question can stay on the screen until the turn ends. Press Esc to close it.
 16. If spare10 finds no Node.js 20 or later, Codex cannot start a session. Remove or switch off the plugin to go on.
 17. In a TUI without the daemon, Esc during a hold also ends the automatic continue of that stop. Held subagents continue at the end of the stop.
@@ -195,13 +261,17 @@ The `headless` option works as in [Unattended runs](configure.md#unattended-runs
 19. spare10 does not put a dropped prompt back in the prompt box.
 20. Windows is not supported yet.
 21. Some sessions keep no session log, such as `/side` and `codex exec --ephemeral`. On the Codex daemon, spare10 reads the quota at each step of such a session. Without the daemon, spare10 has only the last readings of other sessions. Then such a session can use the reserve with no question.
+22. A question at the reserve can give way to the limit question while its form is on the screen. A form cannot be withdrawn, so the old form stays. Its answer changes nothing. Answer the limit form that follows.
+23. Codex tells spare10 when credits can pay past 100%. Then spare10 does not pause at the limit. Claude Code does not tell spare10 about extra usage.
+24. During an upgrade, an older spare10 process can show the question at the reserve for the limit question. Its **Resume** only asks again. Its **Stop here** can continue the work after the reset.
+25. Without the Codex daemon, spare10 does not see a reset credit or a plan change at the limit. Held work then waits until the old reset. Run `spare10 set limitPause off` to let it go on. With `autoResume` off, then also run `spare10 resume`.
+26. spare10 runs Node.js outside the Codex sandbox when a thread starts. The agent can write some folders where spare10 looks for it. One is your home folder, when Codex starts there and Node.js comes from nvm, mise, asdf, fnm or Volta. Another is a project folder on your `PATH`, such as `.venv/bin` or `node_modules/.bin`. spare10 takes Node.js from there only when no other place holds Node.js 20 or later. Then the agent can put a file there that spare10 runs outside the sandbox. spare10 warns you once per session in this case. With a Node.js from your `PATH`, the `spare10` command runs the `node` of the shell that calls it. To close this, install Node.js 20 or later in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`. Also do not start Codex in your home folder.
 
 Codex also gives spare10 some things that Claude Code does not:
 
-- A hold has no time budget.
+- A hold has no time budget. So a hold at the weekly quota limit lasts until the reset, and then the work continues.
 - When the Codex daemon runs, a `codex exec` run reads the live quota before its first request.
 - Work on Codex's own Luna Reserve model goes through while Codex uses it.
-- After a Codex reset credit, an old **Resume** does not cover the new window.
 
 ## How spare10 works in Codex
 
@@ -210,4 +280,4 @@ Codex also gives spare10 some things that Claude Code does not:
 - **Hold.** The spare10 process does not answer the hook. Codex waits, for up to 8 days.
 - **Ask.** The first held step shows a Codex form. All other held steps wait on the same answer.
 - **Continue.** Timers in the spare10 process release held work. A new turn through the daemon continues stopped work.
-- **State.** Consent, stops and questions are files in `~/.codex/plugins/data/spare10-spare10/`. spare10 removes the files of a session 30 days after their last change, when no process of that session runs. A computer crash can leave a state file empty. spare10 then reads the file as new, and can ask you again.
+- **State.** Consent, stops and questions are files in `~/.codex/plugins/data/spare10-spare10/`. spare10 removes the files of a session 30 days after their last change. It does this only when no spare10 process of that session runs. A running Codex daemon does not keep the files. A computer crash can leave a state file empty. spare10 then reads the file as new, and can ask you again.

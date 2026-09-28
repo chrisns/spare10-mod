@@ -1,10 +1,11 @@
-import { codexDebug, codexText } from '../../hooks/core/codex.ts'
+import { codexDebug, hideHome, withInterruptedNote } from '../../hooks/core/codex.ts'
 import { formatStopped, parseStopped, stopAction, stopDue } from '../../hooks/core/decide.ts'
 import { endedFor, extendNotice, extended, namedStop, tickPlan } from '../../hooks/core/flow.ts'
 import { debugLine, notice, resumePrompt } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
 import type { Timer } from './clock.ts'
-import type { DaemonLink } from './daemon.ts'
+import { DaemonError } from './daemon.ts'
+import type { DaemonLink, TurnInfo } from './daemon.ts'
 import type { Deps } from './deps.ts'
 import { readThread } from './held.ts'
 import type { Quota } from './quota.ts'
@@ -31,6 +32,8 @@ export type TickerDeps = Pick<Deps, 'clock' | 'log'> & {
   sweep: Pick<Sweep, 'sweep'>
   /** The liveness test of a held entry's broker. Default: every broker is alive. */
   pidAlive?: (pid: number) => boolean
+  /** The home folder, so a failure line shows a path under it as `~/...`. */
+  home?: string
 }
 
 export type Ticker = {
@@ -44,16 +47,21 @@ export type Ticker = {
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
-/** CX39: spare10 interrupted a turn of the stop that began at `at`. */
-const interruptedSince = (interrupts: Record<string, number> | undefined, at: number): boolean =>
-  Object.values(interrupts ?? {}).some((t) => t >= at)
-
 export function createTicker(d: TickerDeps): Ticker {
   const alive = d.pidAlive ?? ((): boolean => true)
   /** A live held prompt of the root thread in `turn`. A read that fails is none. */
   const heldPrompt = (sx: SessionCtx, turn: string): boolean => {
     try {
       return readThread(sx.store, sx.sid)?.held.some((e) => e.site === 'prompt' && e.turn === turn && alive(e.brokerPid)) === true
+    } catch {
+      return false
+    }
+  }
+  /** After a turn/start timeout: the newest turn is not `before`. A failed look is false (the failure line shows). */
+  const newerTurn = async (sx: SessionCtx, before: TurnInfo | undefined): Promise<boolean> => {
+    try {
+      const t = await d.daemon.get()?.newestTurn(sx.sid)
+      return t !== undefined && t.id !== before?.id
     } catch {
       return false
     }
@@ -69,11 +77,12 @@ export function createTicker(d: TickerDeps): Ticker {
     const r = parseStopped(raw)
     if (raw === undefined || r === undefined || r.sessionId !== sx.sid) return
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
+    const cfg = d.settings.get()
     // 4.23: the sweep at each cycle while an attended stop is in force. It leaves the held work of a held stop (4.4).
-    if (attended && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx)
+    // A switched-off spare10 interrupts nothing (Codex difference 18).
+    if (attended && cfg.enabled && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx)
     const now = d.clock.now()
     if (r.kinds === undefined || r.auto !== true || now < stopDue(r)) return
-    const cfg = d.settings.get()
     // `drop` has no Codex case: a stop belongs to its session.
     if (stopAction({ record: r, now, sessionId: sx.sid, autoResume: cfg.autoResume, enabled: cfg.enabled, attended }) !== 'check') return
     if (!(await d.daemon.hosted(sx.sid))) return // not hosted: held work releases in place (4.4)
@@ -94,11 +103,13 @@ export function createTicker(d: TickerDeps): Ticker {
       return
     }
     const ended = endedFor(namedStop(r), s, [], r.skip === true) // skip 4.5: what reset and what opened
+    let before: TurnInfo | undefined // the newest turn before the turn/start
     if (r.work === true) {
       const daemon = d.daemon.get()
       if (daemon === undefined) return
       const status = await daemon.status(sx.sid)
       const newest = await daemon.newestTurn(sx.sid)
+      before = newest
       // A person prompt of that turn still waits on its gate (a prompt question in a stopped session): its
       // own decision takes the stop over with the B35 note, as register.tsx does. The ticker leaves it.
       if (newest !== undefined && heldPrompt(sx, newest.id)) return
@@ -123,7 +134,7 @@ export function createTicker(d: TickerDeps): Ticker {
         return undefined
       }
       const prompt = resumePrompt(ended.reset, ended.open)
-      const t = interruptedSince(tx.state.interrupts, r.at) ? `${codexText.interruptedNote} ${prompt}` : prompt
+      const t = withInterruptedNote(tx.state.interrupts, r.at, prompt) // CX39
       tx.state.continuation = { text: t, expiresAt: at + CONTINUATION_TTL_MS, notice: notice.resetResumes(ended.reset, ended.open) }
       return t
     })
@@ -135,9 +146,12 @@ export function createTicker(d: TickerDeps): Ticker {
     } catch (e) {
       const reason = errText(e)
       d.log.debug(codexDebug.startFailed(reason))
+      // 3.5: a timeout is no proof of failure. A turn newer than the one read before the start (the
+      // continuation, or a person prompt) means the work goes on: the record stays and no failure line shows.
+      if (e instanceof DaemonError && e.kind === 'timeout' && (await newerTurn(sx, before))) return
       sx.store.locked((tx) => {
         if (tx.state.continuation?.text === text) delete tx.state.continuation
-        noticeIn(tx.state, notice.resumeFailed(reason), d.clock.now())
+        noticeIn(tx.state, notice.resumeFailed(hideHome(reason, d.home)), d.clock.now())
       })
     }
   }

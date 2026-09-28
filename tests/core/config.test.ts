@@ -1,6 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import {
   DEFAULTS,
+  LIMIT_UNREAD,
   NO_SPANS,
   childHeadless,
   flagOnlyInShell,
@@ -10,6 +11,7 @@ import {
   parseBadge,
   parseHeadless,
   parseLastMinutes,
+  parseLimitPause,
   parsePausePrompt,
   parseReserve,
   parseResumeFloor,
@@ -24,6 +26,7 @@ import {
   watchedKinds,
   withEnv,
 } from '../../hooks/core/config.ts'
+import { simulateWarning } from '../../hooks/core/text.ts'
 
 test('parseReserve accepts 1 to 99 and rounds to one decimal', () => {
   expect(parseReserve(10)).toBe(10)
@@ -81,6 +84,7 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyResumeFloor: 5,
     pausePrompt: null,
     autoResume: true,
+    limitPause: true,
     headless: 'off',
     scope: 'all',
     badge: true,
@@ -96,6 +100,7 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyResumeFloor: 5,
     pausePrompt: 'Wrap up.',
     autoResume: true,
+    limitPause: true,
     headless: 'stop',
     scope: 'opt-in',
     badge: false,
@@ -158,10 +163,27 @@ test('withEnv: SPARE10_SIMULATE gives a test percentage, junk gives none', () =>
   expect(withEnv(DEFAULTS, { simulate: '0' }).testPct).toBe(0)
   expect(withEnv(DEFAULTS, { simulate: '100' }).testPct).toBe(100)
   expect(withEnv(DEFAULTS, {}).testPct).toBeUndefined()
-  for (const junk of ['abc', '', ' ', '101', '-1', 'off']) {
-    expect(withEnv(DEFAULTS, { simulate: junk }).testPct).toBeUndefined()
-    expect(withEnv(DEFAULTS, { simulate: junk }).warnings).toEqual([])
+  // A blank value and off are no test reading and no warning. Junk is a B27 warning.
+  for (const blank of ['', ' ', 'off']) {
+    expect(withEnv(DEFAULTS, { simulate: blank }).testPct).toBeUndefined()
+    expect(withEnv(DEFAULTS, { simulate: blank }).warnings).toEqual([])
   }
+  for (const junk of ['abc', '101', '-1']) {
+    expect(withEnv(DEFAULTS, { simulate: junk }).testPct).toBeUndefined()
+    expect(withEnv(DEFAULTS, { simulate: junk }).warnings).toEqual([simulateWarning(junk)])
+  }
+})
+
+test('withEnv: a weekly SPARE10_SIMULATE while the weekly reserve is 0 warns, and changes nothing else', () => {
+  const weekly = withEnv(DEFAULTS, { simulate: '95 weekly', weeklyReserve: '0' })
+  expect(weekly.warnings).toEqual([simulateWarning('95 weekly', true)])
+  expect(weekly.testPct).toBe(95)
+  expect(weekly.testKind).toBe('seven_day')
+  // Codex design 4.15: with no kind word the value is weekly on a weekly-only plan. The same warning.
+  expect(withEnv(DEFAULTS, { simulate: '92', weeklyReserve: '0' }, { simulateKind: 'seven_day' }).warnings).toEqual([simulateWarning('92', true)])
+  // A 5-hour test reading, or a weekly one with a weekly reserve: no warning.
+  expect(withEnv(DEFAULTS, { simulate: '95', weeklyReserve: '0' }).warnings).toEqual([])
+  expect(withEnv(DEFAULTS, { simulate: '95 weekly' }).warnings).toEqual([])
 })
 
 test('parseWeeklyReserve takes 0 as off and 1 to 99 with one decimal', () => {
@@ -203,6 +225,7 @@ test('fromOptions fills weeklyReserve 10 and autoResume true', () => {
     'badge',
     'headless',
     'lastMinutes',
+    'limitPause',
     'pausePrompt',
     'reserve',
     'resumeFloor',
@@ -231,6 +254,7 @@ test('withEnv: SPARE10_WEEKLY_RESERVE and SPARE10_AUTO_RESUME override, bad valu
     weeklyResumeFloor: 'option',
     pausePrompt: 'option',
     autoResume: 'option',
+    limitPause: 'option',
     headless: 'option',
     enabled: 'scope',
   })
@@ -282,7 +306,7 @@ test('withEnv: SPARE10_SIMULATE takes a kind and a duration', () => {
     expect(e.testPct).toBeUndefined()
     expect(e.testKind).toBeUndefined()
     expect(e.testInMs).toBeUndefined()
-    expect(e.warnings).toEqual([])
+    expect(e.warnings).toEqual(junk === 'off' ? [] : [simulateWarning(junk)])
   }
 })
 
@@ -359,7 +383,7 @@ test('parseWeeklyLastHours takes 0 to 167 with one decimal', () => {
 
 test('fromOptions fills lastMinutes 20 and weeklyLastHours 8', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(11)
+  expect(Object.keys(d)).toHaveLength(12)
   expect(d.lastMinutes).toBe(20)
   expect(d.weeklyLastHours).toBe(8)
   expect(fromOptions({ lastMinutes: 0, weeklyLastHours: 0 })).toEqual({ ...DEFAULTS, lastMinutes: 0, weeklyLastHours: 0 })
@@ -438,7 +462,7 @@ test('parseResumeFloor takes 0 to 99 with one decimal', () => {
 
 test('fromOptions fills resumeFloor 5 and weeklyResumeFloor 5', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(11)
+  expect(Object.keys(d)).toHaveLength(12)
   expect(d.resumeFloor).toBe(5)
   expect(d.weeklyResumeFloor).toBe(5)
   expect(fromOptions({ resumeFloor: 0, weeklyResumeFloor: 2.54 })).toEqual({ ...DEFAULTS, resumeFloor: 0, weeklyResumeFloor: 2.5 })
@@ -543,4 +567,39 @@ test('withEnv with simulateKind: SPARE10_SIMULATE with no kind word takes that k
   expect(withEnv(DEFAULTS, { simulate: '92' }).testKind).toBeUndefined()
   expect(withEnv(DEFAULTS, { simulate: '92' }, {}).testKind).toBeUndefined()
   expect(withEnv(DEFAULTS, {}, { simulateKind: 'seven_day' }).testPct).toBeUndefined()
+})
+
+// ---- The pause at the quota limit (limit design 4) ----
+
+test('limitPause: on by default, only an explicit false turns the option off, and the report source is the option', () => {
+  expect(DEFAULTS.limitPause).toBe(true)
+  expect(parseLimitPause(undefined)).toBe(true)
+  expect(parseLimitPause('')).toBe(true) // a boolean with no default arrives as ""
+  expect(parseLimitPause('false')).toBe(true)
+  expect(parseLimitPause(false)).toBe(false)
+  expect(fromOptions({}).limitPause).toBe(true)
+  expect(fromOptions({ limitPause: false })).toEqual({ ...DEFAULTS, limitPause: false })
+  const plain = withEnv(DEFAULTS, {})
+  expect([plain.limitPause, plain.from.limitPause, plain.warnings]).toEqual([true, 'option', []])
+})
+
+test('withEnv: SPARE10_LIMIT_PAUSE on and off win over the option, and a bad value warns and keeps the option (B27)', () => {
+  const off = withEnv(DEFAULTS, { limitPause: ' Off ' })
+  expect([off.limitPause, off.from.limitPause, off.warnings]).toEqual([false, 'env', []])
+  const on = withEnv({ ...DEFAULTS, limitPause: false }, { limitPause: 'ON' })
+  expect([on.limitPause, on.from.limitPause]).toEqual([true, 'env'])
+  const bad = withEnv({ ...DEFAULTS, limitPause: false }, { limitPause: 'yes' })
+  expect([bad.limitPause, bad.from.limitPause]).toEqual([false, 'option'])
+  expect(bad.warnings).toEqual(['SPARE10_LIMIT_PAUSE="yes" is not on or off. spare10 uses off.'])
+  expect(withEnv(DEFAULTS, { limitPause: '1' }).warnings).toEqual(['SPARE10_LIMIT_PAUSE="1" is not on or off. spare10 uses on.'])
+  // A failed env read keeps the option: for the limit, the guarded side is the pause in force.
+  expect(unreadEnv({ ...DEFAULTS, limitPause: false }).limitPause).toBe(false)
+  expect(unreadEnv(DEFAULTS).limitPause).toBe(true)
+})
+
+test('LIMIT_UNREAD: until a copy reads its settings, $.spare10.limit() answers on, whatever the option says (fail closed, as NO_SPANS)', () => {
+  // register.tsx starts limitNow here, and not at the option: an older copy's held loop that asks before
+  // the newest copy read SPARE10_LIMIT_PAUSE never lets work past 100% on the option alone. The kit cannot
+  // set an option, so codex/test/claude-pins.spec.ts pins that register.tsx uses this constant.
+  expect(LIMIT_UNREAD).toBe(true)
 })

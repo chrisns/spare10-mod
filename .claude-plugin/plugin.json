@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "spare10",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Keeps the last part of your 5-hour and weekly quota for you. At the reserve, spare10 holds all work and asks you whether to continue. After a Resume, it asks again at the floor, by default at 5% left. Shortly before the reset, it lets work use the reserve.",
   "author": {
     "name": "Chris Nesbitt-Smith"
@@ -68,13 +68,19 @@
     "pausePrompt": {
       "type": "string",
       "title": "Pause prompt",
-      "description": "Leave empty to stop and ask you. Or write an instruction, and spare10 gives it to every agent instead of stopping. SPARE10_PAUSE_PROMPT overrides it for one run.",
+      "description": "Leave empty to stop and ask you. Or write an instruction, and spare10 gives it to every agent instead of stopping. At 100% used, Pause at the limit still holds all work and asks you. SPARE10_PAUSE_PROMPT overrides it for one run.",
       "default": ""
     },
     "autoResume": {
       "type": "boolean",
       "title": "Continue at the reset",
-      "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
+      "description": "On: spare10 continues held and stopped work by itself when the reserve opens before the reset, or a few minutes after the reset. Stop here then means stop until then. At 100% used, Stop here never continues by itself. Off: work waits for you. SPARE10_AUTO_RESUME overrides it for one run.",
+      "default": true
+    },
+    "limitPause": {
+      "type": "boolean",
+      "title": "Pause at the limit",
+      "description": "On: at 100% used, spare10 holds all work. This is also true in an open reserve, after a Resume and with a pause prompt. It asks you once. With no answer, the work continues after the reset, unless Continue at the reset is off. Stop here stops the work until you type a prompt after the reset. Off: work runs into the limit, and Claude Code refuses it. Switch it off when you pay for extra usage. SPARE10_LIMIT_PAUSE overrides it for one run.",
       "default": true
     },
     "headless": {

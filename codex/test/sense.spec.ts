@@ -238,7 +238,7 @@ test('sense: SPARE10_SIMULATE sets the test reading once per session, at a root 
   assert.equal(w.state().test?.kinds.five_hour?.resetsAtMs, T0 + 20 * MIN, 'in counts from the first gate, once')
 })
 
-test('sense: a kind at 100% with usable credits is never open, and without credits it is (A23)', async (t) => {
+test('sense: a kind at 100% with usable credits is never open and no limit kind, and without credits it is at the limit (A23)', async (t) => {
   const w = logicWorld(t)
   const b = w.broker()
   const soon = T0 + 10 * MIN // inside the last 20 min
@@ -246,13 +246,23 @@ test('sense: a kind at 100% with usable credits is never open, and without credi
   const s = await b.sense.sense(b.sx, 'tool')
   assert.equal(s.creditsUsable, true)
   assert.equal(s.credits?.balance, '42')
-  assert.equal(s.kinds[0]?.open, false)
+  assert.deepEqual([s.kinds[0]?.open, s.kinds[0]?.limit], [false, false], 'credits pay: the reserve question, no pause at the limit')
   assert.deepEqual((await b.sense.act(b.sx, s, { site: 'tool' })).verdict, { kind: 'hold' })
   w.reading(SID, 100, { reset: soon, credits: { has_credits: false, unlimited: false, balance: '0' } })
   const s2 = await b.sense.sense(b.sx, 'tool')
   assert.equal(s2.creditsUsable, false)
-  assert.equal(s2.kinds[0]?.open, true)
-  assert.deepEqual((await b.sense.act(b.sx, s2, { site: 'tool' })).verdict, { kind: 'pass', trip: true })
+  assert.deepEqual([s2.kinds[0]?.open, s2.kinds[0]?.limit, s2.kinds[0]?.holdEnd], [false, true, soon], 'no credits: a limit kind, never open')
+  assert.deepEqual((await b.sense.act(b.sx, s2, { site: 'tool' })).verdict, { kind: 'hold' })
+})
+
+test('sense: with limitPause off, a kind at 100% with no credits is open in its last span, as before the limit (A23)', async (t) => {
+  const w = logicWorld(t, { config: { limitPause: false } })
+  const b = w.broker()
+  const soon = T0 + 10 * MIN // inside the last 20 min
+  w.reading(SID, 100, { reset: soon, credits: { has_credits: false, unlimited: false, balance: '0' } })
+  const s = await b.sense.sense(b.sx, 'tool')
+  assert.deepEqual([s.kinds[0]?.open, s.kinds[0]?.limit], [true, false])
+  assert.deepEqual((await b.sense.act(b.sx, s, { site: 'tool' })).verdict, { kind: 'pass', trip: true })
 })
 
 test('sense: two observations with no 5-hour window make it absent, and a test reading makes it present again (4.15)', async (t) => {
@@ -290,6 +300,30 @@ test('sense: an unattended run has no floor, passes with policy off, and logs it
     [line],
   )
   assert.deepEqual(w.state().unattendedNote, { five_hour: RESET, seven_day: 0 })
+})
+
+test('sense: an unattended debug line does not come again while the reset moves within its jitter (B15, 3.6)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker({ hostKind: 'exec', originator: 'codex_exec', source: 'exec' })
+  w.reading(SID, 92, { reset: RESET })
+  const s = await b.sense.sense(b.sx, 'tool')
+  await b.sense.act(b.sx, s, { site: 'tool' })
+  await w.advance(MIN)
+  w.reading(SID, 92.5, { reset: RESET - 30_000 })
+  const moved = await b.sense.sense(b.sx, 'tool')
+  assert.equal(moved.kinds[0]?.windowEnd, RESET - 30_000)
+  await b.sense.act(b.sx, moved, { site: 'tool' })
+  assert.deepEqual(
+    w.log.lines.filter((l) => l.startsWith('spare10: unattended')),
+    [debugLine.unattended(factsFrom([s.kinds[0]!], s.now), 'off')],
+  )
+  assert.deepEqual(w.state().unattendedNote, { five_hour: RESET, seven_day: 0 }, 'the first end stays')
+  // A new window logs it again.
+  await w.advance(RESET - T0)
+  w.reading(SID, 91, { reset: RESET + 5 * HOUR })
+  const next = await b.sense.sense(b.sx, 'tool')
+  await b.sense.act(b.sx, next, { site: 'tool' })
+  assert.equal(w.log.lines.filter((l) => l.startsWith('spare10: unattended')).length, 2)
 })
 
 test('sense: an unattended run with policy stop refuses a tool and a step, and lets a prompt through', async (t) => {

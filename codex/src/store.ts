@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs'
+import { readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GateSite, HostKind } from '../../hooks/core/codex.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
@@ -10,8 +10,9 @@ import { VERSION } from '../../hooks/core/text.ts'
 import type { Clock } from './clock.ts'
 import { firstLine, readOwnJson, withLock, writeFileAtomic, writeJson } from './files.ts'
 import type { LockOptions } from './files.ts'
-import type { Paths } from './paths.ts'
-import { NOTICE_TTL_MS, PRUNE_AFTER_MS, PRUNE_EVERY_MS, PRUNE_MAX } from './timing.ts'
+import type { Env, Paths } from './paths.ts'
+import { ENV_NAMES } from './settings.ts'
+import { NOTICE_TTL_MS, PRUNE_AFTER_MS, PRUNE_AGAIN_MS, PRUNE_EVERY_MS, PRUNE_MAX } from './timing.ts'
 import type { Wake } from './wake.ts'
 
 // The state files of a session and their one lock (Codex design 3.7). Every write of state.json,
@@ -45,8 +46,10 @@ export type SessionState = Stamp & {
   sessionId: string
   hostPid?: number // the Codex process of the root thread (the broker's ppid)
   hostKind?: HostKind // 3.9
+  rootBrokerPid?: number // the root broker that wrote the host fields: a daemon outlives its sessions, so this tells a live host
   transcript?: string | null // the root rollout
   attended?: boolean // 3.10, for the report and the CLI only: each broker decides for itself
+  brokerEnv?: Record<string, string> // 5.2: the SPARE10_* values of the root broker env, for the CLI only
   consent?: string // SPARE10_CONSENT format
   weeklyConsent?: string // SPARE10_WEEKLY_CONSENT format
   tombs?: Partial<Record<Kind, Tomb[]>> // B52
@@ -64,7 +67,6 @@ export type SessionState = Stamp & {
   notices?: Notice[] // 2.4, for the root thread
   continuation?: { text: string; expiresAt: number; notice: string } // 4.7
   interrupts?: Record<string, number> // turn ids that spare10 interrupted, and when
-  lastInterrupt?: { turnId: string; at: number; bySpare10: boolean } // P1 (4.12)
   updatedAt: number
 }
 
@@ -75,7 +77,6 @@ export type HeldEntry = {
   turn?: string
   since: number
   question?: string
-  prompt?: string
   brokerPid: number
   hostPid: number
 }
@@ -149,9 +150,12 @@ export class FormatError extends Error {
 // A session or thread id names a folder or a file: only these characters, so an id can never leave the data dir.
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
+/** `id` can name a file: a session or thread id that checkId takes. */
+export const isSafeId = (id: string): boolean => SAFE_ID.test(id) && !id.includes('..')
+
 /** Throws when `id` cannot name a file. */
 export function checkId(what: string, id: string): void {
-  if (!SAFE_ID.test(id) || id.includes('..')) throw new Error(`spare10: the ${what} ${JSON.stringify(id)} cannot name a file`)
+  if (!isSafeId(id)) throw new Error(`spare10: the ${what} ${JSON.stringify(id)} cannot name a file`)
 }
 
 /** The folder of a session. */
@@ -200,6 +204,34 @@ export function warnOnce(state: SessionState, id: string, text: string, now: num
   state.warned = [...(state.warned ?? []), id]
   state.notices = [...(state.notices ?? []), { at: now, text }]
   return true
+}
+
+/** The variables of 5.2 that the root broker records for the CLI. SPARE10_SIMULATE is for a launch of its own (4.18). */
+const BROKER_ENV_NAMES: readonly string[] = ENV_NAMES.map(([, name]) => name).filter((name) => name !== 'SPARE10_SIMULATE')
+
+/** 5.2: the SPARE10_* values of a root broker env, for `brokerEnv` in state.json. */
+export function brokerEnvOf(env: Env): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const name of BROKER_ENV_NAMES) {
+    const v = env[name]
+    if (typeof v === 'string') out[name] = v
+  }
+  return out
+}
+
+/**
+ * The env of the CLI for a named session (5.2): the SPARE10_* values that its root broker recorded replace
+ * those of the CLI, so the CLI judges the session as its gates do. A value that is not an object changes
+ * nothing, and an entry that is not a text counts as unset. SPARE10_SIMULATE is never taken.
+ */
+export function withBrokerEnv(env: Env, recorded: unknown): Env {
+  if (!isObject(recorded)) return env
+  const out: Record<string, string | undefined> = { ...env, SPARE10_SIMULATE: undefined }
+  for (const name of BROKER_ENV_NAMES) {
+    const v = recorded[name]
+    out[name] = typeof v === 'string' ? v : undefined
+  }
+  return out
 }
 
 const text = (v: unknown): string => JSON.stringify(v)
@@ -456,8 +488,10 @@ function removeTree(dir: string): void {
 /**
  * Removes old session folders, so the data dir does not grow with each session (3.7). It runs at most once
  * per PRUNE_EVERY_MS for each data dir (the file `pruned` keeps the time), and removes at most PRUNE_MAX
- * folders. A folder goes only when none of its files changed for PRUNE_AFTER_MS, it has no open question
- * and no stop that ends in that time, and no host or broker pid in it is alive. So the report, the sweep and
+ * folders. A prune that stops there lets the next one run PRUNE_AGAIN_MS later. A folder goes only when none
+ * of its files changed for PRUNE_AFTER_MS, it has no question whose leader is alive and no stop that ends in
+ * that time, and no host or broker pid in it is alive. The pid of a Codex daemon keeps no folder: the daemon
+ * outlives its sessions, and each thread that it has loaded has a live broker. So the report, the sweep and
  * a stop lose nothing that they still need. The folder goes under its session lock, by a rename out of
  * `sessions/` first, so a broker that resumes the session later starts a fresh folder. It never throws. The
  * ids it removed.
@@ -482,10 +516,17 @@ export function pruneSessions(paths: Pick<Paths, 'data'>, owner: string, now: nu
   const live = (pid: number | undefined): boolean => pid !== undefined && pid > 0 && alive(pid)
   /** True while nothing in `dir` needs the folder. */
   const unused = (dir: string): boolean => {
-    if (changedSince(dir, now - PRUNE_AFTER_MS) || existsSync(join(dir, 'question.json'))) return false
+    if (changedSince(dir, now - PRUNE_AFTER_MS)) return false
     try {
+      // A question outlives its session when Codex quits during the form. Only a live leader keeps it.
+      const q = readOwnJson<Partial<QuestionFile>>(join(dir, 'question.json'))
+      if (q !== undefined && (q.v !== FORMAT || live(q.leader?.pid))) return false
       const st = readOwnJson<Partial<SessionState>>(join(dir, 'state.json'))
-      if (st !== undefined && (st.v !== FORMAT || live(st.hostPid))) return false
+      if (st !== undefined && st.v !== FORMAT) return false
+      // A Codex daemon runs on after its sessions end. A thread that it has loaded keeps the folder by its live broker.
+      const daemon = st?.hostKind === 'daemon' ? st.hostPid : undefined
+      const host = (pid: number | undefined): boolean => pid !== daemon && live(pid)
+      if (host(st?.hostPid)) return false
       const stop = parseStopped(st?.stopped)
       if (stop !== undefined && stop.windowEnd > now - PRUNE_AFTER_MS) return false
       let threads: string[] = []
@@ -497,7 +538,7 @@ export function pruneSessions(paths: Pick<Paths, 'data'>, owner: string, now: nu
       for (const name of threads.filter((n) => n.endsWith('.json'))) {
         const th = readOwnJson<Partial<ThreadState>>(join(dir, 'threads', name))
         if (th === undefined) continue
-        if (th.v !== FORMAT || live(th.brokerPid) || live(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false
+        if (th.v !== FORMAT || live(th.brokerPid) || host(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false
       }
     } catch {
       return false // bad JSON: a person's edit stays
@@ -532,6 +573,14 @@ export function pruneSessions(paths: Pick<Paths, 'data'>, owner: string, now: nu
     }
     removeTree(trash)
     gone.push(name)
+  }
+  if (gone.length >= PRUNE_MAX) {
+    // More folders can be left: a broker that starts PRUNE_AGAIN_MS from now goes on.
+    try {
+      writeFileAtomic(stamp, String(now - PRUNE_EVERY_MS + PRUNE_AGAIN_MS))
+    } catch {
+      // The next prune runs a day from now.
+    }
   }
   return gone
 }

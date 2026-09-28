@@ -414,6 +414,44 @@ test('stop: releaseInPlace waits inside the 5-minute margin after a real reset i
   assert.equal(w.state().stopped, undefined)
 })
 
+test('stop: a held call goes through at once when the person switches spare10 off, and the stop is not extended', async (t) => {
+  for (const autoResume of [true, false]) {
+    const w = logicWorld(t, { config: { autoResume } })
+    const b = w.broker()
+    const stop = stopOf({ windowEnd: T0 + 5 * MIN, skip: false, auto: autoResume })
+    w.setState({ stopped: stop })
+    b.sx.store.locked((tx) => {
+      tx.thread(SID).denied = ['U1'] // the one deny of the turn went out: the call holds
+    })
+    const { s, a } = await refused(w, b)
+    const box = track(b.refusal.refusal(b.sx, heldCall({ turn: 'U1' }), 'tool', 'stop', s, a))
+    await w.advance(MIN)
+    assert.equal(box.r, undefined, `${autoResume}: held`)
+    w.config({ autoResume, scope: 'opt-in' }) // no SPARE10=on: spare10 is off
+    assert.equal(b.settings.get().enabled, false)
+    await w.advance(30 * SEC)
+    assert.deepEqual(box.r, { kind: 'pass' }, `${autoResume}: a new call passes too`)
+    assert.equal(w.state().stopped, stop, `${autoResume}: the stop is not extended`)
+    assert.deepEqual(readThread(b.sx.store, SID)?.held, [], `${autoResume}`)
+  }
+})
+
+test('stop: releaseInPlace leaves a due auto stop alone while spare10 is switched off', async (t) => {
+  // Both plans: the end (40) and the extension (92).
+  for (const pct of [40, 92]) {
+    const w = logicWorld(t, { config: { scope: 'opt-in' } })
+    const b = w.broker()
+    const stop = stopOf({ windowEnd: T0 + 5 * MIN, skip: false })
+    w.setState({ stopped: stop })
+    await w.advance(10 * MIN)
+    w.reading(SID, pct, { reset: RESET })
+    assert.equal(b.settings.get().enabled, false)
+    assert.equal(await b.refusal.releaseInPlace(b.sx), false, `${pct}`)
+    assert.equal(w.state().stopped, stop, `${pct}`)
+    assert.deepEqual(w.state().notices ?? [], [], `${pct}`)
+  }
+})
+
 test('stop: writeStopped merges with the stop of the session, and clearStopped clears the held stop too', () => {
   const st = freshState(SID)
   const first = writeStopped(st, { kinds: ['five_hour'], windowEnd: T0 + HOUR, work: false, auto: true, test: false, skip: false, real: [] }, T0)
@@ -497,4 +535,53 @@ test('stop: a test skip stop with the real tag still refuses past its end in a n
   w.reading(SID, 92, { reset: RESET + 5 * HOUR })
   const s2 = await b.sense.sense(b.sx, 'tool')
   assert.deepEqual((await b.sense.act(b.sx, s2, { site: 'tool' })).verdict, { kind: 'hold' })
+})
+
+test('stop: releaseInPlace and takeOverdueStop leave a stop that the person set after their read', async (t) => {
+  const person = formatStopped({ sessionId: SID, windowEnd: T0 + 5 * HOUR, at: T0, kinds: ['five_hour', 'seven_day'], work: true })
+  // releaseInPlace: the stop changes while the live read runs. Both plans: the end and the extension.
+  for (const pct of [40, 92]) {
+    const w = logicWorld(t, { daemon: true })
+    const b = w.broker()
+    w.setState({ stopped: formatStopped({ sessionId: SID, windowEnd: T0 + 5 * MIN, at: T0, kinds: ['five_hour'], auto: true, work: true }) })
+    await w.advance(10 * MIN)
+    w.reading(SID, pct, { reset: RESET })
+    w.daemon.script.rateLimits = () => {
+      w.setState({ stopped: person })
+      throw new Error('no rate limits scripted')
+    }
+    assert.equal(await b.refusal.releaseInPlace(b.sx), false, `${pct}`)
+    assert.equal(w.state().stopped, person, `${pct}`)
+    assert.deepEqual(w.state().notices ?? [], [], `${pct}`)
+  }
+  // takeOverdueStop: another broker writes the stop between the read and the lock.
+  const w = logicWorld(t)
+  const b = w.broker()
+  w.setState({ stopped: formatStopped({ sessionId: SID, windowEnd: T0 - MIN, at: T0 - HOUR, kinds: ['five_hour'], auto: true, work: true }) })
+  const racing = {
+    sid: SID,
+    store: {
+      read: () => {
+        const st = b.sx.store.read()
+        w.setState({ stopped: person })
+        return st
+      },
+      locked: b.sx.store.locked,
+    },
+  }
+  assert.equal(await takeOverdueStop(racing, { cfg: { enabled: true }, now: T0, attended: true, holders: [] }), undefined)
+  assert.equal(w.state().stopped, person)
+  assert.deepEqual(w.state().notices ?? [], [])
+})
+
+test('stop: releaseInPlace with no reading at all past the due time releases nothing (3.6)', async (t) => {
+  const w = logicWorld(t, { daemon: true })
+  const b = w.broker()
+  const stop = stopOf({ windowEnd: T0 + 5 * MIN })
+  w.setState({ stopped: stop }) // no rollout reading, no seed, and the daemon read fails
+  await w.advance(10 * MIN)
+  assert.equal(await b.refusal.releaseInPlace(b.sx), false)
+  assert.ok(w.daemon.callsOf('rateLimits').length > 0, 'it read the daemon first')
+  assert.equal(w.state().stopped, stop)
+  assert.deepEqual(w.state().notices ?? [], [])
 })

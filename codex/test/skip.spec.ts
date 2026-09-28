@@ -155,6 +155,7 @@ test('skip: a kind at 100% with usable credits is never open, and its question n
   assert.equal(h.box.done, false, 'inside the last 20 min, and still asked')
   const q = question(w)
   assert.equal(q?.credits, '42.50')
+  assert.equal(q?.limit, undefined, 'credits pay past 100%: no pause at the limit, the question of the reserve')
   const message = (b.forms()[0]?.['params'] as Record<string, unknown>)['message'] as string
   assert.ok(message.endsWith(` ${codexText.creditsQuestion('42.50')}`))
   // The report names the credits (CX16).

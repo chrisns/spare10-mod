@@ -1,6 +1,7 @@
 import type { EngineInterface, Register, SessionRateLimit, Timer } from 'claude-code'
 import {
   DEFAULTS,
+  LIMIT_UNREAD,
   NO_SPANS,
   childHeadless,
   flagOnlyInShell,
@@ -29,6 +30,7 @@ import {
   heldPast,
   isOverdue,
   joinableAt,
+  limitVerdict,
   noteSlot,
   parseConsent,
   parseStopped,
@@ -39,11 +41,12 @@ import {
   unbury,
   withoutFloor,
 } from './core/decide.ts'
-import type { Answered, Consent, ConsentSlots, Holder, Outcome, Site, StoppedRecord, Tomb } from './core/decide.ts'
+import type { Answered, Consent, ConsentSlots, Holder, Mode, Outcome, Site, StoppedRecord, Tomb } from './core/decide.ts'
 import {
   KINDS,
   anchoredOf,
   asAnchored,
+  atLimit,
   basis,
   initialMemory,
   isTripped,
@@ -53,6 +56,8 @@ import {
   sawLive,
   sawMeasure,
   viewOf,
+  voidedByReset,
+  withoutVoided,
 } from './core/reading.ts'
 import type { Anchored, Basis, Kind, Memory } from './core/reading.ts'
 import {
@@ -60,6 +65,7 @@ import {
   COMMAND_DESCRIPTION,
   HEADER,
   HEADLESS_GENERIC,
+  LIMIT_OPTIONS,
   NOT_STARTED_GENERIC,
   QUESTION_OPTIONS,
   RESUME_LABEL,
@@ -68,6 +74,7 @@ import {
   bgEnvWarning,
   commandFailed,
   debugLine,
+  limitQuestionText,
   notPerson,
   notice,
   questionText,
@@ -94,6 +101,7 @@ import {
   commandHolders,
   consentBeyond,
   consentOfEnd,
+  continuesLine,
   dueRelease,
   dueStep,
   dueWait,
@@ -113,12 +121,15 @@ import {
   needsRealList,
   noFloor,
   notStartedFor,
+  promptWaitsLine,
   questionEdges,
   questionOf,
-  raiseAtFloor,
+  quietOf,
   raisesInPlace,
   refusalText,
   resetTooRecent,
+  resumeAskingReply,
+  resumeAtLimit,
   resumeCase,
   resumeNotice,
   resumeReadReply,
@@ -129,6 +140,7 @@ import {
   simulateText,
   splitKind,
   statusInput,
+  stopAutoOf,
   stopAskingIdle,
   stopAskingReply,
   stopCase,
@@ -143,11 +155,14 @@ import {
   stopRecordOf,
   stopTrippedReply,
   stopWriteOf,
+  stopsAtLimit,
+  supersedes,
   takenOf,
   takeoverSense,
   tellText,
   testReading,
   tickPlan,
+  tierAtResume,
   toldMainOf,
   toldNotice,
   unansweredGating,
@@ -185,6 +200,9 @@ import type {
 // The resume floor (floor B48 to B55): a Resume at the reserve consents only until the floor point. A
 // consent to the floor applies while the reading is below its end point, and a gate path ends it for
 // good when its own basis reaches that point (B52). Then the kind gates again: the second question.
+// The quota limit (limit design): at 100% used with a known reset, a kind gates in every state, also open
+// or consented. The limit question asks Continue at the reset or Stop here. Continue at the reset writes
+// nothing: the held loops wait in place, and its due time releases them after the reset.
 
 type Ctx = { site: Site; agentId?: string; person?: boolean; resumed?: readonly Answered[] } // resumed: what the Resume that ended the last round answered (B50)
 type Settled = Outcome | 'again' // again: ended without an answer (4.5)
@@ -203,6 +221,7 @@ const HANDOFF_LIMIT = 5
 const FAST_MS = 1000
 const FAST_LIMIT = 3
 const PULSE_MS = 1000
+const PULSE_REUSE_MS = 5 * PULSE_MS // a pulse render reuses the last tripped inputs this long: only the glyph changes
 const BUDGET_LOG_MS = 600_000 // one budget debug line per 10 minutes per question (B40)
 const EDGE_LIMIT = 64
 const WATCH_MS = 300_000 // the period of the watch timer, the ticker's slow second clock (4.2)
@@ -217,6 +236,7 @@ let base: Settings = DEFAULTS // register()
 let effective: Promise<Effective> | undefined // register() resets it
 let autoNow: boolean = DEFAULTS.autoResume // this copy's effective autoResume, answered by $.spare10.auto()
 let spansNow: Spans = NO_SPANS // B47: this copy's spans of its last successful settings read, answered by $.spare10.spans()
+let limitNow: boolean = LIMIT_UNREAD // this copy's effective limitPause, answered by $.spare10.limit(): on until a settings read succeeds
 let attended: boolean | undefined // session.start, else lazily
 let sid: string | undefined // session.start, refreshed by stoppedNow, writeStopped, writeConsent, and act on a tell or headless verdict
 let endedSid: string | undefined // the id the last /clear or /resume ended: its stop no longer counts (D3)
@@ -236,7 +256,7 @@ let seq = 0
 let openKey: string | undefined
 const questions = new Map<string, Question>()
 const outcomes = new Map<string, Settled>()
-const outcomeWaits = new Map<string, Array<(o: Settled) => void>>()
+const outcomeWaits = new Map<string, Array<(o: Settled | 'continue') => void>>() // 'continue': Continue at the reset withdraws the dialog
 const needsRaise = new Set<string>()
 const raising: Array<{ text: string; key: string }> = [] // one entry per $.ui.ask in flight, until that ask ends
 const parked = new Map<string, (why: string) => void>()
@@ -267,6 +287,9 @@ let watch: Timer | undefined // the second clock: it re-arms a dead ticker (4.2)
 let lastWatch = 0 // clock time of the last watch period (the ticker reads it)
 let pulse: Timer | undefined
 let blink = true
+let drawGen = 0 // redraw() calls: a render after one senses afresh
+let pulseDue = false // a pulse asked for renders, and no redraw came since: each render of each surface may reuse
+let trippedInputs: { gen: number; at: number; reserve: number; test: boolean; mode: Mode } | undefined // the last full tripped render
 let viewKey = ''
 
 // ---- Settings (8.2) ----
@@ -277,6 +300,7 @@ function settings($: EngineInterface): Promise<Effective> {
       const eff = withEnv(base, env)
       autoNow = eff.autoResume
       spansNow = { lastMinutes: eff.lastMinutes, weeklyLastHours: eff.weeklyLastHours }
+      limitNow = eff.limitPause
       return eff
     },
     () => {
@@ -296,6 +320,7 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
   const weeklyResumeFloor = await $.env.get('SPARE10_WEEKLY_RESUME_FLOOR')
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
+  const limitPause = await $.env.get('SPARE10_LIMIT_PAUSE')
   const headless = await $.env.get('SPARE10_HEADLESS')
   const onOff = await $.env.get('SPARE10')
   const simulate = await $.env.get('SPARE10_SIMULATE')
@@ -308,6 +333,7 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
     ...(weeklyResumeFloor !== undefined && { weeklyResumeFloor }),
     ...(pausePrompt !== undefined && { pausePrompt }),
     ...(autoResume !== undefined && { autoResume }),
+    ...(limitPause !== undefined && { limitPause }),
     ...(headless !== undefined && { headless }),
     ...(onOff !== undefined && { onOff }),
     ...(simulate !== undefined && { simulate }),
@@ -379,6 +405,24 @@ async function spansFor($: EngineInterface, cfg: Effective, bases: Bases): Promi
   return anyTripped ? await spansInForce($) : NO_SPANS
 }
 
+/**
+ * The settings with the pause at the quota limit in force: the newest copy's answer, asked only when a
+ * watched kind is at 100% or more with a reset (so an event below it costs no noun call). A reload changes
+ * the option, and a held loop of an older copy then reads the new value. A copy that cannot reach the noun,
+ * or a newest copy with no limit method (an older build: the call throws before it returns a promise),
+ * keeps this copy's value.
+ */
+async function limitFor($: EngineInterface, cfg: Effective, bases: Bases): Promise<Effective> {
+  if (!watchedKinds(cfg).some((kind) => atLimit(bases[kind].basis))) return cfg
+  let on: boolean
+  try {
+    on = await $.spare10.limit()
+  } catch {
+    on = cfg.limitPause
+  }
+  return on === cfg.limitPause ? cfg : { ...cfg, limitPause: on }
+}
+
 /** Every watched kind at now (flow.ts sensesOf). The skip starts of tripped kinds are badge edges (skip 4.1). */
 function sensesNow(cfg: Effective, bases: Bases, spans: Spans, now: number): KindSense[] {
   const r = sensesOf(cfg, bases, spans, now, fallbackEnd, mem)
@@ -407,13 +451,23 @@ async function isBg($: EngineInterface): Promise<boolean> {
  * The consents of a kind (floor 4.2): this copy's slots, the test slots on a test basis, and an env value
  * that belongs to this process (3.5, 9.3) with its raw text. A clear during the read gives the slots only.
  * An env value that a tomb of this copy buries is no consent, and it goes by compare-and-set (B52).
+ * `realEnd` (A22): the reset of the kind's real reading, null when unknown. A stamped env value and a real
+ * slot that an early reset voided are no consent either: the value goes by compare-and-set, the slot at once.
+ * A bare value that you set yourself stays until its time.
  */
-async function consentsOf($: EngineInterface, kind: Kind, attendedNow: boolean, testBasis: boolean): Promise<Sourced[]> {
+async function consentsOf(
+  $: EngineInterface,
+  kind: Kind,
+  attendedNow: boolean,
+  testBasis: boolean,
+  realEnd: number | null = null,
+): Promise<Sourced[]> {
   const epoch = consentEpoch
   // Two branches, so each $.env.get keeps a literal name.
   const raw = kind === 'seven_day' ? await $.env.get('SPARE10_WEEKLY_CONSENT') : await $.env.get('SPARE10_CONSENT')
   const read = parseConsent(raw)
-  const dead = read !== undefined && buried(tombs[kind], read)
+  const voided = read?.sessionId !== undefined && realEnd !== null && voidedByReset(read, realEnd)
+  const dead = read !== undefined && (buried(tombs[kind], read) || voided)
   if (dead) void unsetIfSame($, kind, raw).catch(() => undefined)
   const c = dead ? undefined : read
   const counts =
@@ -423,16 +477,22 @@ async function consentsOf($: EngineInterface, kind: Kind, attendedNow: boolean, 
       bg: attendedNow && c.sessionId === undefined ? await isBg($) : false,
       ids: attendedNow && c.sessionId !== undefined ? [...pastIds, await $.session.id()] : [],
     })
-  if (epoch !== consentEpoch) return slotsOf(kind, false) // a clear ran meanwhile: this read is stale
+  if (epoch !== consentEpoch) return slotsOf(kind, false, realEnd) // a clear ran meanwhile: this read is stale
   const env: Sourced[] = counts ? [{ c: { until: c.until, ...(c.to === undefined ? {} : { to: c.to }) }, from: 'env', ...(raw === undefined ? {} : { raw }) }] : []
-  return [...slotsOf(kind, testBasis), ...env]
+  return [...slotsOf(kind, testBasis, realEnd), ...env]
 }
 
-/** This copy's consents of a kind as they are now: the slots, and the test slots on a test basis. */
-const slotsOf = (kind: Kind, testBasis: boolean): Sourced[] => [
-  ...slotList(consentCache[kind]).map((x): Sourced => ({ c: x, from: 'slot' })),
-  ...(testBasis ? slotList(testConsent[kind]).map((x): Sourced => ({ c: x, from: 'test' })) : []),
-]
+/**
+ * This copy's consents of a kind as they are now: the slots, and the test slots on a test basis. A22: a
+ * real slot that an early reset voided (`realEnd`) goes at once. A test slot never does: its window is the test's.
+ */
+function slotsOf(kind: Kind, testBasis: boolean, realEnd: number | null = null): Sourced[] {
+  if (realEnd !== null) consentCache[kind] = withoutVoided(consentCache[kind], realEnd)
+  return [
+    ...slotList(consentCache[kind]).map((x): Sourced => ({ c: x, from: 'slot' })),
+    ...(testBasis ? slotList(testConsent[kind]).map((x): Sourced => ({ c: x, from: 'test' })) : []),
+  ]
+}
 
 /** A Resume of this copy. A new real consent to the floor lifts the tombs that bury it (B52). */
 function noteConsent(kind: Kind, c: Consent, isTest: boolean): void {
@@ -607,9 +667,10 @@ async function listed($: EngineInterface, agentId: string): Promise<boolean> {
 // ---- The decision (5.2) ----
 
 async function sense($: EngineInterface): Promise<Sensed> {
-  const cfg = await settings($)
+  const own = await settings($)
   const now = await $.clock.now()
   const bases = await currentBases($, now)
+  const cfg = await limitFor($, own, bases) // the pause at the limit in force
   const kinds = sensesNow(cfg, bases, await spansFor($, cfg, bases), now)
   noteBasis($, kinds)
   const tripped = kinds.some((k) => k.tripped)
@@ -627,9 +688,9 @@ async function splitOf($: EngineInterface, s: { kinds: readonly KindSense[]; now
   const out = emptySplit()
   for (const k of s.kinds) {
     if (!k.tripped) continue
-    const read = await consentsOf($, k.kind, s.attended, k.test).then(
+    const read = await consentsOf($, k.kind, s.attended, k.test, k.realReset).then(
       (list) => ({ list, failed: false }),
-      () => ({ list: slotsOf(k.kind, k.test), failed: true }),
+      () => ({ list: slotsOf(k.kind, k.test, k.realReset), failed: true }),
     )
     if (!k.open) endFloors($, k, read.list, s.now, read.failed) // B52: sync slots and tombs, void env
     splitKind(out, k, read.list, read.failed, s.now) // unreadable: not consented
@@ -656,7 +717,7 @@ async function holdersOf(
 ): Promise<Holder[]> {
   const lists: Partial<Record<Kind, Sourced[]>> = {}
   for (const k of s.kinds) {
-    if (needsRealList(k)) lists[k.kind] = await consentsOf($, k.kind, s.attended, false).catch((): Sourced[] => [])
+    if (needsRealList(k)) lists[k.kind] = await consentsOf($, k.kind, s.attended, false, k.realReset).catch((): Sourced[] => [])
   }
   return holdersFrom(s.kinds, gating, (k) => lists[k.kind] ?? [], s.now)
 }
@@ -706,7 +767,7 @@ function wakeAll(): void {
   wake = newWake()
 }
 
-function outcomeOf(key: string): Promise<Settled> {
+function outcomeOf(key: string): Promise<Settled | 'continue'> {
   const o = outcomes.get(key)
   if (o !== undefined) return Promise.resolve(o)
   return new Promise((resolve) => outcomeWaits.set(key, [...(outcomeWaits.get(key) ?? []), resolve]))
@@ -771,8 +832,8 @@ async function hold($: EngineInterface, signal: AbortSignal, key: string, left: 
     const q = questions.get(key)
     if (q !== undefined) {
       q.waiting -= 1
-      // Nobody left to raise it, or a silent hold with no waiter (5.5).
-      if (q.waiting === 0 && !outcomes.has(key) && (needsRaise.has(key) || q.silent)) forget($, key)
+      // Nobody left to raise it, or a quiet hold with no waiter (5.5): silent, or chosen at the limit. The next step asks again.
+      if (q.waiting === 0 && !outcomes.has(key) && (needsRaise.has(key) || quietOf(q))) forget($, key)
     }
   }
 }
@@ -781,11 +842,13 @@ async function decidedElsewhere($: EngineInterface, key: string): Promise<Outcom
   const q = questions.get(key)
   if (q === undefined) return undefined
   const now = await $.clock.now().catch(() => q.since)
-  let covered = q.kinds.length > 0
-  for (const kind of q.kinds) {
+  let covered = q.kinds.length > 0 && q.limit !== true // a consent never answers the limit question
+  for (const kind of covered ? q.kinds : []) {
     const end = q.ends[kind]
     // B50 item 3: a consent answers a kind at a matching tier. A consent to the floor never answers a kind asked at the floor.
-    const list = end === undefined ? [] : await consentsOf($, kind, !q.silent, end.test).catch((): Sourced[] => [])
+    // A22: a consent of an earlier window is void, also when the gate could not unset it. As Codex question.ts.
+    const realEnd = end === undefined || end.test ? null : end.end
+    const list = end === undefined ? [] : await consentsOf($, kind, !q.silent, end.test, realEnd).catch((): Sourced[] => [])
     if (!answersKind(end, list, now)) {
       covered = false
       break
@@ -808,8 +871,8 @@ async function dueCheck($: EngineInterface, key: string): Promise<boolean> {
     const now = await $.clock.now()
     if (dueWait(q, now)) return false
     q.nextCheck = now + CHECK_MS
-    // The setting in force: a silent question never reads it.
-    const step = dueStep(q, now, q.silent || (await $.spare10.auto().catch(() => q.auto)))
+    // The setting in force: a quiet question never reads it.
+    const step = dueStep(q, now, quietOf(q) || (await $.spare10.auto().catch(() => q.auto)))
     if (step === 'note') {
       q.noted = true
       $.ui.log(notice.resetWaitingFor(namedOf(q))) // D0.2, byte for byte
@@ -845,7 +908,7 @@ async function dueCheck($: EngineInterface, key: string): Promise<boolean> {
 }
 
 /** 4.5: the question ends without an answer. Synchronous, writes nothing: every held loop decides afresh. */
-function settleAgain($: EngineInterface, key: string, via: 'reset' | 'quota', gatingNow: readonly KindSense[], s: Sensed): void {
+function settleAgain($: EngineInterface, key: string, via: 'reset' | 'quota' | 'limit', gatingNow: readonly KindSense[], s: Sensed): void {
   if (outcomes.has(key)) return
   const q = questions.get(key)
   outcomes.set(key, 'again')
@@ -873,10 +936,20 @@ async function noteBudget($: EngineInterface, key: string, leftMs: number): Prom
 function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed, a: Acted): string {
   const g = namedKinds(s, a)
   if (openKey !== undefined) {
-    const open = questions.get(openKey)
-    if (open !== undefined && joinableAt(outcomes.get(openKey), answeredOf(open), g.map(viewedOf))) {
+    const key = openKey
+    const open = questions.get(key)
+    if (open !== undefined && !outcomes.has(key) && supersedes(open, g)) {
+      // A kind is at the quota limit now: the question at the reserve gives way. Its waiters decide again
+      // and join the limit question that opens below (synchronous: no race).
+      settleAgain($, key, 'limit', g, s)
+    } else if (open !== undefined && joinableAt(outcomes.get(key), answeredOf(open), g.map(viewedOf))) {
       if (opener === 'loop') open.loops += 1
-      return openKey // join (synchronous check: no race)
+      else {
+        // A person prompt after Continue at the reset joins with no dialog: say that it waits.
+        const line = promptWaitsLine(open, s.now)
+        if (line !== undefined) $.ui.log(line)
+      }
+      return key // join (synchronous check: no race)
     }
     // A settled again, or a settled Resume that does not answer a kind that gates now (B50): a new question.
   }
@@ -893,7 +966,8 @@ function ensureQuestion($: EngineInterface, opener: 'loop' | 'prompt', s: Sensed
 
 function raise($: EngineInterface, key: string, r: Raiser): void {
   const q = questions.get(key)
-  if (q === undefined || outcomes.has(key)) return // settled before this waiter got to it
+  if (q === undefined || outcomes.has(key) || q.chosen === true) return // settled, or chosen at the limit, before this waiter got to it
+  if (q.limit === true) return raiseLimit($, key, q, r)
   const text = questionText(q.facts, q.opener, q.mode, q.auto)
   // The entry lives until this ask ends, never less: a question settled before its dialog reaches hook 5
   // must still find it there, so that hook 5 withdraws the dialog (4.3).
@@ -920,9 +994,66 @@ function raise($: EngineInterface, key: string, r: Raiser): void {
   }
 }
 
+/**
+ * The limit question: Continue at the reset first, with the focus. Only the exact Stop here label stops.
+ * Every other answer, and a dialog that cannot show, continues at the reset (`chooseContinue`). A dialog
+ * that ends with no answer goes to `lost`: Esc and "Chat about this" continue there too.
+ */
+function raiseLimit($: EngineInterface, key: string, q: Question, r: Raiser): void {
+  const text = limitQuestionText(q.facts, q.opener, q.auto)
+  const entry = { text, key } // as in raise: the entry lives until this ask ends, so hook 5 can withdraw it
+  raising.push(entry)
+  const ended = (): void => {
+    const i = raising.indexOf(entry)
+    if (i >= 0) raising.splice(i, 1)
+  }
+  try {
+    void $.ui.ask(text, { options: [...LIMIT_OPTIONS], header: HEADER }).then(
+      (answer) => {
+        ended()
+        if (limitVerdict(answer, LIMIT_OPTIONS[1]) === 'stop') void settle($, key, 'stop', 'dialog')
+        else chooseContinue($, key, 'dialog')
+      },
+      () => {
+        ended()
+        lost($, key, r)
+      },
+    )
+  } catch {
+    ended()
+    chooseContinue($, key, 'could not ask')
+  }
+}
+
+/**
+ * Continue at the reset on an open limit question. It writes no outcome, so the held loops keep waiting in
+ * place, and new loops join the question with no dialog. The question becomes quiet (`quietOf`): no raise
+ * and no hand-off again, a dialog still up is withdrawn, and its check runs at once. Its due time releases
+ * the work after the reset in both autoResume modes.
+ */
+function chooseContinue($: EngineInterface, key: string, via: Via): void {
+  const q = questions.get(key)
+  if (q === undefined || outcomes.has(key) || q.limit !== true || q.chosen === true) return
+  q.chosen = true
+  q.nextCheck = 0
+  needsRaise.delete(key)
+  for (const resolve of outcomeWaits.get(key) ?? []) resolve('continue') // withdraws this copy's dialog
+  outcomeWaits.delete(key)
+  if (via !== 'command') void noteContinues($, q)
+  wakeAll()
+  redraw($)
+}
+
+/** The line of Continue at the reset, only while the reset is ahead (flow.ts continuesLine). A failed clock read logs it. */
+async function noteContinues($: EngineInterface, q: Question): Promise<void> {
+  const now = await $.clock.now().catch(() => undefined)
+  const line = now === undefined ? notice.limitContinues(q.facts) : continuesLine(q, now)
+  if (line !== undefined) $.ui.log(line)
+}
+
 function lost($: EngineInterface, key: string, r: Raiser): void {
   const q = questions.get(key)
-  if (q === undefined || outcomes.has(key)) return // withdrawn by spare10 itself
+  if (q === undefined || outcomes.has(key) || q.chosen === true) return // withdrawn by spare10 itself, or chosen at the limit
   if (r.signal.aborted) {
     // The raiser's dispatch went away and nobody answered.
     if (q.waiting === 0) return forget($, key) // nothing is held any more
@@ -934,7 +1065,9 @@ function lost($: EngineInterface, key: string, r: Raiser): void {
       return
     }
   }
-  void settle($, key, 'stop', 'dialog ended without an answer') // Esc, dismissed, time limit, no tool
+  // Esc, dismissed, time limit, no tool: Stop here, and at the limit Continue at the reset.
+  if (q.limit === true) chooseContinue($, key, 'dialog ended without an answer')
+  else void settle($, key, 'stop', 'dialog ended without an answer')
 }
 
 function forget($: EngineInterface, key: string): void {
@@ -1008,7 +1141,6 @@ async function settle($: EngineInterface, key: string, outcome: Outcome, via: Vi
  * failed sense gives empty lists: the D0.2 write, with the real kinds of the question when it opened.
  */
 async function settleStop($: EngineInterface, q: Question, via: Via, now: number): Promise<Late> {
-  const auto = await $.spare10.auto().catch(() => autoNow) // the setting in force
   let sNow: StopSense | undefined
   try {
     const sensed = await sense($)
@@ -1017,7 +1149,10 @@ async function settleStop($: EngineInterface, q: Question, via: Via, now: number
   } catch {
     sNow = undefined // fail closed: the question's real kinds (flow.ts stopPlan)
   }
-  const plan = stopPlan(q, now, auto, sNow)
+  // The setting in force. A Stop here at the limit never continues by itself, also on a question at the
+  // reserve while a kind at the limit gates now, but the hold time limit does (flow.ts stopsAtLimit).
+  const auto = stopAutoOf(q, via, await $.spare10.auto().catch(() => autoNow), sNow)
+  const plan = stopPlan(q, now, auto, sNow, stopsAtLimit(q, via, sNow))
   if (plan.kind === 'open') {
     // B46 open: nothing is stopped. Held work is refused (the outcome is stop), new work passes.
     const text = stopOpenNotice(q, plan.ended, via)
@@ -1364,33 +1499,44 @@ function took($: EngineInterface, record: StoppedRecord, s: { kinds: readonly Ki
 // ---- Badge (3.4, 7) ----
 
 function redraw($: EngineInterface): void {
+  drawGen += 1
+  pulseDue = false
   if (base.badge) $.ui.invalidate('ui.render')
 }
 
+/**
+ * The tripped row pulses once a second. A pulse only swaps the glyph: until the next redraw, each render
+ * on each surface reuses the inputs of the last full render for up to PULSE_REUSE_MS (`drawGen`). So an
+ * idle tripped session reads the quota about once in 5 s, not once a second per surface.
+ */
 function syncPulse($: EngineInterface, wanted: boolean): void {
   if (wanted && pulse === undefined) {
     pulse = $.clock.every(PULSE_MS, () => {
       blink = !blink
-      redraw($)
+      pulseDue = true
+      if (base.badge) $.ui.invalidate('ui.render')
     })
   } else if (!wanted && pulse !== undefined) {
     pulse.cancel()
     pulse = undefined
     blink = true
+    pulseDue = false
+    trippedInputs = undefined
   }
 }
 
 /** The phase and its inputs, with the same reads as the gate (3.1, 3.5). */
 async function seen($: EngineInterface): Promise<Seen> {
-  const cfg = await settings($)
+  const own = await settings($)
   const now = await $.clock.now()
   const bases = await currentBases($, now)
+  const cfg = await limitFor($, own, bases) // the pause at the limit in force
   const sensed = sensesNow(cfg, bases, await spansFor($, cfg, bases), now)
   const tripped = sensed.some((k) => k.tripped)
   const att = await isAttended($)
   const kinds = att ? sensed : sensed.map(noFloor) // B55
   const lists: Partial<Record<Kind, Consent[]>> = {}
-  for (const k of kinds) lists[k.kind] = (await consentsOf($, k.kind, att, k.test)).map((e) => e.c)
+  for (const k of kinds) lists[k.kind] = (await consentsOf($, k.kind, att, k.test, k.realReset)).map((e) => e.c)
   // As splitOf classifies (floor 4.2), but it only reads: it never ends a consent (B52).
   const split = seenSplit(kinds, (k) => lists[k.kind] ?? [], now)
   const holders = cfg.enabled && att ? await holdersOf($, { kinds, now, attended: att }, split.gating) : [] // TS1
@@ -1402,11 +1548,25 @@ async function seen($: EngineInterface): Promise<Seen> {
 }
 
 async function badgeNow($: EngineInterface): Promise<View> {
+  // Only redraw() clears pulseDue: with two surfaces, each render of a pulse takes the reuse.
+  const reuse = pulseDue ? trippedInputs : undefined
   try {
+    if (reuse !== undefined && reuse.gen === drawGen) {
+      const now = await $.clock.now().catch(() => undefined)
+      if (now !== undefined && reuse.gen === drawGen && now >= reuse.at && now - reuse.at < PULSE_REUSE_MS) {
+        watchTicker($, now)
+        return badgeView('tripped', { reserve: reuse.reserve, test: reuse.test, mode: reuse.mode, blink })
+      }
+    }
+    const gen = drawGen // a redraw during the reads below makes these inputs stale
     const p = await seen($)
     watchTicker($, p.now)
-    return badgeView(p.phase, { reserve: p.cfg.reserve, test: p.kinds.some((k) => k.test), mode: modeOf(p.cfg), blink, ...untilOf(p) })
+    const test = p.kinds.some((k) => k.test)
+    const mode = modeOf(p.cfg)
+    trippedInputs = p.phase === 'tripped' ? { gen, at: p.now, reserve: p.cfg.reserve, test, mode } : undefined
+    return badgeView(p.phase, { reserve: p.cfg.reserve, test, mode, blink, ...untilOf(p) })
   } catch {
+    trippedInputs = undefined
     // The label of the reserve in force (SPARE10_RESERVE included), when the settings are readable.
     const cfg = await settings($).catch(() => undefined)
     return badgeView('waiting', { reserve: cfg?.reserve ?? base.reserve, test: false, mode: 'hold', blink })
@@ -1416,8 +1576,16 @@ async function badgeNow($: EngineInterface): Promise<View> {
 // ---- Start-up checks (B16, B28, B29, B37) ----
 
 async function sessionChecks($: EngineInterface, eff: Effective): Promise<string[]> {
+  // B16, B37 first, in a try of its own: a failed read for a warning never skips the child policy.
+  try {
+    const child = childHeadless(eff.headless, (await $.env.get('SPARE10_HEADLESS')) !== undefined)
+    if (child !== undefined) await $.env.set('SPARE10_HEADLESS', child)
+  } catch (err) {
+    $.ui.log(debugLine.startFailed(String(err)), { to: 'debug' })
+  }
+  // Each read below feeds one warning only: a failed read drops that warning.
   const out: string[] = []
-  const inProcess = (await $.env.get('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS')) !== undefined
+  const inProcess = (await $.env.get('CLAUDE_CODE_ENABLE_FUNCTION_HOOKS').catch(() => undefined)) !== undefined
   const sources = [
     await $.settings.read({ source: 'user' }).catch(() => ({})),
     await $.settings.read({ source: 'project' }).catch(() => ({})),
@@ -1427,10 +1595,8 @@ async function sessionChecks($: EngineInterface, eff: Effective): Promise<string
   ]
   if (flagOnlyInShell(inProcess, sources)) out.push(W_FLAG)
   const merged = await $.settings.read().catch(() => ({}))
-  const limit = questionTimeout(merged, await $.env.get('CLAUDE_AFK_TIMEOUT_MS'))
+  const limit = questionTimeout(merged, await $.env.get('CLAUDE_AFK_TIMEOUT_MS').catch(() => undefined))
   if (limit !== undefined) out.push(timeoutWarning(limit, eff.autoResume))
-  const child = childHeadless(eff.headless, (await $.env.get('SPARE10_HEADLESS')) !== undefined)
-  if (child !== undefined) await $.env.set('SPARE10_HEADLESS', child) // B16, B37
   return out
 }
 
@@ -1456,6 +1622,11 @@ async function bgWarnings($: EngineInterface): Promise<string[]> {
   if (pausePrompt !== undefined) set.push(['SPARE10_PAUSE_PROMPT', pausePrompt])
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
   if (autoResume !== undefined) set.push(['SPARE10_AUTO_RESUME', autoResume])
+  const limitPause = await $.env.get('SPARE10_LIMIT_PAUSE')
+  if (limitPause !== undefined) set.push(['SPARE10_LIMIT_PAUSE', limitPause])
+  // A test reading from the daemon trips each background job, and its question looks like a real one.
+  const simulate = await $.env.get('SPARE10_SIMULATE')
+  if (simulate !== undefined) set.push(['SPARE10_SIMULATE', simulate])
   return set.length === 0 ? [] : [bgEnvWarning(set)]
 }
 
@@ -1482,16 +1653,26 @@ async function resumeCommand($: EngineInterface): Promise<string> {
   if (!cfg.enabled || !(await isAttended($))) return resumeReply('off')
   const sNow = await sense($).catch(() => undefined) // skip 4.6: the takeover names what opened
   const now = sNow?.now ?? (await $.clock.now())
+  // At the quota limit resume chooses Continue at the reset on the limit question, or changes nothing.
+  const openNow = openQuestion()
+  const atLimitNow = resumeAtLimit(sNow, openNow === undefined ? undefined : questions.get(openNow))
+  if (atLimitNow !== undefined) {
+    if (atLimitNow.choose && openNow !== undefined) chooseContinue($, openNow, 'command')
+    return atLimitNow.reply
+  }
   const overdue = await takeOverdueStop($, { cfg, now, attended: true, ...takeoverSense(sNow) })
   if (overdue !== undefined) return resumeReply('overdue', undefined, overdue.reset, overdue.open)
   const open = openQuestion()
   if (open !== undefined) {
     const q = questions.get(open)
-    if (q !== undefined && sNow !== undefined) raiseAtFloor(q, sNow)
+    if (q !== undefined && sNow !== undefined) tierAtResume(q, sNow) // each kind at its tier now (B50 item 4)
     await settle($, open, 'resume', 'command')
-    return resumeReply('asking', q?.facts, undefined, undefined, q?.mode)
+    return resumeAskingReply(q, now)
   }
   const s = sNow ?? (await sense($))
+  // A failed first sense skipped the limit check above, and no question is open: check it on this sense.
+  const late = sNow === undefined ? resumeAtLimit(s, undefined) : undefined
+  if (late !== undefined) return late.reply
   const mode = modeOf(cfg)
   const early = resumeReadReply(s)
   if (early !== undefined) return early
@@ -1597,7 +1778,7 @@ async function simulateCommand($: EngineInterface, words: readonly string[]): Pr
   }
   redraw($)
   // This copy's spans: the newest copy's (a command runs there).
-  return simulateText({ spec, reading, inPlace, cfg, spans: cfg, live, mem: mem[spec.kind], now })
+  return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: mem[spec.kind], now })
 }
 
 // ---- Registrations (10.9.6) ----
@@ -1607,6 +1788,7 @@ export const register: Register = (on, options) => {
   effective = undefined
   autoNow = base.autoResume
   spansNow = NO_SPANS // B47: 0 until this copy's first successful settings read
+  limitNow = LIMIT_UNREAD // fail closed until this copy's first successful settings read, as spansNow (B47)
 
   // 1. The carrier a held dispatch parks on (4.4), and the setting in force (3.4). No .catch on engine.create.
   on('engine.create', async ($, e, next) => {
@@ -1625,6 +1807,7 @@ export const register: Register = (on, options) => {
         },
         auto: () => Promise.resolve(autoNow), // noun calls route to the newest copy
         spans: () => Promise.resolve(spansNow), // B47: the spans in force, from the newest copy
+        limit: () => Promise.resolve(limitNow), // the pause at the quota limit in force, from the newest copy
       },
     }
   })
@@ -1642,11 +1825,12 @@ export const register: Register = (on, options) => {
         startWatch($, now)
       }
       await rebuildEdges($) // consent ends and the stop's until and due, from the env
-    } catch {
+    } catch (err) {
       // the watchdog re-arms it
+      $.ui.log(debugLine.startFailed(String(err)), { to: 'debug' })
     }
     try {
-      sid = await $.session.id()
+      sid = await $.session.id().catch(() => sid) // a failed read never skips /spare10
       const eff = await settings($)
       for (const w of eff.warnings) $.ui.log(w)
       await $.command
@@ -1657,8 +1841,9 @@ export const register: Register = (on, options) => {
         ...(await bgWarnings($).catch(() => [])),
       ]
       for (const w of startWarnings) $.ui.log(w)
-    } catch {
+    } catch (err) {
       // never block the session
+      $.ui.log(debugLine.startFailed(String(err)), { to: 'debug' })
     }
     return r
   })
@@ -1715,7 +1900,8 @@ export const register: Register = (on, options) => {
           const live = limitOf(e.rateLimits, kind)
           const withTest = basis(live, mem[kind], now, test[kind], kind)
           const real = basis(live, mem[kind], now, undefined, kind)
-          // This copy's spans: the badge only (skip 6.6).
+          // This copy's spans: the badge only (skip 6.6). A kind at the quota limit is never open, as the sense says.
+          if (cfg.limitPause && atLimit(withTest)) return { kind, basis: withTest, tripped: true, open: false }
           const v = viewOf(real, withTest, reserveOf(cfg, kind), spanOf(cfg, kind), now)
           return { kind, basis: v.basis, tripped: v.tripped, open: v.open }
         }),
@@ -1785,6 +1971,7 @@ export const register: Register = (on, options) => {
     if (key === undefined) return next(e)
     const done = outcomes.get(key)
     if (done !== undefined || !questions.has(key)) return { deny: withdrawnText(done) }
+    if (questions.get(key)?.chosen === true) return { deny: withdrawnText('continue') } // chosen at the limit
     const r = await Promise.race([next(e), outcomeOf(key).then((o) => ({ withdrawn: o }))])
     return 'withdrawn' in r ? { deny: withdrawnText(r.withdrawn) } : r
   })

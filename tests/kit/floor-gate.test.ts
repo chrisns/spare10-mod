@@ -361,6 +361,65 @@ test('two windows at different stages: the reserve until 95% used and the last 4
 
 // ---- a reading that jumps past the floor ----
 
+test('after a reset credit, a consent of the old window is void: the new window asks again at its reserve (A22)', async ($, on) => {
+  const w = world(on, { pct: 91 })
+  await begin($, w)
+  await resumeAtReserve($, w)
+  // An early reset 1 h after T0: the new window ends 6 h after T0, 3 h after the end of the old consent.
+  const newReset = T0 + 360 * MIN
+  const r = hhmm(newReset)
+  const o = hhmm(newReset - 20 * MIN)
+  await w.clock.advance(60 * MIN)
+  w.resetsAt = new Date(newReset).toISOString()
+  w.pct = 5
+  expect((await bash($)).result).toBe('ran')
+  // The new window reaches its reserve before the old until: the old Resume does not cover it.
+  w.pct = 91
+  const held = bash($)
+  await w.clock.settle()
+  expect(questions(w)).toEqual([
+    first5(91),
+    `Your 10% reserve is reached: ${pf(91, r)}. All work is on hold. Continue on the reserve until 95% used? ` +
+      `Until ${o}, spare10 asks you again at 95% used. ${loopAfter(`${o}, ${LEAD5}`)}`,
+  ])
+  expect(w.ran).toEqual(['Bash:main', 'Bash:main'])
+  expect(w.env.get('SPARE10_CONSENT')).toBeUndefined() // the void value goes by compare-and-set
+  w.release('Resume')
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_CONSENT')).toBe(consentRec('S1', newReset, 95))
+})
+
+test('a failed consent unset after an early reset still holds: the old Resume never answers the new question (A22)', async ($, on) => {
+  const w = world(on, { pct: 91 })
+  await begin($, w)
+  await resumeAtReserve($, w)
+  const old = consentRec('S1', RESETS, 95)
+  const newReset = T0 + 360 * MIN
+  await w.clock.advance(60 * MIN)
+  w.resetsAt = new Date(newReset).toISOString()
+  w.pct = 5
+  expect((await bash($)).result).toBe('ran')
+  w.envSetFails.push('SPARE10_CONSENT') // the compare-and-set unset of the void value fails
+  w.pct = 91
+  let done = false
+  const held = bash($).then((r) => {
+    done = true
+    return r
+  })
+  await w.clock.settle()
+  expect(w.asked).toHaveLength(2)
+  expect(w.env.get('SPARE10_CONSENT')).toBe(old) // still in the env: the question's own read must void it too
+  await w.clock.advance(2 * TICK)
+  expect(done).toBe(false)
+  expect(w.ran).toEqual(['Bash:main', 'Bash:main'])
+  w.envSetFails.length = 0
+  w.release('Resume')
+  expect((await held).result).toBe('ran')
+  await w.clock.settle()
+  expect(w.env.get('SPARE10_CONSENT')).toBe(consentRec('S1', newReset, 95))
+})
+
 test('a reading that jumps from 89% to 96% asks only the second question, and its Resume lasts until the reset', async ($, on) => {
   const w = world(on, { pct: 89 })
   await begin($, w)
@@ -567,7 +626,7 @@ test('a Resume on a test question never passes a real reading at the floor (B50 
   const req = drain($, step(undefined, 'T1'))
   await w.clock.settle()
   expect(w.asked).toHaveLength(1)
-  expect(await run($, 'simulate off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
+  expect(await run($, 'simulate off')).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
   w.pct = 96 // the real reading, now past the floor
   w.release('Resume') // answers the test reading at the reserve
   await w.clock.settle()

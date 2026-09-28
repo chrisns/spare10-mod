@@ -58,6 +58,7 @@ test('HOST has the Claude Code words', () => {
     child: 'claude -p',
     resume: 'claude --resume',
     keepOpen: 'set its Open reserve option to 0 in /config',
+    limitOff: 'turn off Pause at the limit in /config',
     backIt: 'gives it back to you',
     backPrompt: 'gives your prompt back',
     blind: 'Claude Code reports no 5-hour quota.',
@@ -98,9 +99,10 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
   ['simulateReply bad', () => simulateReply('bad'), '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.'],
   ['simulateReply set', () => simulateReply('set', F), 'test reading set to 92% used, resets 15:00. It can only raise the real reading. Run /spare10 simulate off to clear it.'],
   ['simulateReply raised', () => simulateReply('raised', F), 'test reading raised to 92% used, resets 15:00. Your earlier answers stay. It can only raise the real reading. Run /spare10 simulate off to clear it.'],
+  ['simulateReply replaced', () => simulateReply('replaced', F), 'test reading set to 92% used, resets 15:00. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. Run /spare10 simulate off to clear it.'],
   ['commandFailed', () => commandFailed('boom'), '/spare10 failed: boom'],
   ['report: armed, the claude -p row and both help lines', () => statusReport(status()), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -114,7 +116,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: every row from its option, and the floor help line', () => statusReport(full()), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -136,7 +138,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: the unattended row', () => statusReport(full({ attended: false, phase: 'reserve', headless: 'stop' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ⚠ tripped        unattended run, policy stop.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -157,7 +159,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: spans the env could not read', () => statusReport(full({ spans: { lastMinutes: 0, lastMinutesFrom: 'unread', weeklyLastHours: 0, weeklyLastHoursFrom: 'unread' } })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -179,7 +181,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: weekly off', () => statusReport(status({ weekly: 'off' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -194,7 +196,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: the asking phase', () => statusReport(status({ phase: 'asking' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ? asking         a question is open. Held work waits until you answer. If no dialog shows, run /spare10 resume or /spare10 stop.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -208,7 +210,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: the asking phase with a continue time', () => statusReport(full({ phase: 'asking', at: { ms: R, kinds: ['five_hour'] } })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ? asking         a question is open. Held work waits until you answer, or until 15:00. If no dialog shows, run /spare10 resume or /spare10 stop.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -230,7 +232,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: the stopped phase', () => statusReport(status({ phase: 'stopped' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run /spare10 resume.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -244,7 +246,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: the stopped phase with a continue time', () => statusReport(full({ phase: 'stopped', at: { ms: R, kinds: ['five_hour'] }, autoStop: true, work: true })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ■ stopped        you chose Stop here. spare10 continues the work after 15:00. Type a prompt to be asked again, or run /spare10 resume.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -266,7 +268,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: the blind phase and reading', () => statusReport(status({ phase: 'blind', basis: { kind: 'none', why: 'blind' }, facts: undefined })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ⚠ blind          Claude Code reports no 5-hour quota. spare10 lets all work through.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -280,7 +282,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       '/spare10 stop     stop at the reserve now',
     ].join('\n')],
   ['report: scope opt-in', () => statusReport(status({ phase: 'off', enabled: false, scope: 'opt-in' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ○ off            spare10 only watches in this run.',
       '  · reserve        10% of the 5-hour window (from /config)',

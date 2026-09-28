@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import * as codexCore from '../../hooks/core/codex.ts'
 import { formatConsent } from '../../hooks/core/decide.ts'
+import * as reading from '../../hooks/core/reading.ts'
 import { questionText } from '../../hooks/core/text.ts'
 import { readJson } from '../src/files.ts'
 import type { QuestionRecord } from '../src/question.ts'
@@ -9,8 +11,8 @@ import type { World, WorldBroker } from './helpers/world.ts'
 
 // The resume floor through the gate (Codex design 4.8, 8.2 floor.spec). As on Claude: a Resume at the
 // reserve holds again at the floor with the second question, the second Resume lasts until the reset,
-// `spare10 resume` before and past the floor, a test reading raised in place, and the tombs. One Codex rule
-// adds to it: after a reset credit a consent of the old window is void (A22).
+// `spare10 resume` before and past the floor, a stop after a Resume, a test reading raised in place, a
+// new test, and the tombs. After a reset credit a consent of the old window is void (A22).
 //
 // The kit port (8.2):
 // Each tests/kit case and the Codex case that tests it: codex/test/kit-port.txt, kept complete by kit-port.spec.ts.
@@ -81,6 +83,58 @@ test('floor: a test reading raised in place shows the second question (LCX9)', a
   assert.match(second.message, /^Your 5% floor is reached: 96% used .+ Continue on the last 4% until /)
 })
 
+test('floor: a stop after a Resume clears both consents, and the next tool call holds', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET, weekly: 92, weeklyReset: T0 + 72 * HOUR })
+  const typed = async (prompt: string): Promise<string> => parsed(await b.gate('prompt', { prompt }))['reason'] as string
+  assert.match(await typed('spare10 resume'), /^spare10: you can use /)
+  assert.notEqual(w.state().consent, undefined)
+  assert.notEqual(w.state().weeklyConsent, undefined)
+  assert.equal(await b.gate('tool'), '', 'the consents pass a tool call')
+  // decide reads a consent before a stop: only the clear in the stop command makes the stop hold work.
+  assert.match(await typed('spare10 stop'), /^spare10: stopped at the reserve until /)
+  assert.equal(w.state().consent, undefined)
+  assert.equal(w.state().weeklyConsent, undefined)
+  assert.notEqual(w.state().stopped, undefined)
+  const h = b.call('tool')
+  await w.settle()
+  assert.equal(h.box.done, false, 'the stop holds the next tool call')
+})
+
+/** 3.5: the reply of a value that replaces a test reading says that it starts a new test, and what that clears. */
+const newTest = (pct: string): RegExp =>
+  new RegExp(`^spare10: test reading set to ${pct}% used, resets [^.]+\\. This starts a new test\\. Your consents for both windows and any stop are cleared\\. `)
+
+test('floor: the same value, a lower value or in starts a new test, and no answer of the old test carries over (3.5)', async (t) => {
+  const w = world(t, { daemon: true })
+  const b = await w.broker({ hosted: true })
+  w.reading(SID, 30, { reset: RESET })
+  w.daemon.script.newestTurn = { id: 'U1', status: 'inProgress', startedAt: Math.floor(T0 / 1000) - 60 }
+  const sim = async (words: string): Promise<string> => parsed(await b.gate('prompt', { prompt: `spare10 simulate ${words}` }))['reason'] as string
+  assert.match(await sim('91'), /^spare10: test reading set to 91% used/)
+  await askAndAnswer(w, b, 'resume')
+  assert.notDeepEqual(w.state().test?.consent, {}, 'the Resume is a test consent')
+  assert.equal(await b.gate('tool'), '', 'it covers its test')
+  // The same value: a new test. A real consent of the session goes too, as in register.tsx clearConsent.
+  w.setState({ consent: formatConsent(SID, RESET, 95) })
+  assert.match(await sim('91'), newTest('91'))
+  assert.deepEqual(w.state().test?.consent, {})
+  assert.equal(w.state().consent, undefined)
+  await askAndAnswer(w, b, 'stop')
+  assert.notEqual(w.state().stopped, undefined, 'Stop here on the new test')
+  // A lower value: a new test. The stop of the old test goes, and the next call asks again.
+  assert.match(await sim('90'), newTest('90'))
+  assert.equal(w.state().stopped, undefined)
+  await askAndAnswer(w, b, 'resume')
+  // With in: a new test, although the value is higher.
+  assert.match(await sim('92 in 1h'), newTest('92'))
+  assert.deepEqual(w.state().test?.consent, {})
+  const { q } = await askAndAnswer(w, b, 'resume')
+  assert.equal(q.facts[0]?.test, true)
+  assert.equal(b.forms().length, 4)
+})
+
 test('floor: a consent to the floor that ended at its point never comes back (the tombs, B52)', async (t) => {
   const w = world(t)
   const b = await w.broker()
@@ -116,6 +170,17 @@ test('floor: after a reset credit, a consent of the old window is void and the n
   assert.equal(h.box.done, false, 'the old consent does not cover the new window')
   assert.equal(w.state().consent, undefined, 'the void value is removed')
   assert.equal(b.forms().length, 1)
+})
+
+test('floor: Codex (codex.ts) uses the one A22 rule of Claude Code (reading.ts)', () => {
+  // codex.ts re-exports the rule of reading.ts, so the two hosts can never drift apart.
+  assert.equal(codexCore.RESET_JITTER_MS, reading.RESET_JITTER_MS)
+  assert.equal(codexCore.voidedByReset, reading.voidedByReset)
+  const J = reading.RESET_JITTER_MS
+  assert.equal(codexCore.voidedByReset({ until: RESET }, RESET + J), false)
+  const toFloor = { until: RESET, to: 95 } // a consent to the floor
+  assert.equal(codexCore.voidedByReset(toFloor, RESET + J), false)
+  assert.equal(codexCore.voidedByReset({ until: RESET }, RESET + J + 1), true)
 })
 
 test('floor: a real consent to the floor survives a Stop here on a test reading, and the stop ends on it with one continuation (TS1)', async (t) => {

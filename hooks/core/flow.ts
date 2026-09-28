@@ -25,6 +25,8 @@ import type { Answered, Consent, Holder, Mode, Phase, Site, StoppedRecord, Tomb,
 import {
   FALLBACK_MS,
   KINDS,
+  LIMIT_PCT,
+  atLimit,
   atPoint,
   basis,
   holdEndOf,
@@ -90,6 +92,7 @@ export type KindSense = {
   point: number | null // B48: pointOf(floor), null when floor is 0
   atFloor: boolean // B48: tripped, not open, and the view reading at or past point
   realPct: number | undefined // TS1, B52: the pct of the real basis
+  limit: boolean // at the quota limit with limitPause on (and on Codex no credits that pay): it gates in every state
 }
 
 /** One sense: the settings, the time, every watched kind, and the attendance. */
@@ -120,8 +123,17 @@ export function windowEndFor(kind: Kind, b: Basis, now: number, fallback: Fallba
 }
 
 /**
- * Every watched kind at now. `edges`: the skip starts of the tripped kinds, the times at which the badge
- * can change (skip 4.1). `watched` defaults to the kinds of the settings.
+ * A basis is at the quota limit for the gate: 100% used or more with a known reset (`atLimit`), limitPause
+ * on, and on Codex no credits that pay past 100% (`paid`, A23).
+ */
+export const limitOf = (cfg: Pick<Effective, 'limitPause'>, b: Basis, paid = false): boolean => cfg.limitPause && !paid && atLimit(b)
+
+/**
+ * Every watched kind at now. `edges`: the skip starts of the tripped kinds, and the reset of a kind at the
+ * quota limit, the times at which the badge can change (skip 4.1). `watched` defaults to the kinds of the
+ * settings. `o.paid` (Codex A23): credits pay past 100%, so no kind is at the quota limit. A kind at the
+ * quota limit (`limitOf`) is tripped on its view basis with the test reading, and never open: its hold
+ * end, stop end and consent bound are its reset. So a test reading at 100% never yields to a real one (B45).
  */
 export function sensesOf(
   cfg: Effective,
@@ -131,17 +143,22 @@ export function sensesOf(
   fallback: FallbackEnds,
   mems: Mems,
   watched: readonly Kind[] = watchedKinds(cfg),
+  o: { paid?: boolean } = {},
 ): { kinds: KindSense[]; edges: number[] } {
   const edges: number[] = []
+  const paid = o.paid === true
   const kinds = watched.map((kind): KindSense => {
     const reserve = reserveOf(cfg, kind)
     const span = spanOf(spans, kind)
     const real = bases[kind].real
-    const v = viewOf(real, bases[kind].basis, reserve, span, now) // B41, B45
+    const withTest = bases[kind].basis
+    const limit = limitOf(cfg, withTest, paid)
+    const v = limit ? { basis: withTest, tripped: true, skipAt: null, open: false } : viewOf(real, withTest, reserve, span, now) // B41, B45
     const rv = viewOf(real, real, reserve, span, now) // TS1: the real reading alone
     const b = v.basis
     const windowEnd = windowEndFor(kind, b, now, fallback)
     if (v.tripped && v.skipAt !== null) edges.push(v.skipAt)
+    if (limit && b.kind !== 'none' && b.resetsAtMs !== null) edges.push(b.resetsAtMs)
     const floor = floorOf(cfg, kind) // B48
     const point = floor > 0 ? pointOf(floor) : null
     return {
@@ -157,12 +174,13 @@ export function sensesOf(
       open: v.open,
       test: b.kind === 'test',
       seed: b.kind === 'seed',
-      realIn: rv.tripped && !rv.open,
+      realIn: rv.tripped && (!rv.open || limitOf(cfg, real, paid)), // a real reading at the limit is never open
       realReset: real.kind === 'none' ? null : real.resetsAtMs,
       floor,
       point,
-      atFloor: v.tripped && !v.open && atPoint(b, point),
+      atFloor: !limit && v.tripped && !v.open && atPoint(b, point), // the limit question replaces the second question
       realPct: real.kind === 'none' ? undefined : real.pct,
+      limit,
     }
   })
   return { kinds, edges }
@@ -171,8 +189,9 @@ export function sensesOf(
 /** B55: an unattended run never asks, so it has no floor in force: no stage and no floor names. */
 export const noFloor = (k: KindSense): KindSense => ({ ...k, floor: 0, point: null, atFloor: false })
 
-/** B48: the end point of a Resume on a kind: its floor point when it is at the reserve with a floor in force. */
-export const resumeTo = (k: KindSense): number | undefined => (k.tripped && !k.open && !k.atFloor && k.point !== null ? k.point : undefined)
+/** B48: the end point of a Resume on a kind: its floor point when it is at the reserve with a floor in force. A kind at the limit has no tier. */
+export const resumeTo = (k: KindSense): number | undefined =>
+  k.tripped && !k.open && !k.atFloor && !k.limit && k.point !== null ? k.point : undefined
 
 /** A question's end of one kind: the consent bound, the test flag, the skip start and the tier (B50). */
 export type QuestionEnd = { end: number; test: boolean; skipAt?: number; to?: number } // to: the tier of a kind asked at the reserve (B50)
@@ -189,8 +208,17 @@ export const realHolder = (k: KindSense): Holder => ({ kind: k.kind, resetsAtMs:
  */
 export const commandHolders = (kinds: readonly KindSense[]): Holder[] => kinds.filter((k) => k.realIn).map(realHolder)
 
-/** B50: a kind as the gate sees it: its view percentage and basis. */
-export const viewedOf = (k: KindSense): Viewed => ({ kind: k.kind, pct: pctOf(k.basis) ?? 0, test: k.test })
+/**
+ * B50: a kind as the gate sees it: its view percentage, basis and window. A reading with no reset time
+ * has no known window: its fallback end is no window of its own (R11).
+ */
+export const viewedOf = (k: KindSense): Viewed => ({
+  kind: k.kind,
+  pct: pctOf(k.basis) ?? 0,
+  test: k.test,
+  ...(k.basis.kind === 'none' || k.basis.resetsAtMs === null ? {} : { end: k.windowEnd }),
+  ...(k.limit ? { limit: true } : {}),
+})
 
 /** The consent bound of a kind's real reading: the view window, or beneath a test reading the real reset (TS1). */
 export const realBound = (k: KindSense, now: number): number => (k.test ? (k.realReset ?? now + FALLBACK_MS) : k.windowEnd)
@@ -238,6 +266,7 @@ export function factsFrom(ks: readonly KindSense[], now: number, owner = false, 
       ...(owner && k.skipAt !== null ? { span: k.span } : {}),
       ...(k.atFloor ? { floor: k.floor } : {}),
       ...(to === undefined ? {} : { to }),
+      ...(k.limit ? { limit: true } : {}),
     }
   })
 }
@@ -293,18 +322,23 @@ export type QuestionCore = {
   facts: Facts[]
   handoffs: number
   noted: boolean
+  limit?: boolean // a limit question: its kinds are at the quota limit. Optional, so a 0.3 question file still reads
+  chosen?: boolean // a limit question after Continue at the reset: no dialog again, released after its reset
 }
 
 /** The kinds of a question, with their basis, for {reset}. */
 export const namedOf = (q: Pick<QuestionCore, 'kinds' | 'ends'>): Named[] => q.kinds.map((kind) => ({ kind, test: q.ends[kind]?.test === true }))
 
-/** B50: what a Resume of this question answers per kind: its basis, and its end point when asked at the reserve. */
+/**
+ * B50: what a Resume of this question answers per kind: its basis, its end point when asked at the
+ * reserve, and its consent bound, so a later window is not answered.
+ */
 export const answeredOf = (q: Pick<QuestionCore, 'kinds' | 'ends'> | undefined): Answered[] =>
   q === undefined
     ? []
     : q.kinds.map((kind) => {
         const end = q.ends[kind]
-        return { kind, test: end?.test === true, ...(end?.to === undefined ? {} : { to: end.to }) }
+        return { kind, test: end?.test === true, ...(end?.to === undefined ? {} : { to: end.to }), ...(end === undefined ? {} : { end: end.end }) }
       })
 
 /** The kinds of a stop, with its basis, for {reset}. A 0.1 value names the 5-hour window. */
@@ -352,8 +386,13 @@ export function floorEndsOf(k: KindSense, list: readonly Sourced[], now: number,
 /**
  * One tripped kind into the split. An open kind whose only covering consent is a consent to the floor
  * is open (floor 1.3 item 7). `failed`: the consent read failed, and an unreadable consent is not consent.
+ * A kind at the quota limit always gates: its consent is kept, but it does not apply.
  */
 export function splitKind(out: Split, k: KindSense, list: readonly Sourced[], failed: boolean, now: number): void {
+  if (k.limit) {
+    out.gating.push(k) // at the quota limit no consent applies and the kind is never open
+    return
+  }
   const use = failed ? [] : list
   const c = coveringConsent(
     use.map((e) => e.c),
@@ -424,17 +463,20 @@ export function holdersFrom(
 
 // ---- The verdict and the told keys (register.tsx 5.2, 5, B38, B50, B51) ----
 
-/** B38, B50: the round after a Resume leaves out the kinds it answered, on its basis and below its end point. */
-export const unansweredGating = (resumed: readonly Answered[], gating: readonly KindSense[]): KindSense[] =>
-  gating.filter((k) => !answers(resumed, viewedOf(k)))
+/**
+ * B38, B50: the round after a Resume leaves out the kinds it answered, on its basis, in its window and
+ * below its end point. `jitter`: Codex passes RESET_JITTER_MS (A22, `answers`). Claude passes none.
+ */
+export const unansweredGating = (resumed: readonly Answered[], gating: readonly KindSense[], jitter = 0): KindSense[] =>
+  gating.filter((k) => !answers(resumed, viewedOf(k), jitter))
 
-/** B50: the holders that a Resume did not answer. A kind the sense does not list reads as 0% on the real basis. */
-export function unansweredHolders(s: Pick<Sensed, 'kinds'>, resumed: readonly Answered[], holders: readonly Holder[]): Holder[] {
+/** B50: the holders that a Resume did not answer. A kind the sense does not list reads as 0% on the real basis. `jitter`: as above. */
+export function unansweredHolders(s: Pick<Sensed, 'kinds'>, resumed: readonly Answered[], holders: readonly Holder[], jitter = 0): Holder[] {
   const viewOfKind = (kind: Kind): Viewed => {
     const k = s.kinds.find((x) => x.kind === kind)
     return k === undefined ? { kind, pct: 0, test: false } : viewedOf(k)
   }
-  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind)))
+  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind), jitter))
 }
 
 /** Decide row 3: tripped, and no kind gates. */
@@ -451,15 +493,23 @@ export type Told = Record<Kind, { windowEnd: number; keys: Set<string> }>
 /** Told sets with no key. */
 export const newTold = (): Told => ({ five_hour: { windowEnd: 0, keys: new Set<string>() }, seven_day: { windowEnd: 0, keys: new Set<string>() } })
 
+/**
+ * B51: a told window end is the window of `k`. `jitter`: Codex passes RESET_JITTER_MS, because its
+ * `resets_at` moves a little from one reading to the next (3.6). A test reading keeps its end exactly.
+ * Claude passes none, so the ends must be equal.
+ */
+export const toldWindow = (end: number, k: Pick<KindSense, 'windowEnd' | 'test'>, jitter = 0): boolean =>
+  end === k.windowEnd || (jitter > 0 && !k.test && Math.abs(end - k.windowEnd) <= jitter)
+
 /** B51: a loop's told key carries the stage of the kind: a second tell at the floor. */
-export function toldHas(told: Told, k: KindSense, key: string): boolean {
+export function toldHas(told: Told, k: KindSense, key: string, jitter = 0): boolean {
   const t = told[k.kind]
-  return t.windowEnd === k.windowEnd && t.keys.has(stageKey(key, k.atFloor))
+  return toldWindow(t.windowEnd, k, jitter) && t.keys.has(stageKey(key, k.atFloor))
 }
 
 /** Decide `mainTold`: every gating kind told the main loop of this session at its stage. */
-export const toldMainOf = (told: Told, gating: readonly KindSense[], sessionId: string): boolean =>
-  gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`))
+export const toldMainOf = (told: Told, gating: readonly KindSense[], sessionId: string, jitter = 0): boolean =>
+  gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`, jitter))
 
 /**
  * The verdict (5.2) from what the host read: the gating kinds and the holders, both already without the
@@ -489,18 +539,20 @@ export function verdictOf(i: {
     stopped: i.stopped,
     mainTold: i.toldMain,
     seedOnly: gating.length > 0 && gating.every((k) => k.seed),
+    limit: gating.some((k) => k.limit),
   })
   return { verdict, stopped: i.stopped, gating, holders: i.holders }
 }
 
 /**
  * A loop is told when some gating kind lacks its key of the kind's stage (B51). The claim adds the key
- * of its stage to every gating kind. So each loop is told once at the reserve and once at the floor.
+ * of its stage to every gating kind. So each loop is told once at the reserve and once at the floor. A
+ * kind in its told window (`toldWindow`) keeps the stored end, so a reset that moves never drifts.
  */
-export function claimTold(told: Told, gating: readonly KindSense[], key: string): boolean {
+export function claimTold(told: Told, gating: readonly KindSense[], key: string, jitter = 0): boolean {
   let fresh = false
   for (const k of gating) {
-    if (told[k.kind].windowEnd !== k.windowEnd) told[k.kind] = { windowEnd: k.windowEnd, keys: new Set() }
+    if (!toldWindow(told[k.kind].windowEnd, k, jitter)) told[k.kind] = { windowEnd: k.windowEnd, keys: new Set() }
     const staged = stageKey(key, k.atFloor)
     if (told[k.kind].keys.has(staged)) continue
     told[k.kind].keys.add(staged)
@@ -512,26 +564,39 @@ export function claimTold(told: Told, gating: readonly KindSense[], key: string)
 /** B51: the mark of the B12 notice per kind: its window and stage. */
 export const toldMark = (k: KindSense): string => `${k.windowEnd}:${k.atFloor ? 'floor' : 'reserve'}`
 
-/** B12, B51: the told notice, once per kind, window and stage. It updates `marks`. Undefined: shown already. */
-export function toldNotice(s: Pick<Sensed, 'kinds' | 'now'>, a: Pick<Acted, 'gating'>, marks: Record<Kind, string>): string | undefined {
+/**
+ * B12, B51: the told notice, once per kind, window (`toldWindow`) and stage. It updates `marks`, and
+ * keeps the mark of a kind already shown. Undefined: shown already. A mark that is not text is not shown.
+ */
+export function toldNotice(s: Pick<Sensed, 'kinds' | 'now'>, a: Pick<Acted, 'gating'>, marks: Record<Kind, string>, jitter = 0): string | undefined {
   const ks = namedKinds(s, a)
-  if (ks.every((k) => marks[k.kind] === toldMark(k))) return undefined
-  for (const k of ks) marks[k.kind] = toldMark(k)
+  const shown = (k: KindSense): boolean => {
+    const m: unknown = marks[k.kind]
+    if (typeof m !== 'string') return false
+    const mine = toldMark(k)
+    if (m === mine) return true
+    const cut = m.lastIndexOf(':')
+    const end = Number(m.slice(0, cut))
+    return cut > 0 && m.slice(cut) === mine.slice(mine.lastIndexOf(':')) && Number.isFinite(end) && toldWindow(end, k, jitter)
+  }
+  const fresh = ks.filter((k) => !shown(k))
+  if (fresh.length === 0) return undefined
+  for (const k of fresh) marks[k.kind] = toldMark(k)
   return notice.told(factsFrom(ks, s.now))
 }
 
 /** The window end of the last B15 debug line per kind, in the reserve and open (skip 2.5). */
 export type UnattendedMarks = { reserve: Record<Kind, number>; open: Record<Kind, number> }
 
-/** B15, skip 2.5: the debug lines of an unattended run, once per kind and window. It updates `marks`. */
-export function unattendedLines(s: Pick<Sensed, 'kinds' | 'now' | 'cfg'>, marks: UnattendedMarks): string[] {
+/** B15, skip 2.5: the debug lines of an unattended run, once per kind and window (`toldWindow`). It updates `marks`. */
+export function unattendedLines(s: Pick<Sensed, 'kinds' | 'now' | 'cfg'>, marks: UnattendedMarks, jitter = 0): string[] {
   const out: string[] = []
-  const fresh = s.kinds.filter((k) => k.tripped && !k.open && marks.reserve[k.kind] !== k.windowEnd)
+  const fresh = s.kinds.filter((k) => k.tripped && !k.open && !toldWindow(marks.reserve[k.kind], k, jitter))
   if (fresh.length > 0) {
     for (const k of fresh) marks.reserve[k.kind] = k.windowEnd
     out.push(debugLine.unattended(factsFrom(fresh, s.now), s.cfg.headless)) // R9: every policy
   }
-  const opened = s.kinds.filter((k) => k.open && marks.open[k.kind] !== k.windowEnd)
+  const opened = s.kinds.filter((k) => k.open && !toldWindow(marks.open[k.kind], k, jitter))
   if (opened.length > 0) {
     for (const k of opened) marks.open[k.kind] = k.windowEnd
     out.push(debugLine.unattendedOpen(factsFrom(opened, s.now))) // skip 2.5: every policy lets it through
@@ -546,10 +611,14 @@ export const dueMargin = (k: KindSense): number => marginOf(k.skipAt !== null, k
 
 /**
  * A new question on the kinds that `namedKinds` gives: per kind its consent bound, test flag, skip start
- * and tier (B48, B50), and the ends, the due time, the skip owner and the note time of them all.
+ * and tier (B48, B50), and the ends, the due time, the skip owner and the note time of them all. When a
+ * kind of them is at the quota limit, it is a limit question on those kinds only, in hold mode also with a
+ * pause prompt: it holds until their latest reset plus the margin, with no skip start and no tier.
  */
 export function questionOf(opener: 'loop' | 'prompt', s: Sensed, a: Pick<Acted, 'gating' | 'holders'>, now: number): QuestionCore {
-  const g = namedKinds(s, a)
+  const g0 = namedKinds(s, a)
+  const limit = g0.some((k) => k.limit)
+  const g = limit ? g0.filter((k) => k.limit) : g0
   const ends: QuestionCore['ends'] = {}
   for (const k of g) {
     const to = resumeTo(k) // B48, B50: the tier of the question per kind
@@ -576,13 +645,48 @@ export function questionOf(opener: 'loop' | 'prompt', s: Sensed, a: Pick<Acted, 
     auto: s.cfg.autoResume,
     loops: opener === 'loop' ? 1 : 0,
     since: now,
-    mode: modeOf(s.cfg),
+    mode: limit ? 'hold' : modeOf(s.cfg),
     opener,
     facts: factsFrom(g, now, skip, resumeTo),
     handoffs: 0,
     noted: false,
+    ...(limit ? { limit: true } : {}),
   }
 }
+
+/** A question that raises no dialog: an unattended wait hold, or a limit question after Continue at the reset. */
+export const quietOf = (q: Pick<QuestionCore, 'silent' | 'chosen'>): boolean => q.silent || q.chosen === true
+
+/**
+ * An open question that is not a limit question gives way when a kind at the quota limit gates now. A
+ * silent question (an unattended wait) never does: it asks nobody, and holds until its due time anyway.
+ */
+export const supersedes = (q: Pick<QuestionCore, 'limit' | 'silent'>, gating: readonly KindSense[]): boolean =>
+  q.limit !== true && !q.silent && gating.some((k) => k.limit)
+
+/**
+ * A Stop here at the quota limit: any Stop here on the limit question but the hold time limit, or a
+ * person's own Stop here (the dialog or the stop command) on another question while a kind at the quota
+ * limit gates now (`sNow`). It lasts until the reset and never continues by itself. A question at the
+ * reserve that ends with no answer keeps the setting in force, as the limit question does.
+ */
+export const stopsAtLimit = (q: Pick<QuestionCore, 'limit'>, via: Via, sNow?: Pick<StopSense, 'split'>): boolean =>
+  via !== 'time limit' && (q.limit === true || ((via === 'dialog' || via === 'command') && sNow?.split.gating.some((k) => k.limit) === true))
+
+/** Stop here at the limit never continues by itself (`stopsAtLimit`). Else the auto stop of the setting in force. */
+export const stopAutoOf = (q: Pick<QuestionCore, 'limit'>, via: Via, auto: boolean, sNow?: Pick<StopSense, 'split'>): boolean =>
+  stopsAtLimit(q, via, sNow) ? false : auto
+
+/**
+ * The line of Continue at the reset, while the reset is still ahead. After the reset the release line
+ * follows at once, so a line that names a passed time would only confuse.
+ */
+export const continuesLine = (q: Pick<QuestionCore, 'facts' | 'holdEnd'>, now: number): string | undefined =>
+  now < q.holdEnd ? notice.limitContinues(q.facts) : undefined
+
+/** A person prompt joins a limit question after Continue at the reset: it waits with the held work, and says so. */
+export const promptWaitsLine = (q: Pick<QuestionCore, 'facts' | 'holdEnd' | 'chosen'>, now: number): string | undefined =>
+  q.chosen === true && now < q.holdEnd ? notice.limitPromptWaits(q.facts) : undefined
 
 /** The times at which a new question can change the badge: each consent bound, its hold end, due, stop end and note time. */
 export const questionEdges = (q: QuestionCore): number[] => [
@@ -697,7 +801,7 @@ export function endedFor(
 }
 
 /** How a question settles. */
-export type Via = 'dialog' | 'command' | 'elsewhere' | 'could not ask' | 'dialog ended without an answer' | 'reset' | 'quota' | 'time limit'
+export type Via = 'dialog' | 'command' | 'elsewhere' | 'could not ask' | 'dialog ended without an answer' | 'reset' | 'quota' | 'limit' | 'time limit'
 
 /** A settle's result for a Stop (B46): the record as written, what opened, and the until for the reply. */
 export type Late = { record?: StoppedRecord; ended?: Ended; until?: { at: string; lead?: string } }
@@ -705,10 +809,13 @@ export type Late = { record?: StoppedRecord; ended?: Ended; until?: { at: string
 /** A sense at a Stop here: the kinds, the split and the holders of now. */
 export type StopSense = { s: Sensed; split: Split; holders: readonly Holder[] }
 
-/** What a Stop here writes. 'open' (B46 open): nothing, because nothing gates and a kind of the question is open. */
+/**
+ * What a Stop here writes. 'open' (B46 open): nothing, because nothing gates and a kind of the question is
+ * open. `limit`: a Stop here at the quota limit (`stopsAtLimit`), with the limit texts.
+ */
 export type StopPlan =
   | { kind: 'open'; until: number; ended: Ended }
-  | { kind: 'write'; until: number; ended?: Ended; late: KindSense[]; record: StopWrite }
+  | { kind: 'write'; until: number; ended?: Ended; late: KindSense[]; record: StopWrite; limit?: true }
 
 /**
  * A Stop here (skip 3.5, B46). The sense gives the kinds whose real reading gates now (TS1: the `real`
@@ -717,12 +824,16 @@ export type StopPlan =
  * kinds that gate are stopped as usual. When nothing gates, a kind of the question is open, and no work
  * waits for a resume prompt, nothing is written: such a stop would never apply. No sense (it failed):
  * the D0.2 write, with the real kinds of the question when it opened. `auto`: the setting in force.
+ * The kinds at the quota limit that gate now are always late, so the stop lasts until their reset, also
+ * when a question at the reserve had an earlier end: a Stop here, no answer, or the hold time limit. Such
+ * a stop has the limit texts. `atLimit` (`stopsAtLimit`): the limit texts also when the sense failed.
  */
-export function stopPlan(q: QuestionCore, now: number, auto: boolean, sNow?: StopSense): StopPlan {
+export function stopPlan(q: QuestionCore, now: number, auto: boolean, sNow?: StopSense, atLimit = false): StopPlan {
   const work = q.loops > 0
   const passed = auto ? q.holdEnd <= now : q.skip && q.stopEnd <= now
   const real = sNow === undefined ? q.real : sNow.holders // fail closed: the question's real kinds when the sense fails
-  const late = sNow !== undefined && passed ? sNow.split.gating : []
+  const limitNow = sNow === undefined ? [] : sNow.split.gating.filter((k) => k.limit)
+  const late = sNow === undefined ? [] : passed ? sNow.split.gating : limitNow
   const opened = sNow !== undefined && passed ? sNow.split.open.filter((k) => q.kinds.includes(k.kind)) : []
   const until = auto ? Math.max(q.holdEnd, ...late.map((k) => k.holdEnd)) : Math.max(q.stopEnd, ...late.map((k) => k.stopEnd))
   const ended = sNow === undefined || opened.length === 0 ? undefined : endedFor(namedOf(q), sNow.s, late, true)
@@ -734,7 +845,14 @@ export function stopPlan(q: QuestionCore, now: number, auto: boolean, sNow?: Sto
     ...late.map((k) => k.skipAt).filter((t): t is number => t !== null),
   ]
   const skip = skipTag(until, starts, [q.due, ...late.map((k) => k.holdEnd + dueMargin(k))], auto)
-  return { kind: 'write', until, ...(ended === undefined ? {} : { ended }), late, record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real } }
+  return {
+    kind: 'write',
+    until,
+    ...(ended === undefined ? {} : { ended }),
+    late,
+    record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real },
+    ...(atLimit || limitNow.length > 0 ? { limit: true as const } : {}),
+  }
 }
 
 /** B46 open: the transcript line of a Stop here that writes nothing. None for a command. */
@@ -768,6 +886,14 @@ export function stopNotice(
   )
   const u = untilFor(facts, written.windowEnd, written.kinds ?? plan.record.kinds, written.skip === true, now)
   const text = (limit: string, stopped: string): { text?: string } => (via === 'time limit' ? { text: limit } : via !== 'command' ? { text: stopped } : {})
+  if (q.limit === true || plan.limit === true) {
+    // Stop here at the limit stops until the reset and continues nothing. The hold time limit keeps the setting
+    // in force, and so does a question at the reserve that ends with no answer. A stop that continues nothing
+    // and whose end has passed (the question waited past its reset for the answer) names no time, as below.
+    const cont = auto && written.auto === true && written.work === true
+    const at = cont || written.windowEnd > now ? u.at : undefined
+    return { ...text(notice.limitHoldLimit(at, cont), notice.limitStopped(at, cont)), late: { record: written, until: u } }
+  }
   const ended = plan.ended
   if (ended !== undefined && late.length === 0 && auto && work && plan.until <= now) {
     // B46 soon: the stop is written with its passed until, and the next tick continues the work.
@@ -818,18 +944,19 @@ export const dueWait = (q: Pick<QuestionCore, 'due' | 'nextCheck' | 'noted' | 'n
   !(now >= q.due) && now < q.nextCheck && (q.noted || now < q.noteAt)
 
 /**
- * 4.5, B6, B43: the waiter's check after `dueWait`. `auto`: the autoResume setting in force (a silent
+ * 4.5, B6, B43: the waiter's check after `dueWait`. `auto`: the autoResume setting in force (a quiet
  * question never reads it: pass true). With it off, a question waits for the answer: 'note' writes the
- * D0.2 note, 'noteSensed' (a skip owner) senses first and asks `sensedNote`. Past the reset, inside the
- * margin: 'wait'. Else 'check': sense, and ask `dueRelease`.
+ * D0.2 note, 'noteSensed' (a skip owner) senses first and asks `sensedNote`. A quiet question (`quietOf`:
+ * an unattended wait, or a limit question after Continue at the reset) releases by time in both modes.
+ * Past the reset, inside the margin: 'wait'. Else 'check': sense, and ask `dueRelease`.
  */
 export function dueStep(
-  q: Pick<QuestionCore, 'due' | 'silent' | 'noted' | 'noteAt' | 'skip' | 'holdEnd'>,
+  q: Pick<QuestionCore, 'due' | 'silent' | 'chosen' | 'noted' | 'noteAt' | 'skip' | 'holdEnd'>,
   now: number,
   auto: boolean,
 ): 'wait' | 'note' | 'noteSensed' | 'check' {
   const due = now >= q.due
-  if (!q.silent && !auto) {
+  if (!quietOf(q) && !auto) {
     // The setting in force now says wait for the answer (1.3 item 6, B6).
     if (!q.noted && now >= q.noteAt) return q.skip ? 'noteSensed' : 'note'
     return 'wait'
@@ -861,22 +988,36 @@ export function sensedNote(
 /**
  * 4.5: whether a check releases the held work, and why. Before the due time only when no kind gates. A
  * stop never holds an open kind (B44), so no kind gating means the gate lets the held loops through (skip
- * 4.3). `tooRecent` (`resetTooRecent`): a test window that ends near a real reset waits (4.8).
+ * 4.3). `tooRecent` (`resetTooRecent`): a test window that ends near a real reset waits (4.8). 'limit': a
+ * question that is not a limit question gives way to the limit question (`supersedes`). A limit question
+ * ends before its due time only when no kind that gates is at the quota limit any more ('quota').
  */
-export function dueRelease(q: Pick<QuestionCore, 'due'>, now: number, gatingNow: readonly KindSense[], tooRecent: boolean): 'reset' | 'quota' | undefined {
+export function dueRelease(
+  q: Pick<QuestionCore, 'due' | 'limit' | 'silent'>,
+  now: number,
+  gatingNow: readonly KindSense[],
+  tooRecent: boolean,
+): 'reset' | 'quota' | 'limit' | undefined {
   const due = now >= q.due
-  if (!due && gatingNow.length > 0) return undefined
+  if (supersedes(q, gatingNow)) return 'limit'
+  if (!due && (q.limit === true ? gatingNow.some((k) => k.limit) : gatingNow.length > 0)) return undefined
   if (gatingNow.length === 0 && tooRecent) return undefined
   return due ? 'reset' : 'quota'
 }
 
-/** 4.5: the transcript line of a question that ends without an answer. The D0.2 texts byte for byte. */
+/**
+ * 4.5: the transcript line of a question that ends without an answer. The D0.2 texts byte for byte. A
+ * question that gives way to the limit question, and a limit question that ends before its reset, have
+ * their own lines.
+ */
 export function againNotice(
-  q: Pick<QuestionCore, 'kinds' | 'ends' | 'skip'>,
-  via: 'reset' | 'quota',
+  q: Pick<QuestionCore, 'kinds' | 'ends' | 'skip' | 'limit'>,
+  via: 'reset' | 'quota' | 'limit',
   gatingNow: readonly KindSense[],
   s: Pick<Sensed, 'kinds' | 'now'>,
 ): string {
+  if (via === 'limit') return notice.limitReached
+  if (via === 'quota' && q.limit === true) return notice.limitOver
   const ended = endedFor(namedOf(q), s, gatingNow, q.skip)
   if (!q.skip && ended.open.length === 0) {
     if (via === 'quota') return notice.outOfReserve
@@ -932,6 +1073,40 @@ export function raiseAtFloor(q: Pick<QuestionCore, 'ends' | 'facts' | 'skip'>, s
 }
 
 /**
+ * Resume on an open limit question whose limit is gone (limitPause off, credits that pay, or a new test
+ * reading): the limit question asked no tier, so each kind of it takes its tier now. A kind before its
+ * floor, also one below its reserve, gets a consent to the floor. A kind at the floor or open keeps a full
+ * Resume. Only on the question's basis and in its window. Its facts and mode then follow the fresh sense,
+ * for the reply. So no work runs past the floor without a second Resume. It updates `q`.
+ */
+export function lowerAfterLimit(
+  q: Pick<QuestionCore, 'ends' | 'facts' | 'skip' | 'limit' | 'mode'>,
+  sNow: Pick<Sensed, 'kinds' | 'now' | 'cfg'>,
+): void {
+  if (q.limit !== true) return
+  let lowered = false
+  for (const k of sNow.kinds) {
+    const end = q.ends[k.kind]
+    if (end === undefined || end.to !== undefined || k.limit || k.test !== end.test || Math.abs(k.windowEnd - end.end) > 60_000) continue
+    const to = k.open || k.atFloor || k.point === null ? undefined : k.point
+    if (to === undefined) continue
+    q.ends[k.kind] = { ...end, to }
+    q.facts = byKind([...q.facts.filter((f) => (f.kind ?? 'five_hour') !== k.kind), ...factsFrom([k], sNow.now, q.skip, () => to)])
+    lowered = true
+  }
+  if (lowered) q.mode = modeOf(sNow.cfg)
+}
+
+/** A resume command on an open question: each kind at its tier now (`raiseAtFloor`, `lowerAfterLimit`). It updates `q`. */
+export function tierAtResume(
+  q: Pick<QuestionCore, 'ends' | 'facts' | 'skip' | 'limit' | 'mode'>,
+  sNow: Pick<Sensed, 'kinds' | 'now' | 'cfg'>,
+): void {
+  raiseAtFloor(q, sNow)
+  lowerAfterLimit(q, sNow)
+}
+
+/**
  * B23: the reply of resume from the reading alone: no reading, or below every reserve. Undefined: split
  * next. `absent` (Codex design 2.1, CX17): the kinds the host reports no window for. Claude passes none.
  */
@@ -982,6 +1157,32 @@ export function resumeCase(
   return { gating, write, facts: factsFrom(gating, s.now, false, resumeTo) }
 }
 
+/**
+ * Resume at the quota limit. An open limit question that is not chosen yet, while a kind is at the quota
+ * limit (or the sense failed): choose Continue at the reset (`choose`). Else, while a kind is at the quota
+ * limit (or a limit question is open and the sense failed): a reply that nothing resumes now. Nothing is
+ * written or cleared: no consent, no stop takeover, no stop clear. Undefined: the resume of today, also
+ * for a limit question whose limit is gone (limitPause off, credits that pay, or a reset): it settles as Resume,
+ * each kind at its tier now (`tierAtResume`). A host whose first sense failed asks again on its second one.
+ */
+export function resumeAtLimit(
+  sNow: Pick<Sensed, 'kinds' | 'now'> | undefined,
+  q: Pick<QuestionCore, 'limit' | 'chosen' | 'facts'> | undefined,
+): { choose: boolean; reply: string } | undefined {
+  const at = sNow?.kinds.filter((k) => k.limit) ?? []
+  if (q?.limit === true && q.chosen !== true && (sNow === undefined || at.length > 0)) return { choose: true, reply: resumeReply('limit-asking', q.facts) }
+  if (sNow !== undefined && at.length > 0) return { choose: false, reply: resumeReply('limit', factsFrom(at, sNow.now)) }
+  if (sNow === undefined && q?.limit === true) return { choose: false, reply: resumeReply('limit', q.facts) }
+  return undefined
+}
+
+/**
+ * The reply of a resume that settles an open question. A limit question whose reset has passed (it waited
+ * for the answer with autoResume off) names no time: a passed reset is no help to the person.
+ */
+export const resumeAskingReply = (q: Pick<QuestionCore, 'facts' | 'mode' | 'limit' | 'holdEnd'> | undefined, now: number): string =>
+  q?.limit === true && q.holdEnd <= now ? resumeReply('limit-late') : resumeReply('asking', q?.facts, undefined, undefined, q?.mode)
+
 /** The kinds that gate after a stop: tripped and not open. Unknown (false) when the sense failed. */
 export const gatesAfter = (sNow: Pick<Sensed, 'kinds'> | undefined): boolean => sNow?.kinds.some((k) => k.tripped && !k.open) === true
 
@@ -1027,8 +1228,8 @@ export function stopAskingIdle(q: Pick<QuestionCore, 'skip' | 'facts' | 'loops' 
  * or every tripped kind open (B44: a stop never holds an open kind). Else `ks`, the kinds that gate after
  * the stop (the stop clears every consent, so each tripped kind that is not open), the facts of every
  * tripped kind, and `real` (TS1: each kind of `ks` whose real reading is in the reserve). `absent` (Codex
- * design 2.1, CX17): the kinds the host reports no window for, so a weekly-only plan names no 5-hour trip.
- * Claude passes none.
+ * design 2.1, CX17): the kinds the host reports no window for, so a weekly-only plan names no 5-hour trip,
+ * and a plan with no weekly window names no weekly trip, as the report does. Claude passes none.
  */
 export function stopCase(
   s: Pick<Sensed, 'kinds' | 'now' | 'tripped'>,
@@ -1036,7 +1237,7 @@ export function stopCase(
   absent?: readonly Kind[],
 ): { reply: string } | { ks: KindSense[]; facts: Facts[]; real: Holder[] } {
   const trip = tripOf(cfg.reserve)
-  const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : undefined
+  const weeklyTrip = cfg.weeklyReserve > 0 && absent?.includes('seven_day') !== true ? tripOf(cfg.weeklyReserve) : undefined
   const read = s.kinds.filter((k) => k.basis.kind !== 'none')
   if (read.length === 0) return { reply: stopReply('none', undefined, trip, undefined, weeklyTrip, undefined, absent) }
   if (!s.tripped) return { reply: stopReply('below', factsFrom(read, s.now), trip, undefined, weeklyTrip, undefined, absent) }
@@ -1046,9 +1247,15 @@ export function stopCase(
   return { ks, facts: factsFrom(trippedKinds, s.now), real: ks.filter((k) => k.realIn).map(realHolder) }
 }
 
-/** A stop in force that names each kind that gates now stays as it is. */
+/**
+ * A stop in force that names each kind that gates now stays as it is. At the quota limit it stays only when
+ * it never continues by itself and lasts until the reset of each kind at the limit. Else the new stop,
+ * merged with it (3.2), drops its auto and lasts until the reset.
+ */
 export const stopKept = (st: StoppedRecord | undefined, ks: readonly KindSense[]): st is StoppedRecord =>
-  st !== undefined && ks.every((k) => (st.kinds ?? ['five_hour']).includes(k.kind))
+  st !== undefined &&
+  ks.every((k) => (st.kinds ?? ['five_hour']).includes(k.kind)) &&
+  ks.every((k) => !k.limit || (st.auto !== true && st.windowEnd >= k.stopEnd))
 
 /**
  * B24: the reply of a stop over a stop that stays. R4: its end shows when spare10 ends it by itself.
@@ -1061,8 +1268,12 @@ export function stopKeptReply(st: StoppedRecord, facts: readonly Facts[], autoRe
   return heldInPlace ? `${reply} ${HELD_WAITS}` : reply
 }
 
-/** The stop that a stop command writes over `ks`. `work`: the work of a stop it took over (3.2). */
-export function stopWriteOf(ks: readonly KindSense[], auto: boolean, work: boolean): StopWrite {
+/**
+ * The stop that a stop command writes over `ks`. `work`: the work of a stop it took over (3.2). A stop at
+ * the quota limit never continues by itself, so it has no auto.
+ */
+export function stopWriteOf(ks: readonly KindSense[], autoResume: boolean, work: boolean): StopWrite {
+  const auto = autoResume && !ks.some((k) => k.limit)
   const until = auto ? Math.max(...ks.map((k) => k.holdEnd)) : Math.max(...ks.map((k) => k.stopEnd))
   const skip = skipTag(
     until,
@@ -1087,6 +1298,7 @@ export function stopWriteOf(ks: readonly KindSense[], auto: boolean, work: boole
  * in force can keep its later end (3.2).
  */
 export function stopTrippedReply(ks: readonly KindSense[], facts: readonly Facts[], written: StoppedRecord, auto: boolean, now: number): string {
+  if (ks.some((k) => k.limit)) return stopReply('limit', undefined, undefined, { at: atText(written.windowEnd, written.kinds ?? ks.map((k) => k.kind), undefined, now) })
   const wSkip = written.skip === true
   const u = untilFor(
     factsFrom(ks, now, wSkip),
@@ -1144,23 +1356,30 @@ export function simulateOpens(
 
 /**
  * 2.9, B53, floor 2.9: the reply of a test reading that is now set. `spans`: the spans of the host that
- * runs the command. `mem`: what the host remembers of the kind, for the real reading beneath.
+ * runs the command. `mem`: what the host remembers of the kind, for the real reading beneath. `replaces`:
+ * the reading replaced a test reading of the kind (not in place), so the host cleared the consents of both
+ * windows and the stop (3.5), and the reply says so.
  */
 export function simulateText(i: {
   spec: TestSpec
   reading: Anchored
   inPlace: boolean
-  cfg: Pick<Effective, 'reserve' | 'weeklyReserve' | 'resumeFloor' | 'weeklyResumeFloor'>
+  replaces: boolean
+  cfg: Pick<Effective, 'reserve' | 'weeklyReserve' | 'resumeFloor' | 'weeklyResumeFloor' | 'limitPause'>
   spans: Spans
   live: SessionRateLimit | undefined
   mem: Memory
   now: number
+  paid?: boolean // Codex A23: credits pay past 100%, so 100% is no quota limit
 }): string {
   const { spec, now } = i
   const reserve = reserveOf(i.cfg, spec.kind)
   const testBasis: Basis = { kind: 'test', ...i.reading }
   const span = spanOf(i.spans, spec.kind)
   const f: Facts = { ...factsOf(testBasis, reserve, undefined, spec.kind, now), test: true, ...(span > 0 ? { span } : {}) }
+  const kind = i.inPlace ? 'raised' : i.replaces ? 'replaced' : 'set'
+  // At the quota limit the test reading holds all work until its window ends: no open, floor or real sentence.
+  if (i.cfg.limitPause && i.paid !== true && spec.pct >= LIMIT_PCT) return simulateReply(kind, f, undefined, undefined, undefined, true)
   const realBasis = basis(i.live, i.mem, now, undefined, spec.kind)
   const opens = simulateOpens(testBasis, realBasis, reserve, span, now, f)
   // Floor 2.9: past the floor of the kind, unless open at once. The real reading in the reserve beneath.
@@ -1168,7 +1387,7 @@ export function simulateText(i: {
   const pastFloor = floor > 0 && spec.pct >= pointOf(floor) && opens !== 'now' ? floor : undefined
   const rv = viewOf(realBasis, realBasis, reserve, span, now)
   const realIn = rv.tripped && !rv.open && (pctOf(realBasis) ?? 100) < spec.pct
-  return simulateReply(i.inPlace ? 'raised' : 'set', f, opens, pastFloor, realIn)
+  return simulateReply(kind, f, opens, pastFloor, realIn)
 }
 
 // ---- The report (register.tsx 2.6, 2.7, 3.1, 3.5) ----
@@ -1201,6 +1420,14 @@ export function seenSplit(kinds: readonly KindSense[], lists: (k: KindSense) => 
     const list = lists(k)
     const pct = pctOf(k.basis) ?? 0
     const c = coveringConsent(list, now, k.windowEnd, pct, k.point)
+    if (k.limit) {
+      // At the quota limit the kind gates, and the report still shows the consent that it keeps, or one that ended.
+      const e = c === undefined ? endedFloor(list, now, k.windowEnd, pct, k.point) : undefined
+      if (c !== undefined) out.consent[k.kind] = c
+      if (e !== undefined) out.ended[k.kind] = e
+      out.gating.push(k)
+      continue
+    }
     if (c !== undefined && !(k.open && c.to !== undefined)) {
       out.consent[k.kind] = c
       continue
@@ -1226,18 +1453,20 @@ export function seenOf(i: {
   attended: boolean
   split: SeenSplit
   stop: StoppedRecord | undefined
-  question: (QuestionCore & { silent: boolean }) | undefined
+  question: QuestionCore | undefined
   told: Told
   sessionId: string
   /** Codex design 4.15: the kinds the host reports. The phase then reads their bases, so a weekly-only plan is armed. Claude passes none. */
   present?: readonly Kind[]
+  /** Codex 3.6: the reset jitter of `toldWindow`. Claude passes none. */
+  jitter?: number
 }): Seen {
   const { cfg, tripped, split, stop, question } = i
   const prefix = `${i.sessionId}:`
   const toldKeys = new Set<string>()
   for (const k of split.gating) {
     const t = i.told[k.kind]
-    if (t.windowEnd !== k.windowEnd) continue
+    if (!toldWindow(t.windowEnd, k, i.jitter)) continue
     for (const key of t.keys) {
       const ks = keyStage(key)
       if (key.startsWith(prefix) && ks.atFloor === k.atFloor) toldKeys.add(ks.base)
@@ -1250,9 +1479,10 @@ export function seenOf(i: {
     consented: cfg.enabled && tripped && split.gating.length === 0 && split.open.length === 0,
     open: cfg.enabled && tripped && split.gating.length === 0 && split.open.length > 0,
     stopped: stop !== undefined,
-    asking: question !== undefined && !question.silent,
+    asking: question !== undefined && !quietOf(question),
     told: tripped && toldKeys.size > 0,
     attended: i.attended,
+    limit: split.gating.some((k) => k.limit),
     ...(i.present === undefined ? {} : { bases: i.present.map((k) => i.bases[k].basis) }),
   })
   return {
@@ -1271,6 +1501,19 @@ export function seenOf(i: {
     toldCount: toldKeys.size,
     phase,
   }
+}
+
+/**
+ * The limit phase: when held work continues. The hold end of an open limit question, else the latest
+ * reset of the kinds at the quota limit that gate. `held`: Continue at the reset was chosen on the open
+ * limit question, so held work waits for the reset.
+ */
+export function limitAt(p: Pick<Seen, 'gating' | 'question'>): { ms: number; kinds: Kind[]; held: boolean } | undefined {
+  const q = p.question
+  if (q?.limit === true) return { ms: q.holdEnd, kinds: q.kinds, held: q.chosen === true }
+  const at = p.gating.filter((k) => k.limit)
+  if (at.length === 0) return undefined
+  return { ms: Math.max(...at.map(resetOf)), kinds: at.map((k) => k.kind), held: false }
 }
 
 /** The reset of an open kind (an open kind always has one). */
@@ -1296,6 +1539,10 @@ export function untilOf(p: Seen): { until?: string; to?: string } {
   if (p.phase === 'open') {
     const first = [...p.open].sort((a, b) => resetOf(a) - resetOf(b))[0]
     return first === undefined ? {} : { until: clockText(resetOf(first), first.kind, undefined, p.now) }
+  }
+  if (p.phase === 'limit') {
+    const l = limitAt(p)
+    return l === undefined ? {} : { until: atText(l.ms, l.kinds, undefined, p.now) }
   }
   const st = p.stop
   if (p.phase === 'stopped' && st?.kinds !== undefined && ((st.auto === true && p.cfg.autoResume) || st.skip === true)) {
@@ -1330,6 +1577,8 @@ export function statusInput(p: Seen, i: { childPolicy: string; warnings: string[
   const week = p.bases.seven_day
   const q = p.question
   const st = p.stop
+  // The limit phase, or a stop while a kind at the quota limit gates: the report names its reset.
+  const lim = p.phase === 'limit' ? limitAt(p) : p.phase === 'stopped' ? limitAt({ gating: p.gating }) : undefined
   const at =
     q !== undefined
       ? { ms: q.holdEnd, kinds: q.kinds, skip: q.skip }
@@ -1378,6 +1627,8 @@ export function statusInput(p: Seen, i: { childPolicy: string; warnings: string[
       ...rowOf('seven_day'),
     },
     autoResume: { on: p.cfg.autoResume, from: p.cfg.from.autoResume },
+    limitPause: { on: p.cfg.limitPause, from: p.cfg.from.limitPause },
+    ...(lim === undefined ? {} : { limit: lim }),
     ...(at === undefined ? {} : { at }),
     ...(st === undefined ? {} : { work: st.work === true, autoStop: st.auto === true && p.cfg.autoResume, skipStop: st.skip === true }),
     tickerStale: i.tickerStale,

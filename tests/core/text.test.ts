@@ -4,6 +4,8 @@ import {
   COMMAND_DESCRIPTION,
   HEADER,
   HEADLESS_GENERIC,
+  LIMIT_OFF,
+  LIMIT_OPTIONS,
   NOT_STARTED_GENERIC,
   QUESTION_OPTIONS,
   RESUME_LABEL,
@@ -26,6 +28,8 @@ import {
   formatClock,
   headlessText,
   leadText,
+  limitHead,
+  limitQuestionText,
   modelFacts,
   notPerson,
   notStarted,
@@ -40,6 +44,7 @@ import {
   resumePrompt,
   resumeReply,
   simulateReply,
+  simulateWarning,
   soonText,
   spanText,
   statusReport,
@@ -177,7 +182,7 @@ test('the options put Stop here first and the header fits 12 characters', () => 
   expect(QUESTION_OPTIONS[1]).toBe(RESUME_LABEL)
   expect(HEADER).toBe('spare10')
   expect(HEADER.length).toBeLessThanOrEqual(12)
-  expect(VERSION).toBe('0.3.0')
+  expect(VERSION).toBe('0.4.0')
   expect(COMMAND_DESCRIPTION).toBe('Show the spare10 quota breaker, or resume or stop at the reserve.')
   expect(ARGUMENT_HINT).toBe('[resume|stop]')
 })
@@ -245,7 +250,10 @@ test('the notices, warnings and replies are the section 2 texts, without the pre
   expect(simulateReply('set', { ...F, used: 95, left: 5 })).toBe(
     'test reading set to 95% used, resets 15:00. It can only raise the real reading. Run /spare10 simulate off to clear it.',
   )
-  expect(simulateReply('off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
+  expect(simulateReply('replaced', { ...F, used: 95, left: 5 })).toBe(
+    'test reading set to 95% used, resets 15:00. This starts a new test. Your consents for both windows and any stop are cleared. It can only raise the real reading. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('off')).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
   expect(simulateReply('bad')).toBe(
     '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
   )
@@ -277,7 +285,7 @@ const FOOT = ['', '/spare10 resume   continue on the reserve until the window re
 
 test('the status report prints every field', () => {
   expect(statusReport(status()).split('\n')).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used.',
     '  · reserve        10% of the 5-hour window (from /config)',
@@ -394,11 +402,11 @@ function enginePrefixed(): string[] {
     statusReport(status()),
   ]
   for (const f of [F, NO_RESET]) {
-    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f))
+    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f), simulateReply('replaced', f))
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off'] as ReplyCase[]) out.push(resumeReply(c, f))
     for (const c of ['asking', 'stopped', 'tripped', 'below', 'none', 'off'] as const) out.push(stopReply(c, f, 90))
   }
-  return [...out, ...newEnginePrefixed(), ...floorEnginePrefixed()]
+  return [...out, ...newEnginePrefixed(), ...floorEnginePrefixed(), ...limitEnginePrefixed()]
 }
 
 test('no transcript line, warning or command reply starts with the prefix that the engine adds', () => {
@@ -406,7 +414,7 @@ test('no transcript line, warning or command reply starts with the prefix that t
   expect(texts.length).toBeGreaterThan(40)
   for (const t of texts) {
     expect(t.startsWith('spare10: ')).toBe(false)
-    expect(t.startsWith('spare10 ')).toBe(false) // the report header too: it renders as `spare10: version 0.3.0`
+    expect(t.startsWith('spare10 ')).toBe(false) // the report header too: it renders as `spare10: version 0.4.0`
   }
 })
 
@@ -426,8 +434,8 @@ test('model texts, drop reasons and debug lines keep their own spare10 prefix', 
   for (const t of kept) expect(t.startsWith('spare10: ')).toBe(true)
   expect(headlessText(F, 'S1').startsWith('spare10 stopped this unattended run')).toBe(true)
   expect(pauseInstruction(F, null).startsWith('spare10 budget guard.')).toBe(true)
-  // The floor forms of floor 2.3 keep theirs too.
-  for (const t of floorModelTexts()) {
+  // The floor forms of floor 2.3 keep theirs too, and so do the forms at the quota limit.
+  for (const t of [...floorModelTexts(), ...limitModelTexts()]) {
     if (t.startsWith('spare10 budget guard.')) continue
     expect(t.startsWith('spare10: ')).toBe(true)
   }
@@ -476,7 +484,7 @@ function everyText(): string[] {
   for (const f of facts) {
     out.push(personFacts(f), modelFacts(f), untilText(f), stopText(f), pausedText(f), headlessText(f, 'S1'))
     out.push(pauseInstruction(f, null), pauseInstruction(f, 'Commit, then stop.'), resumeContext(f), notStarted(f))
-    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f))
+    out.push(notice.continuing(f), notice.stopped(f), notice.told(f), simulateReply('set', f), simulateReply('replaced', f))
     for (const policy of ['off', 'prompt', 'stop'] as const) out.push(debugLine.unattended(f, policy))
     for (const opener of ['loop', 'prompt'] as const) for (const mode of ['hold', 'tell'] as const) out.push(questionText(f, opener, mode))
     for (const c of ['asking', 'stopped', 'tripped', 'consented', 'below', 'none', 'off'] as ReplyCase[]) out.push(resumeReply(c, f))
@@ -496,7 +504,7 @@ function everyText(): string[] {
           for (const isTest of [false, true])
             for (const blink of [false, true]) out.push(badgeView(phase, { reserve: 12.5, test: isTest, mode, blink }).text)
         }
-  return [...out, ...newTexts(), ...floorTexts()]
+  return [...out, ...newTexts(), ...floorTexts(), ...limitTexts()]
 }
 
 test('no user-facing string has an em-dash, an en-dash or a semicolon', () => {
@@ -758,6 +766,7 @@ test('the resume prompt has no spare10 prefix, the model notes keep theirs', () 
     debugLine.budget(10, 5000),
     debugLine.checkFailed('Error: gone'),
     debugLine.settleFailed('Error: gone'),
+    debugLine.startFailed('Error: gone'),
   ]
   for (const t of kept) expect(t.startsWith('spare10: ')).toBe(true)
   expect(headlessText(BOTH, 'S1').startsWith('spare10 stopped this unattended run')).toBe(true)
@@ -769,6 +778,7 @@ test('the resume prompt has no spare10 prefix, the model notes keep theirs', () 
   expect(debugLine.budget(10, 5000)).toBe('spare10: held 10 min. Budget left 5000 ms.')
   expect(debugLine.checkFailed('Error: gone')).toBe('spare10: the reset check did not run: Error: gone')
   expect(debugLine.settleFailed('Error: gone')).toBe('spare10: could not write the answer: Error: gone')
+  expect(debugLine.startFailed('Error: gone')).toBe('spare10: a step of the session start failed: Error: gone')
 })
 
 // The 0.2 transcript lines, warnings and command replies: the engine prefixes each one.
@@ -776,6 +786,8 @@ function newEnginePrefixed(): string[] {
   const out: string[] = [
     badWarning('SPARE10_WEEKLY_RESERVE', '0.5', '10'),
     badWarning('SPARE10_AUTO_RESUME', 'yes', 'on'),
+    simulateWarning('95 in 2 m'),
+    simulateWarning('95 weekly', true),
     timeoutWarning('askUserQuestionTimeout', true),
     timeoutWarning('CLAUDE_AFK_TIMEOUT_MS', true),
     consentWarning('2026-10-06T00:00:00.000Z', 'seven_day'),
@@ -849,6 +861,10 @@ test('every new notice and reply starts without the engine prefix', () => {
   expect(notice.resumeFailed('dropped')).toBe('could not continue the stopped work: dropped. Type a prompt to continue.')
   expect(badWarning('SPARE10_WEEKLY_RESERVE', '0.5', '10')).toBe('SPARE10_WEEKLY_RESERVE="0.5" is not 0 or 1 to 99. spare10 uses 10.')
   expect(badWarning('SPARE10_AUTO_RESUME', 'yes', 'on')).toBe('SPARE10_AUTO_RESUME="yes" is not on or off. spare10 uses on.')
+  expect(simulateWarning('95 in 2 m')).toBe('SPARE10_SIMULATE="95 in 2 m" is not a test reading. spare10 uses none.')
+  expect(simulateWarning('95 weekly', true)).toBe(
+    'SPARE10_SIMULATE="95 weekly" is a weekly test reading, and the weekly reserve is 0. spare10 uses it only when the weekly reserve is more than 0.',
+  )
   expect(timeoutWarning('askUserQuestionTimeout', true)).toBe(
     'questions here continue by themselves after a time limit (askUserQuestionTimeout). An unanswered spare10 question then counts as Stop here, and spare10 continues the work at the time that the question names.',
   )
@@ -879,7 +895,7 @@ const status02 = (over: Partial<StatusInput> = {}): StatusInput =>
 test('the status report shows both windows, the reset row, a weekly-off row and the ticker warning', () => {
   expect(statusReport(status02())).toBe(
     [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -1016,7 +1032,7 @@ test('the simulate replies name the weekly window and the new grammar', () => {
   expect(simulateReply('bad')).toBe(
     '/spare10 simulate takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.',
   )
-  expect(simulateReply('off')).toBe('test reading cleared. Consent and stop for this window are cleared too.')
+  expect(simulateReply('off')).toBe('test readings cleared. Your consents for both windows and any stop are cleared too.')
 })
 
 // Every 0.2 text, both kinds, autoResume on and off, for the STE guard.
@@ -1030,6 +1046,7 @@ function newTexts(): string[] {
     debugLine.budget(0, 1999),
     debugLine.checkFailed('Error: gone'),
     debugLine.settleFailed('Error: gone'),
+    debugLine.startFailed('Error: gone'),
     stepsIn(10, 10),
     stepsIn(12.5, 0),
     clockText(NEXT_THU, 'seven_day', TZ, T0),
@@ -1333,7 +1350,7 @@ const SPANS = { lastMinutes: 20, lastMinutesFrom: 'option', weeklyLastHours: 8, 
 test('the status report shows the reserve opens rows with their sources, and leaves weekly opens out when the weekly guard is off', () => {
   expect(statusReport(status02({ spans: SPANS }))).toBe(
     [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -1818,7 +1835,7 @@ test('the resume replies before and past the floor, and while a consent to the f
 test('the status report shows the floor rows: in force in both modes, off, not below the reserve, unattended, and no weekly row when the weekly guard is off', () => {
   expect(statusReport(status02({ spans: SPANS, floors: FLOORS }))).toBe(
     [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -2064,7 +2081,7 @@ test('stepsIn with fiveAbsent names only the weekly trip point, or no window', (
 
 test('the report of a weekly-only plan names the missing 5-hour window (CX17) and the weekly trip point', () => {
   expect(statusReport(WO()).split('\n')).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used of the weekly window.',
     '  · reserve        10% of the 5-hour window (from /config)',
@@ -2108,7 +2125,7 @@ test('heldInPlace: the stopped line says that held work waits, in place of the w
 test('extraRows follow the claude -p or unattended row, and extraHelp follows the help lines', () => {
   const extra = { extraRows: [['daemon', 'yes'], ['cli', '/x/bin/spare10']] as const, extraHelp: ['one more line', 'and another'], warnings: ['a warning'] }
   expect(statusReport(status(extra)).split('\n')).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used.',
     '  · reserve        10% of the 5-hour window (from /config)',
@@ -2149,5 +2166,204 @@ test('resumeReply and stopReply with five_hour absent name no 5-hour reading or 
     expect(resumeReply('none', undefined, undefined, undefined, 'hold', absent)).toBe('nothing to resume. There is no 5-hour reading yet.')
     expect(stopReply('none', undefined, 90, undefined, 90, undefined, absent)).toBe('nothing to stop. spare10 steps in at 90% used, or at 90% used of the weekly window.')
     expect(stopReply('below', F, 90, undefined, undefined, undefined, absent)).toBe('nothing to stop. spare10 steps in at 90% used.')
+  }
+})
+
+// ---- The pause at the quota limit (limit design 3) ----
+
+// The examples of section 3: the 5-hour window at 100% resets at 15:00, the weekly one Mon 09:00.
+const L5: Facts = { used: 100, left: 0, resetsAtMs: R, reserve: 10, timeZone: TZ, limit: true }
+const L7: Facts = { used: 100, left: 0, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0, limit: true }
+const R7: Facts = { used: 92, left: 8, resetsAtMs: W, reserve: 10, timeZone: TZ, kind: 'seven_day', now: T0 } // the weekly reserve, not at the limit
+const PF5 = '100% used · 0% left · resets 15:00'
+const AFTER = 'After the reset, type a prompt to continue.'
+const BACK = `${AFTER} ${LIMIT_OFF}` // the end of the limit question: after Stop here, and the way out
+
+test('the limit options put Continue at the reset first, and the heads name the limit of each window', () => {
+  expect(LIMIT_OPTIONS).toEqual(['Continue at the reset', 'Stop here'])
+  expect(limitHead(L5)).toBe('The quota limit is reached')
+  expect(limitHead(L7)).toBe('The weekly quota limit is reached')
+  expect(limitHead([L7, L5])).toBe('The quota limits of both windows are reached')
+})
+
+test('the limit question: loop and prompt, with autoResume on and off', () => {
+  expect(limitQuestionText(L5, 'loop', true)).toBe(
+    `The quota limit is reached: ${PF5}. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${BACK}`,
+  )
+  expect(limitQuestionText(L5, 'loop', false)).toBe(
+    `The quota limit is reached: ${PF5}. All work is on hold. Continue the work at the reset? Until you answer, the work waits. Stop here stops the work. ${BACK}`,
+  )
+  expect(limitQuestionText(L5, 'prompt', true)).toBe(
+    `The quota limit is reached: ${PF5}. spare10 holds your prompt and any other work. Continue the work at the reset? If you do not answer, all of it continues after 15:00, unless a reserve is still reached. Stop here gives your prompt back and stops other work. ${BACK}`,
+  )
+  expect(limitQuestionText(L5, 'prompt', false)).toBe(
+    `The quota limit is reached: ${PF5}. spare10 holds your prompt and any other work. Continue the work at the reset? Until you answer, all of it waits. Stop here gives your prompt back and stops other work. ${BACK}`,
+  )
+  expect(limitQuestionText(L5, 'loop')).toBe(limitQuestionText(L5, 'loop', false))
+})
+
+test('the limit question names the weekly window, and both windows with the later reset', () => {
+  expect(limitQuestionText(L7, 'loop', true)).toBe(
+    `The weekly quota limit is reached: 100% used · 0% left · resets Mon 09:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${BACK}`,
+  )
+  expect(limitQuestionText([L7, L5], 'loop', true)).toBe(
+    `The quota limits of both windows are reached: 5-hour window ${PF5}, weekly window 100% used · 0% left · resets Mon 09:00. All work is on hold. Continue the work at the reset? If you do not answer, the work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. Stop here stops the work. ${BACK}`,
+  )
+})
+
+test('the model texts at the limit name the quota limit and the percent used, and only the kinds at the limit', () => {
+  expect(stopText(L5)).toBe('spare10: the user stopped work at the quota limit (100% of quota used · resets 15:00). Stop now and wait for the user. Do not call any further tools.')
+  expect(pausedText(L5)).toBe(
+    'spare10: work stopped at the quota limit (100% of quota used · resets 15:00). No model request was sent, so this task is not finished. Wait for the user.',
+  )
+  expect(headlessText(L5, 'S1')).toBe(
+    'spare10 stopped this unattended run at the quota limit (100% of quota used · resets 15:00). No further model requests were sent. To pick it up later: claude --resume S1',
+  )
+  expect(stopText(L7)).toBe('spare10: the user stopped work at the quota limit (100% of weekly quota used · resets Mon 09:00). Stop now and wait for the user. Do not call any further tools.')
+  expect(stopText([L5, L7])).toBe(
+    'spare10: the user stopped work at the quota limit (100% of quota used · resets 15:00, and 100% of weekly quota used · resets Mon 09:00). Stop now and wait for the user. Do not call any further tools.',
+  )
+  expect(stopText([L5, R7])).toBe(stopText(L5)) // a kind in its reserve beside the limit: the limit only
+  expect(pauseInstruction(L5, null)).toBe(
+    'spare10 budget guard. You have reached the quota limit for this session (100% of quota used · resets 15:00). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.',
+  )
+  // RESUME_TAIL still finds a stopped subagent by these phrases.
+  expect(stopText(L5).startsWith('spare10: the user stopped work')).toBe(true)
+  expect(pausedText(L5).startsWith('spare10: work stopped')).toBe(true)
+})
+
+test('notStarted at the limit names only the limit and the reset', () => {
+  expect(notStarted(L5)).toBe('spare10: not started. The quota limit is reached until 15:00. Send the prompt again after the reset.')
+  expect(notStarted([L5, R7])).toBe(notStarted(L5))
+  expect(notStarted([L5, L7])).toBe('spare10: not started. The quota limits of both windows are reached until Mon 09:00. Send the prompt again after the reset.')
+  expect(notStarted(F)).toBe('spare10: not started. This session is inside your 10% reserve until 15:00. Send the prompt again to be asked again, or run /spare10 resume.')
+})
+
+test('the transcript lines at the limit, and {Rs} of a kind at the limit in the shared lines', () => {
+  expect(notice.limitContinues(L5)).toBe(`held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
+  expect(notice.limitContinues([L5, L7])).toBe(`held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
+  expect(notice.limitPromptWaits(L5)).toBe('your prompt waits with the held work until 15:00. Then spare10 continues all of it, unless a reserve is still reached.')
+  expect(notice.limitStopped('15:00')).toBe(`stopped at the quota limit until 15:00. ${AFTER}`)
+  expect(notice.limitStopped('15:00', true)).toBe('stopped at the quota limit until 15:00. Then spare10 continues the work, unless a reserve is still reached.')
+  expect(notice.limitStopped()).toBe('stopped at the quota limit. Type a prompt to continue.') // the reset has passed: no time
+  expect(notice.limitHoldLimit('Mon 09:00', true)).toBe(
+    'the hold reached its time limit. The work is stopped at the quota limit until Mon 09:00. Then spare10 continues it, unless a reserve is still reached.',
+  )
+  expect(notice.limitHoldLimit('Mon 09:00', false)).toBe(`the hold reached its time limit. The work is stopped at the quota limit until Mon 09:00. ${AFTER}`)
+  expect(notice.limitHoldLimit(undefined, false)).toBe('the hold reached its time limit. The work is stopped at the quota limit. Type a prompt to continue.')
+  expect(notice.limitReached).toBe('the quota limit is reached. spare10 asks you again.')
+  expect(notice.limitOver).toBe('the pause at the limit is over. Held work continues, unless a reserve is still reached.')
+  expect(yourReserves([L5, L7])).toBe('your quota limit and your weekly quota limit')
+  expect(notice.resetStillHeld(FIVE, [L7])).toBe('the 5-hour window reset, but your weekly quota limit is reached. Held work still waits.')
+  expect(notice.stopExtended(FIVE, [L7], 'Mon 09:00')).toBe('the 5-hour window reset, but your weekly quota limit is reached. The stop lasts until Mon 09:00.')
+})
+
+test('the command replies at the limit', () => {
+  expect(resumeReply('limit-asking', L5)).toBe(`held work waits until 15:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
+  expect(resumeReply('limit-late', L5)).toBe('resumed. Held work continues.') // the reset has passed: no time
+  expect(resumeReply('limit', L5)).toBe(
+    'nothing to resume now. The quota limit is reached until 15:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.',
+  )
+  expect(resumeReply('limit', [L5, L7])).toBe(
+    'nothing to resume now. The quota limits of both windows are reached until Mon 09:00. spare10 holds all work until then. To let work run past the limit, turn off Pause at the limit in /config.',
+  )
+  expect(LIMIT_OFF).toBe('To let work run past the limit, turn off Pause at the limit in /config.')
+  expect(stopReply('limit', undefined, undefined, { at: '15:00' })).toBe(`stopped at the quota limit until 15:00. ${AFTER}`)
+})
+
+test('the simulate reply at 100% says that it is the quota limit, in place of the open, floor and real sentences', () => {
+  const t5: Facts = { used: 100, left: 0, resetsAtMs: T0 + 22 * MIN, reserve: 10, timeZone: TZ, test: true, span: 20 * MIN }
+  const t7: Facts = { ...t5, kind: 'seven_day', resetsAtMs: W, now: T0 }
+  expect(simulateReply('set', t5, 'now', 5, true, true)).toBe(
+    'test reading set to 100% used, resets 12:22. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('raised', t5, undefined, undefined, undefined, true)).toBe(
+    'test reading raised to 100% used, resets 12:22. Your earlier answers stay. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', t7, undefined, undefined, undefined, true)).toBe(
+    'test reading set to 100% used of the weekly window, resets Mon 09:00. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the weekly test window ends. Run /spare10 simulate off to clear it.',
+  )
+  expect(simulateReply('set', t5, 'now')).toContain('so the reserve is open at once.') // without the limit: today's reply
+})
+
+test('B27 names SPARE10_LIMIT_PAUSE as on or off', () => {
+  expect(badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'on')).toBe('SPARE10_LIMIT_PAUSE="yes" is not on or off. spare10 uses on.')
+})
+
+test('the report: the limit phase lines, and the at the limit row only while the option is off', () => {
+  const at = { basis: { kind: 'live', pct: 100, resetsAtMs: R } as Basis, facts: L5, autoResume: { on: true, from: 'option' } as const }
+  const waiting = statusReport(status({ ...at, phase: 'limit', limit: { ms: R, kinds: ['five_hour'], held: false } })).split('\n')
+  expect(waiting[2]).toBe(`  ‖ limit          the quota limit is reached until 15:00. spare10 holds the next step and asks you. ${LIMIT_OFF}`)
+  const held = statusReport(status({ ...at, phase: 'limit', limit: { ms: W, kinds: ['seven_day'], held: true } })).split('\n')
+  expect(held[2]).toBe(`  ‖ limit          the quota limit is reached. Held work waits until Mon 09:00. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`)
+  const on = statusReport(status({ ...at, phase: 'tripped', limitPause: { on: true, from: 'option' } }))
+  expect(on).toBe(statusReport(status({ ...at, phase: 'tripped' }))) // on: the report is as it was
+  const off = statusReport(status({ ...at, phase: 'open', limitPause: { on: false, from: 'option' } })).split('\n')
+  expect(off).toContain('  · at the limit   off. spare10 does not pause at the limit (from /config)')
+  expect(off.indexOf('  · at the limit   off. spare10 does not pause at the limit (from /config)')).toBe(off.findIndex((l) => l.startsWith('  · at the reset')) + 1)
+  const env = statusReport(status({ ...at, phase: 'open', limitPause: { on: false, from: 'env' } }))
+  expect(env).toContain('  · at the limit   off. spare10 does not pause at the limit (from SPARE10_LIMIT_PAUSE)')
+})
+
+test('the report: a stop at the limit names the reset and the way out, not the resume command', () => {
+  const at = { basis: { kind: 'live', pct: 100, resetsAtMs: R } as Basis, facts: L5, autoResume: { on: true, from: 'option' } as const }
+  const stopped = statusReport(status({ ...at, phase: 'stopped', limit: { ms: R, kinds: ['five_hour'], held: false } })).split('\n')
+  expect(stopped[2]).toBe(`  ■ stopped        you chose Stop here, until 15:00. Type a prompt to be asked again. ${LIMIT_OFF}`)
+  const auto = { at: { ms: R, kinds: ['five_hour'] as Kind[] }, work: true, autoStop: true }
+  const cont = statusReport(status({ ...at, ...auto, phase: 'stopped', limit: { ms: R, kinds: ['five_hour'], held: false } })).split('\n')
+  expect(cont[2]).toBe(`  ■ stopped        you chose Stop here. spare10 continues the work after 15:00. Type a prompt to be asked again. ${LIMIT_OFF}`)
+  // Below the limit: the line of today.
+  expect(statusReport(status({ ...at, phase: 'stopped' })).split('\n')[2]).toBe('  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run /spare10 resume.')
+})
+
+/** Every limit notice, warning and reply, for the prefix and STE guards. */
+function limitEnginePrefixed(): string[] {
+  const out: string[] = [
+    notice.limitReached,
+    notice.limitOver,
+    notice.limitStopped('15:00'),
+    notice.limitStopped('15:00', true),
+    notice.limitStopped(),
+    notice.limitHoldLimit('15:00', true),
+    notice.limitHoldLimit('15:00', false),
+    notice.limitHoldLimit(undefined, false),
+    resumeReply('limit-late'),
+    badWarning('SPARE10_LIMIT_PAUSE', 'yes', 'on'),
+    stopReply('limit', undefined, undefined, { at: '15:00' }),
+    stopReply('limit'),
+  ]
+  for (const f of [L5, L7, [L5, L7]] as Array<Facts | Facts[]>) {
+    out.push(notice.limitContinues(f), notice.limitPromptWaits(f), resumeReply('limit-asking', f), resumeReply('limit', f), notice.stopped(f), notice.resetStillHeld(FIVE, Array.isArray(f) ? f : [f]))
+  }
+  for (const phase of ['limit', 'open', 'stopped'] as const)
+    for (const held of [false, true])
+      for (const on of [false, true])
+        out.push(statusReport(status({ phase, facts: L5, limit: { ms: R, kinds: ['five_hour'], held }, limitPause: { on, from: 'env' }, autoResume: { on: true, from: 'option' } })))
+  for (const k of ['set', 'raised', 'replaced'] as const) out.push(simulateReply(k, { ...L5, test: true }, undefined, undefined, undefined, true))
+  return out
+}
+
+/** The model texts at the limit. */
+function limitModelTexts(): string[] {
+  const out: string[] = []
+  for (const f of [L5, L7, [L5, L7], [L5, R7]] as Array<Facts | Facts[]>) out.push(stopText(f), pausedText(f), notStarted(f), pauseInstruction(f, null), pauseInstruction(f, 'Commit.'))
+  return out
+}
+
+/** Every limit text, for the STE guard. */
+function limitTexts(): string[] {
+  const out: string[] = [...LIMIT_OPTIONS, ...limitEnginePrefixed(), ...limitModelTexts(), headlessText(L5, 'S1')]
+  for (const f of [L5, L7, [L5, L7]] as Array<Facts | Facts[]>)
+    for (const opener of ['loop', 'prompt'] as const) for (const auto of [false, true]) out.push(limitQuestionText(f, opener, auto), limitHead(f))
+  for (const t of [false, true]) out.push(badgeView('limit', { reserve: 10, test: t, mode: 'hold', blink: true, until: '15:00' }).text)
+  return out
+}
+
+test('every limit notice, warning and reply starts without the engine prefix', () => {
+  const texts = limitEnginePrefixed()
+  expect(texts.length).toBeGreaterThan(20)
+  for (const t of texts) {
+    expect(t.startsWith('spare10: ')).toBe(false)
+    expect(t.startsWith('spare10 ')).toBe(false)
   }
 })

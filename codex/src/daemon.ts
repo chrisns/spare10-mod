@@ -68,11 +68,17 @@ export type DaemonFailure = 'connect' | 'protocol' | 'timeout' | 'closed' | 'rpc
 export class DaemonError extends Error {
   readonly kind: DaemonFailure
   readonly code: number | undefined
-  constructor(kind: DaemonFailure, message: string, code?: number) {
+  /**
+   * A connect that found no daemon: the socket file went away, or nothing listens on it (a daemon that
+   * crashed or got SIGKILL leaves its socket file).
+   */
+  readonly absent: boolean
+  constructor(kind: DaemonFailure, message: string, code?: number, absent = false) {
     super(message)
     this.name = 'DaemonError'
     this.kind = kind
     this.code = code
+    this.absent = absent
   }
 }
 
@@ -247,8 +253,11 @@ type Rpc = {
   notify(method: string, params?: unknown): void
 }
 
-/** `uid`: the user that must own the socket and its folder, or undefined on a host with no POSIX uids. */
-type Opts = { connectMs: number; maxMessage: number; uid: number | undefined }
+/**
+ * `uid`: the user that must own the socket and its folder, or undefined on a host with no POSIX uids.
+ * `stat`: the stat of the socket check (socketAt), the real one or a fake one in the specs.
+ */
+type Opts = { connectMs: number; maxMessage: number; uid: number | undefined; stat: StatOf }
 
 /** Where the daemon socket alias leads: the real socket, no socket at all, or a socket that is not safe to dial. */
 export type SocketAt = { real: string } | { missing: string } | { unsafe: string }
@@ -313,7 +322,11 @@ function upgrade(socketPath: string, clock: Clock, o: Opts): Promise<{ socket: D
       fail(new DaemonError('connect', `the daemon did not answer the handshake within ${o.connectMs} ms`))
       req.destroy()
     })
-    req.on('error', (e) => fail(new DaemonError('connect', `the daemon socket failed: ${e.message}`)))
+    req.on('error', (e: NodeJS.ErrnoException) => {
+      // Nothing listens on the socket, or the file went after the check: no daemon.
+      const none = e.code === 'ECONNREFUSED' || e.code === 'ENOENT'
+      fail(new DaemonError('connect', `the daemon socket failed: ${e.message}`, undefined, none))
+    })
     req.on('response', (res: IncomingMessage) => {
       res.resume()
       fail(new DaemonError('protocol', `the daemon answered the handshake with status ${res.statusCode ?? 0}`))
@@ -344,8 +357,8 @@ function upgrade(socketPath: string, clock: Clock, o: Opts): Promise<{ socket: D
 async function withConnection<T>(socketAlias: string, version: string, clock: Clock, timeoutMs: number, o: Opts, fn: (rpc: Rpc) => Promise<T>): Promise<T> {
   guardTestPath({}, 'daemon socket', socketAlias)
   // The check again at each connect: the socket can change after udsDaemon made the client.
-  const at = socketAt(socketAlias, o.uid)
-  if ('missing' in at) throw new DaemonError('connect', `no daemon socket: ${at.missing}`)
+  const at = socketAt(socketAlias, o.uid, o.stat)
+  if ('missing' in at) throw new DaemonError('connect', `no daemon socket: ${at.missing}`, undefined, true)
   if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
   const { socket, head } = await upgrade(at.real, clock, o)
   const reader = new FrameReader(o.maxMessage)
@@ -472,16 +485,17 @@ export const NOT_MATERIALIZED = /is not materialized yet/
 /**
  * The daemon client of `paths.socket`, or undefined when no socket file exists (no daemon). A socket that is
  * not safe to dial (socketAt) throws a DaemonError: the link counts it as no daemon, with a debug line. With
- * SPARE10_CODEX_TEST=1, a socket under ~/.codex throws (3.9). `o` sets the handshake timeout, the size cap
- * and the owner uid (default: this process's uid), for the specs.
+ * SPARE10_CODEX_TEST=1, a socket under ~/.codex throws (3.9). `o` sets the handshake timeout, the size cap,
+ * the owner uid (default: this process's uid) and the stat of the socket check, for the specs.
  */
 export function udsDaemon(paths: Pick<Paths, 'socket'>, version: string, clock: Clock, o: Partial<Opts> = {}): Daemon | undefined {
   guardTestPath({}, 'daemon socket', paths.socket)
   const uid = 'uid' in o ? o.uid : process.getuid?.()
-  const at = socketAt(paths.socket, uid)
+  const stat = o.stat ?? statSync
+  const at = socketAt(paths.socket, uid, stat)
   if ('missing' in at) return undefined
   if ('unsafe' in at) throw new DaemonError('connect', at.unsafe)
-  const opts: Opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid }
+  const opts: Opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid, stat }
   const op = <T>(timeoutMs: number, fn: (rpc: Rpc) => Promise<T>): Promise<T> =>
     withConnection(paths.socket, version, clock, timeoutMs, opts, fn)
   return {
@@ -550,7 +564,10 @@ export type DaemonLink = {
   get(): Daemon | undefined
   /** True when the daemon lists the thread in `thread/loaded/list`. A failed read is false and is not kept. */
   hosted(threadId: string): Promise<boolean>
-  /** As `hosted`, but a failed read is undefined: nobody knows yet. With no daemon it is false. */
+  /**
+   * As `hosted`, but a failed read is undefined: nobody knows yet. With no daemon, or a socket file that
+   * nothing listens on, it is false.
+   */
   known(threadId: string): Promise<boolean | undefined>
 }
 
@@ -559,7 +576,8 @@ export type DaemonLink = {
  * that throws (a socket that is not safe to dial, the test guard) is no daemon, with one debug line for each
  * new reason. `hosted` keeps a list that names the thread for HOSTED_TTL_MS (60 s), and reads a list that
  * does not name it again after HOSTED_MISS_TTL_MS, so a thread that loaded later shows. Reads at the same
- * time share one call. A failed read writes a debug line.
+ * time share one call. A failed read writes a debug line. A read that finds no daemon on the socket (see
+ * DaemonError.absent) is a list with no thread, and is not kept.
  */
 export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { ttlMs?: number; missTtlMs?: number; log?: Log } = {}): DaemonLink {
   const ttl = o.ttlMs ?? HOSTED_TTL_MS
@@ -593,7 +611,9 @@ export function daemonLink(make: () => Daemon | undefined, clock: Clock, o: { tt
         },
         (e: unknown) => {
           o.log?.debug(codexDebug.readFailed('the loaded threads', errText(e)))
-          return undefined
+          // No daemon listens (a socket file that a crash left): no thread is on it. The answer is not kept,
+          // so a daemon that starts later shows at the next read.
+          return e instanceof DaemonError && e.absent ? new Set<string>() : undefined
         },
       )
       .finally(() => {

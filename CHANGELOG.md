@@ -6,6 +6,8 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
 ### Added
 
 - **Codex.** spare10 now also runs in the OpenAI Codex CLI 0.157.0. It uses the same repo and marketplace. Install it with `codex plugin marketplace add chrisns/spare10-mod` and `codex plugin add spare10@spare10`. Then trust its hooks in the TUI. It has the same reserves, questions, floor, open reserve, stops and unattended policies.
@@ -14,18 +16,38 @@ The project uses [Semantic Versioning](https://semver.org/).
 - **Codex commands.** Type `spare10`, `spare10 resume`, `spare10 stop`, `spare10 simulate ...`, `spare10 set ...` or `spare10 help` as a prompt. spare10 answers with no model request. During a turn, run them as `!spare10 ...`. This needs the `PATH` line from the README.
 - **Codex options.** `spare10 set` changes the options in `config.json` in the Codex plugin data folder. The `SPARE10_*` variables still win.
 - **Codex warnings.** spare10 warns when a session runs without the Codex daemon or with approval `never`. It also warns about an unknown app on the daemon, and about opt-in scope on the daemon.
-- **Weekly-only plans.** On a plan with only a weekly window, spare10 watches that window. The report says that the plan has no 5-hour window.
+- **Weekly-only plans.** On a plan with only a weekly window, spare10 watches that window. The report says that the plan has no 5-hour window. `spare10 simulate` without a window word then sets a weekly test reading.
 - **Luna Reserve.** spare10 lets work on Codex's Luna Reserve model through while Codex uses it.
 - **Reset credits.** After a Codex reset credit, an earlier **Resume** does not cover the new window.
-- **Codex session cleanup.** spare10 removes the files of a Codex session 30 days after their last change. It does this only when no process of that session runs.
+- **Codex session cleanup.** spare10 removes the files of a Codex session 30 days after their last change. It does this only when the spare10 process of that session has stopped. This is also true while the Codex daemon runs. An open question of a stopped process does not keep the files. A cleanup that stops at 500 folders goes on 10 minutes later.
+- **Codex unsafe mode warning.** spare10 warns once per session when a Codex turn has no sandbox or uses auto review. It also warns when the agent can write the spare10 data folder. In these modes the agent can run `spare10 resume` for you. The status report shows the warning after the session showed it. A writable home folder alone does not give this warning, because Codex keeps `~/.codex` read-only there. The Codex Node.js warning under Security covers the home folder.
+- **Pause at the limit.** At 100% used of a window, spare10 now holds all work at the next step. It does this also while a reserve is open, after a second **Resume**, and with a pause prompt. It asks one question: **Continue at the reset** or **Stop here**. **Continue at the reset** has the focus. With no answer, the work continues after the reset. Subagents, workflow agents and background agents wait too, and then continue.
+- **Stop here at the limit.** It stops the work until the reset. spare10 does not continue that work, also with the option **Continue at the reset** on. Only the exact label **Stop here** stops. Esc and all other answers continue at the reset.
+- **Limit lines.** A prompt that you send after the answer **Continue at the reset** shows a line that says that it waits. No limit line or reply names a reset time that has passed. This is also true for a late **Stop here** or `/spare10 resume` with the option **Continue at the reset** off.
+- **Pause at the limit option.** It is `limitPause` in `/config`, `SPARE10_LIMIT_PAUSE`, and `spare10 set limitPause` in Codex. It is on by default. Claude Code does not tell spare10 about extra usage. So switch the option off when you pay for extra usage. Its `/config` text says what **Stop here** does. It also says that the work continues after the reset only with **Continue at the reset** on.
+- **Unattended runs at the limit.** At 100% used, the `stop` policy refuses and the `wait` policy holds. The `prompt` policy tells each agent once to wind down, if the agent got no wind-down text in this window. The three policies do this also while a reserve is open or a consent applies.
+- **Limit texts.** The badge has a new row `‖ spare10: at the limit until 15:00`. `/spare10` shows a `limit` phase. While the option is off, it shows an `at the limit` row. The texts for the model name the quota limit and the percent used. The limit question, the report and the reply of `/spare10 resume` name the option **Pause at the limit**. So does the line of **Continue at the reset**. After **Stop here** at the limit, the report names the reset and this option, not `/spare10 resume`.
+- **Codex limit.** In Codex, the limit form has **Continue at the reset** first. Esc on it continues at the reset. A turn that ends at the limit shows a new line. After **Stop here** or **Continue at the reset**, that line says so. spare10 does not pause while Codex credits can pay past 100%. While `limitPause` is off, the report warns when a real reading is past 100% used.
+- **Codex variable.** The Codex MCP server now passes `SPARE10_LIMIT_PAUSE` to spare10. The Codex hooks did not change, so Codex does not ask you to trust them again.
+- **Known limitations 58 to 66.** New known limitations list the cases that the pause at the limit does not cover well. An example is a stale reading after an early limit reset.
+- **Codex difference 25.** Without the Codex daemon, spare10 does not see a reset credit or a plan change at the limit. The Codex page says how to let the held work go on.
 
 ### Changed
 
+- **Commands at the limit.** At 100% used, `/spare10 resume` writes no consent, also when a quota read fails. On the limit question, it counts as **Continue at the reset**. At other times, it replies that nothing resumes. When a limit question is open but no window is at the limit now, it counts as **Resume**. Before the floor, that Resume lasts until the floor, as a Resume at the reserve does.
+- **Stop at the limit.** At 100% used, `/spare10 stop` stops the work until the reset, and spare10 does not continue it. This is also true on an open question at the reserve, and over a stop that spare10 would continue. A **Stop here** on a question at the reserve at 100% used does the same.
+- **Stops at the limit.** A stop that ends when the reserve opens now lasts until the reset at 100% used. Then spare10 continues the stopped work, as before.
+- **No answer at the limit.** Esc on a question at the reserve after the quota reached 100% now stops the work until the reset. Before, the stop ended when the reserve opened. The line names the quota limit. With the option **Continue at the reset** on, spare10 continues the work after the reset.
+- **Pause prompt option text.** The `/config` text of **Pause prompt** and the option tables now name an exception. At 100% used, **Pause at the limit** still holds all work.
+- **Simulate at the limit.** The reply of `/spare10 simulate 100` now says that 100% is the quota limit. It says that spare10 holds all work until the test window ends.
 - **Docs.** The README is much shorter. Its quick start covers Claude Code and Codex. It has Codex screenshots. The details moved to pages in `docs/`.
 - **Texts.** The texts take their host words, such as `/spare10` and `Claude Code`, from one place. The Claude Code texts do not change.
 - **Marketplace.** The marketplace descriptions name both Claude Code and Codex.
-- **Codex paths.** The Codex texts never name your home folder. A report row shows `~/...`. The `!` command and the `PATH` line use `"$HOME/..."`. A path with a space or a quote now works in the `!` command.
+- **Codex paths.** The Codex texts never name your home folder. A report row shows `~/...`. An error text of the system shows a path under your home folder as `~/...` too. The `!` command and the `PATH` line use `"$HOME/..."`. A path with a space or a quote now works in the `!` command. With no home folder, the broker and the CLI still start, and the texts show the full path.
 - **Known limitation 55.** A new known limitation says that Claude can consent for you when it can write a settings file. The `/spare10` command section links to it.
+- **Known limitation 56.** A new known limitation says that Claude can answer for you when it can type into your terminal. An example is `tmux send-keys`. Auto mode, an allow rule or `--dangerously-skip-permissions` can skip the permission prompt. The `/spare10` command section links to it. It also says that spare10 refuses a `resume` or `stop` that Claude runs as its own command.
+- **Known limitation 57.** A new known limitation says that a child `claude -p` run follows the environment that it starts with. It gives examples of an environment that lets a child run pass its trip. A later **Stop here** or `/spare10 stop` in the parent does not reach a child run that already runs. The Scope section links to it.
+- **Codex debug log.** spare10 removes the Codex debug log files that are older than 7 days. It also does this when the debug log is off. A day file stops at 50 MiB.
 
 ### Fixed
 
@@ -36,15 +58,49 @@ The project uses [Semantic Versioning](https://semver.org/).
 - **Codex hold limit.** A held step now ends at the hold limit also when the question file has another format.
 - **Codex stop sweep.** A stop sweep now tries again on a turn whose earlier interrupt was lost.
 - **Codex wake.** A waiting spare10 process now wakes only when a session file changes, not at each lock or thread write.
-- **Codex daemon warning.** A failed daemon read at the start of a session no longer shows the no-daemon warning for the whole session. The debug log records the failed read.
+- **Codex daemon warning.** A failed daemon read at the start of a session no longer shows the no-daemon warning for the whole session. The debug log records the failed read. A daemon socket that no daemon listens on counts as no daemon, so the warning shows.
 - **Codex state files.** A computer crash can leave a state file empty. spare10 then reads the file as new and asks again. Before, such a file switched the guard off for that session.
-- **Codex stop reply.** During a stop, `spare10 stop` now says what happens to held work. It says "Held work waits" when the work stays held. It says "Held work is refused" only when spare10 ends the held work on the Codex daemon.
+- **Codex stop reply.** During a stop, `spare10 stop` now says what happens to held work. It says "Held work waits" when the work stays held. It says "Held work is refused" only when spare10 ends the held work on the Codex daemon. This now also holds for `spare10 stop` on an open question.
 - **Codex set reply.** `spare10 set` names a `SPARE10_*` variable as the winner only when its value is valid. A bad value has no effect, and the report warns about it.
 - **Codex consent warning.** The Codex report warns about a consent past its window in Codex words. It does not name `SPARE10_CONSENT`, because Codex keeps consent in the session files.
+- **Resume after a reset.** A **Resume** answers only the window of its question. After a reset, or a Codex reset credit, the new window asks again. With **Continue at the reset** off, a late **Resume** no longer lets work run in a new window that is in its reserve. spare10 also asks again past the floor.
+- **Early reset.** On both hosts, an early limit reset voids a **Resume** of the old window. The new window asks again at its reserve. This also holds when spare10 cannot remove the old value from the env.
+- **Junk stop value.** A stop value with a time that no clock can show is junk. spare10 ignores it, and `/spare10` no longer fails.
+- **Simulate replies.** `/spare10 simulate off` now says that it clears the test readings, your consents for both windows and any stop. A value that starts a new test now says that it clears your consents for both windows and any stop.
+- **Test reading warnings.** spare10 now warns about a bad `SPARE10_SIMULATE` value. It also warns about a weekly test reading while the weekly reserve is 0. spare10 uses such a reading only when the weekly reserve is more than 0.
+- **Background warning.** A `--bg` session now also warns about a `SPARE10_SIMULATE` value from the `claude daemon` or a settings file. Before, such a test reading tripped each job with no warning.
+- **Badge pulse.** While the badge pulses, spare10 reads the quota at most once in 5 s, also with two surfaces. Before, it read the quota each second.
+- **Start-up steps.** A failed read at the session start no longer skips the child policy or `/spare10`. So spare10 still sets `SPARE10_HEADLESS=stop` for child runs. The debug log names the start step that failed.
+- **Background answer.** The docs now tell you to type `Resume`, with a capital R, in the agent view. spare10 reads a lower-case `resume` as **Stop here**.
+- **Live checks.** The live checks keep their logs and files in a private `mktemp` folder, not in fixed `/tmp` names. The LC3 Stop hook fixture blocks nothing when `S10` is not set.
+- **Codex told once.** On Codex, a reset time that moves by up to 10 minutes stays in the same window. So spare10 tells each agent once, and a told main loop does not ask at the prompt. The report keeps the told phase. The unattended debug line comes once per window.
+- **Codex late question.** A held step that starts while you answer the question now takes your answer. It shows no second form. A question that is decided elsewhere shows no form. A step never takes an answer with a time later than the clock.
+- **Codex stop on a plan with no weekly window.** On such a plan, the reply to `spare10 stop` names no weekly trip point.
+- **Codex resume after a stop.** With **Continue at the reset** off, held work can still wait after its stop ends. `spare10 resume` now continues that work. This also works when an open reserve or a lower reading means that nothing gates. The status report says that the work waits, and tells you to run `spare10 resume`.
+- **Codex config.json repair.** When `config.json` does not parse, the warning and the `spare10 set` error now tell you how to repair it. `spare10 set` now repairs an empty or torn `config.json`. The reply says that the other options are back to their defaults. The option list shows `(config.json unread)` for each open time that is 0 for this reason.
+- **Codex unknown command.** A typed `spare10 <word>` that is not a command now says that nothing changed. It tells you to run `spare10 help`.
+- **Codex pause prompt.** `spare10 set pausePrompt` with no text, or with only `""`, now changes nothing. The reply tells you how to clear the pause prompt.
+- **Codex nested runs.** The report of a nested run now writes a debug line when it cannot read the parent session.
+- **Codex switch-off during a hold.** When you switch spare10 off during a stop, held work now goes through at once. spare10 does not extend the stop, and does not interrupt that work.
+- **Codex slow continue.** A slow daemon reply to the continue step no longer shows a false failure line when the new turn runs.
+- **Codex session lock.** Two spare10 processes that find one stale session lock no longer both take it. Before, a stop could get lost.
+- **Codex session state.** The session state keeps at most 64 old marks of interrupted turns. A long session no longer makes the file grow.
+- **Codex commands on a shared session.** `spare10 stop` and `spare10 resume` now work in a daemon session whose log starts late. They also work in a TUI session that a `codex exec resume` also runs.
+- **Codex session host.** A session on the Codex daemon ends when its spare10 process stops. Then a `codex exec resume` of that session takes it over, also while the daemon runs.
+- **Codex CLI transcript line.** A `spare10` command that changes a named session now shows its answer in the Codex transcript. This is also true when you run it from another terminal. A command that changes nothing adds no line.
+- **Codex CLI from `!`.** A command that changes nothing now prints its answer at once, not `done`.
+- **Codex CLI settings.** From another terminal, `spare10` now uses the `SPARE10_*` variables of the session, not the variables of the terminal.
+- **Codex CLI errors.** A command that worked no longer fails when spare10 cannot add its transcript line.
+- **Codex held prompts.** spare10 no longer writes the text of a held prompt to its session files.
+- **Codex quota times.** A reading from before a step back of the system clock no longer hides newer readings.
+- **Codex quota files.** A bad entry in `seed.json` or `live.json` no longer turns spare10 off. spare10 ignores the entry, and the next read writes a good file.
+- **Codex thread files.** spare10 ignores a thread file with a name that no thread can have, such as a sync conflict copy. Before, such a file stopped a held call from joining the question.
 
 ### Security
 
 - **Codex daemon socket.** spare10 uses the Codex daemon socket only when you own it and its folder. If every user can write to that folder, spare10 works as without the daemon.
+- **Codex broker start.** The broker takes Node.js from fixed places before your `PATH`. These are Homebrew, `/usr/local/bin`, `/usr/bin`, Volta, nvm, mise, asdf and fnm. It takes the newest version of a version manager first. It takes a Node.js on your `PATH` only from a full folder path. The start script and the broker run their other tools only from the system folders. So while a fixed place holds Node.js 20 or later, no file in a `PATH` folder runs outside the sandbox.
+- **Codex Node.js warning.** spare10 warns once per session when the agent can write a folder where the broker looks for Node.js. Examples are your home folder with Node.js from nvm, and the `.venv/bin` of a project on your `PATH`. The broker runs that Node.js outside the Codex sandbox. With a Node.js from your `PATH`, the `spare10` command runs the `node` of the shell that calls it. It keeps no path that the agent can write. Codex difference 26 says how to close this.
 
 ## [0.3.0] - 2026-09-25
 
@@ -156,7 +212,8 @@ These parts of spare10 v0.5.0 are not in spare10-mod, because the mod runs insid
 - the `--refresh` option, bundle pinning and status-line chaining
 - the list of stopped background runs. Use `claude agents` instead.
 
-[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chrisns/spare10-mod/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chrisns/spare10-mod/releases/tag/v0.1.0

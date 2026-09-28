@@ -40,6 +40,7 @@ A guarded session also protects the `claude -p` runs that it starts.
 It sets `SPARE10_HEADLESS=stop` for its child processes.
 So a nested `claude -p` stops at its own trip.
 spare10 does this only when the `headless` option is `off` or `wait`, and `SPARE10_HEADLESS` is not set.
+Item 57 of the [Known limitations](how-it-works.md#known-limitations) gives examples of a nested `claude -p` that does not stop at its trip.
 A `claude -p` that the Bash tool starts ends when the Bash call times out.
 That is 2 minutes by default, and 10 minutes at most.
 So a child run must not wait for a reset.
@@ -60,8 +61,9 @@ A change of option reloads the plugin.
 | Open weekly reserve before weekly reset (h) | `8` | 0 to 167, one decimal at most | The same for the weekly window, in hours. `0` switches this off. |
 | Resume floor (%) | `5` | 0 to 99, one decimal at most | After a **Resume** at the 5-hour reserve, spare10 asks again when this much is left. `0` switches this off. A value at or above the reserve does nothing. |
 | Weekly resume floor (%) | `5` | 0 to 99, one decimal at most | The same for the weekly window. |
-| Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. |
-| Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". Off: work waits for you. |
+| Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. At 100% used, **Pause at the limit** still holds all work and asks you. |
+| Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". At 100% used, **Stop here** never continues by itself. Off: work waits for you. |
+| Pause at the limit | on | on, off | On: at 100% used, spare10 holds all work. This is also true in an open reserve, after a **Resume** and with a pause prompt. It asks you once. With no answer, the work continues after the reset, unless the option **Continue at the reset** is off. **Stop here** stops the work until you type a prompt after the reset. Off: work runs into the limit. Switch it off when you pay for extra usage. See [At the quota limit](claude-code.md#at-the-quota-limit). |
 | Unattended runs (-p, SDK) | `off` | `off`, `prompt`, `stop`, `wait` | What spare10 does inside the reserve when nobody can answer. See [Unattended runs](#unattended-runs). |
 | Guarded sessions | `all` | `all`, `opt-in` | `all`: every interactive session. `opt-in`: only runs started with `SPARE10=on`. |
 | Status badge | on | on, off | Shows the badge at the right of the prompt footer. |
@@ -86,6 +88,7 @@ Set them before you start Claude Code.
 | `SPARE10_WEEKLY_RESUME_FLOOR` | Replaces the weekly resume floor, 0 to 99. `0` switches it off. |
 | `SPARE10_PAUSE_PROMPT` | Replaces the pause prompt. A set but empty value forces stop and ask. |
 | `SPARE10_AUTO_RESUME` | `on` or `off`. Replaces **Continue at the reset**. |
+| `SPARE10_LIMIT_PAUSE` | `on` or `off`. Replaces **Pause at the limit**. |
 | `SPARE10_HEADLESS` | Replaces the unattended policy: `off`, `prompt`, `stop` or `wait`. |
 | `SPARE10` | `on` or `off`. Switches spare10 on or off for this run, in either scope. |
 
@@ -98,6 +101,7 @@ The floors keep their `/config` values.
 `/spare10` shows where the reserve, the weekly reserve, the open times, the floors and the scope switch come from.
 In an attended session, it also shows where the setting for the reset comes from.
 In an unattended run, it also shows where the policy comes from.
+While **Pause at the limit** is off, it shows the `at the limit` row and where the value comes from.
 
 spare10 also writes some variables into the process environment:
 
@@ -105,6 +109,7 @@ spare10 also writes some variables into the process environment:
   It starts with the id of the session that wrote it.
   An interactive session takes only its own value.
   A `claude -p` run takes any value that it inherits, for the current window only.
+  A later `/spare10 stop` in the parent does not reach a run that started before it.
   After a **Resume** at the reserve, the value ends with the floor point, such as `to:95`.
   Then the consent ends at 95% used, and spare10 removes the value.
   A value without it, such as a value from spare10-mod 0.2, lasts until the reset.
@@ -132,7 +137,7 @@ A `SPARE10_WEEKLY_CONSENT` value that lies after the current weekly window has n
 If you edit `pluginConfigs` in a settings file by hand, use the correct JSON types:
 
 ```json
-{ "pluginConfigs": { "spare10@spare10": { "options": { "reserve": 15, "weeklyReserve": 5, "lastMinutes": 30, "resumeFloor": 3, "weeklyResumeFloor": 2, "autoResume": false, "badge": false } } } }
+{ "pluginConfigs": { "spare10@spare10": { "options": { "reserve": 15, "weeklyReserve": 5, "lastMinutes": 30, "resumeFloor": 3, "weeklyResumeFloor": 2, "autoResume": false, "limitPause": false, "badge": false } } } }
 ```
 
 A value of the wrong type, or out of range, stops spare10 from loading.
@@ -145,9 +150,10 @@ Two settings make Claude Code continue a question by itself after a time:
 - the `CLAUDE_AFK_TIMEOUT_MS` variable
 
 With either one set, an unanswered spare10 question counts as **Stop here**.
-With **Continue at the reset** on, spare10 then continues the work at the time that the question names.
+With the option **Continue at the reset** on, spare10 then continues the work at the time that the question names.
 spare10 warns you about this at the start of a session.
 Run `/spare10 resume` to continue before that time.
+At the quota limit, an unanswered question counts as the answer **Continue at the reset**.
 Neither limit applies in a `--bg` session.
 
 ## Unattended runs
@@ -180,13 +186,28 @@ spare10: unattended run inside the reserve (91% used · 9% left · resets 14:00)
 Use `--debug-file <path>` to see it.
 In a `-p` run, spare10 notices go only to the debug log.
 
-While a reserve is open, every policy lets the work through.
+While a reserve is open, every policy lets the work through, until the quota limit.
 Nothing is told, refused or held.
 spare10 then writes this line once per window:
 
 ```
 spare10: unattended run inside the reserve (91% used · 9% left · resets 14:00), but the reset is near. spare10 lets it through.
 ```
+
+At the quota limit, 100% used, the policies work like this:
+
+- `off`: spare10 lets the work through, and Claude Code refuses it.
+- `prompt`: an agent that got no wind-down text in this window gets it once. The text then names the quota limit.
+- `stop`: spare10 refuses the work, also while a reserve is open or a consent applies.
+- `wait`: spare10 holds the work until 5 minutes after the reset. It does this also while a reserve is open or a consent applies.
+
+Under `stop`, the answer at the limit names the quota limit:
+
+```
+spare10 stopped this unattended run at the quota limit (100% of quota used · resets 14:00). No further model requests were sent. To pick it up later: claude --resume <session id>
+```
+
+With **Pause at the limit** off, the policies treat 100% used as any other point in the reserve.
 
 A run that must never spend a reserve sets `SPARE10_LAST_MINUTES=0` and `SPARE10_WEEKLY_LAST_HOURS=0`.
 A CI run is an example.
@@ -214,6 +235,7 @@ A terminal session that you view from the desktop app is attended, and shows the
 A `wait` hold lasts until each window that tripped opens its reserve.
 spare10 adds no margin there.
 With an open time of 0, the hold lasts until the reset, plus 5 minutes.
+At the quota limit, the hold also lasts until the reset, plus 5 minutes.
 That is up to about 5 hours for the 5-hour window.
 For the weekly window, it is up to 7 days.
 `wait` has no upper bound of its own.
@@ -222,6 +244,7 @@ To keep a run from a wait of days, start it with `SPARE10_WEEKLY_RESERVE=0`.
 - `wait` ignores **Continue at the reset**. It always continues when the reserve opens, or after the reset.
 - A consent that the run inherits from its parent session still applies.
   A consent from a **Resume** at the reserve ends at its floor point.
+  No consent applies at the quota limit.
 - After the release, the turn goes on, and the run ends as usual.
 - A `-p` run has no quota reading at its start.
   If only the shared reading of another session trips it, spare10 lets one step go.

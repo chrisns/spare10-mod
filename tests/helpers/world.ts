@@ -30,12 +30,15 @@ import type {
 //   answer       the dialog: a label (answered at once), 'hang' (default) or 'dismiss' (w.answer)
 //   parkRejects  reject the first N $.spare10.park calls at once, as the host's 10 s cap does
 //   sessionId    default 'S1' (w.sessionId; change it to act out a /clear)
+//   sessionIdFails  session.id answers { deny }, so $.session.id() rejects (w.sessionIdFails)
 //   core         how core answers ordinary tool calls: 'ran' (default), 'deny' or 'error' (w.core)
 //   coreContext  context that core adds to a 'ran' or 'error' tool result, as a hook beneath would (w.coreContext)
 //   box          the prompt box text $.prompt.read returns (w.box)
 //   usageFails   session.usage answers { deny }, so $.session.usage() rejects (w.usageFails)
 //   usageFailsAfter  session.usage answers this many more calls, then denies each one (w.usageFailsAfter
 //                counts down, undefined never denies): to fail the read that follows a given one
+//   usageFailsNext  session.usage denies this many more calls, then answers again (w.usageFailsNext
+//                counts down): to fail only the next read
 //   usageDelayMs  session.usage answers this many mock ms late (w.usageDelayMs), to keep a sense in flight
 //   envGetFails  env names whose env.get answers { deny } (w.envGetFails)
 //   envGetDelayMs  per env name: env.get reads the value at once and answers this many mock ms late
@@ -62,8 +65,8 @@ import type {
 //                defaults apply (5 and 5), as they ship
 //
 // The world records: asked (each dialog), ran, requests, prompts, fills, aborts, logs, invalidations,
-// renders, commands (names), commandSpecs (whole) and parkCalls. submitted holds the texts of the prompts
-// that reach core with no origin or a plugin origin: spare10's resume prompt at the reset (the kit does
+// renders, commands (names), commandSpecs (whole), parkCalls and usageReads (session.usage calls).
+// submitted holds the texts of the prompts that reach core with no origin or a plugin origin: spare10's resume prompt at the reset (the kit does
 // not stamp a plugin prompt, and no spare10 hook is in its path). They are in prompts too, unless
 // dropped. w.release(label?) ends every hung dialog with that label, or as gone without one. w.cap() rejects every pending $.spare10.park call, as the host does at 10 s.
 // A dialog whose dispatch aborts records the reason in w.dialogAborted ('no' until then).
@@ -88,6 +91,10 @@ import type {
 // `newerCopy` (prepend) answers $.spare10.spans() with the spans in w.env NEWER_COPY_SPANS: it acts out
 // a newer copy of spare10 with other options (B47). The engine forbids one engine.create step to replace
 // a noun that another step added, so it hooks the noun's event, as the world hooks spare10.park.
+// `newerLimit` (prepend) does the same for $.spare10.limit() with NEWER_COPY_LIMIT (`on` or `off`).
+// `noDialog` (prepend) refuses every AskUserQuestion at once, so no spare10 dialog can show.
+// `askCounter` (prepend) counts each AskUserQuestion on its way down in the env ASKS_RAISED, also one
+// that spare10 withdraws before it draws.
 //
 // Timing idiom: start a gated call without awaiting it, then `await w.clock.settle()`, then answer,
 // release, cap or advance. Lessons from the kit:
@@ -176,6 +183,7 @@ export type WorldOptions = {
   answer?: string
   parkRejects?: number
   sessionId?: string
+  sessionIdFails?: boolean
   core?: Core
   coreContext?: string[]
   box?: string
@@ -193,6 +201,7 @@ export type WorldOptions = {
   afterRefusals?: number
   everyRefusals?: number
   usageFailsAfter?: number
+  usageFailsNext?: number
   usageDelayMs?: number
   spans?: 'off'
   floors?: 'off'
@@ -206,6 +215,7 @@ export type World = {
   resetsAt: string | null
   answer: string
   sessionId: string
+  sessionIdFails: boolean
   surfaces: RenderSurface[]
   agents: string[]
   agentListFails: boolean
@@ -226,6 +236,7 @@ export type World = {
   afterRefusals: number // $.clock.after dispatches of spare10 still to refuse
   everyRefusals: number // $.clock.every periods of spare10 still to refuse
   usageFailsAfter: number | undefined // session.usage calls still answered before it denies
+  usageFailsNext: number // session.usage calls still to deny before it answers again
   usageDelayMs: number // session.usage answers this many mock ms late
   settings: SettingsWorld
   env: Map<string, string>
@@ -246,6 +257,7 @@ export type World = {
   commands: string[] // $.command.register names
   commandSpecs: CommandSpec[] // $.command.register inputs, whole
   parkCalls: number
+  usageReads: number // session.usage calls, answered or denied
 }
 
 type AskInput = { questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string }> }> }
@@ -270,6 +282,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     resetsAt: opts.resetsAt === undefined ? RESETS : opts.resetsAt,
     answer: opts.answer ?? 'hang',
     sessionId: opts.sessionId ?? 'S1',
+    sessionIdFails: opts.sessionIdFails ?? false,
     surfaces: opts.surfaces ?? ['terminal'],
     agents: opts.agents ?? [],
     agentListFails: opts.agentListFails ?? false,
@@ -290,6 +303,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     afterRefusals: opts.afterRefusals ?? 0,
     everyRefusals: opts.everyRefusals ?? 0,
     usageFailsAfter: opts.usageFailsAfter,
+    usageFailsNext: opts.usageFailsNext ?? 0,
     usageDelayMs: opts.usageDelayMs ?? 0,
     settings: opts.settings ?? {},
     env: new Map(
@@ -321,6 +335,7 @@ export function world(on: On, opts: WorldOptions = {}): World {
     commands: [],
     commandSpecs: [],
     parkCalls: 0,
+    usageReads: 0,
   }
 
   const entry = (kind: 'five_hour' | 'seven_day', pct: number | undefined, resetsAt: string | null): SessionRateLimit[] =>
@@ -344,13 +359,18 @@ export function world(on: On, opts: WorldOptions = {}): World {
 
   // Session and reading.
   const usage = () => {
+    w.usageReads += 1
+    if (w.usageFailsNext > 0) {
+      w.usageFailsNext -= 1
+      return { deny: 'usage unavailable' }
+    }
     if (w.usageFailsAfter !== undefined && w.usageFailsAfter <= 0) return { deny: 'usage unavailable' }
     if (w.usageFailsAfter !== undefined) w.usageFailsAfter -= 1
     return w.usageFails ? { deny: 'usage unavailable' } : { value: { startedAt: T0, context: { window: 200_000 }, rateLimits: limits() } }
   }
   // Without a delay the answer stays synchronous, as before usageDelayMs existed. A delayed one reads the limits late.
   on('session.usage', () => (w.usageDelayMs > 0 ? clock.sleep(w.usageDelayMs).then(usage) : usage()))
-  on('session.id', () => ({ value: w.sessionId }))
+  on('session.id', () => (w.sessionIdFails ? { deny: 'session id unavailable' } : { value: w.sessionId }))
   on('session.surfaces', () => ({ value: [...w.surfaces] }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
@@ -659,6 +679,47 @@ export const newerCopy: Plugin = {
       const [m, h] = raw.split(' ').map(Number)
       return { value: { lastMinutes: m ?? 0, weeklyLastHours: h ?? 0 } }
     })
+  },
+}
+
+/**
+ * A prepend plugin that acts out a newer copy of spare10 with another limitPause: while the world env has
+ * NEWER_COPY_LIMIT (`on` or `off`), it answers $.spare10.limit() with it. Without it, spare10 answers. As
+ * newerCopy, the test steers it through the env.
+ */
+export const newerLimit: Plugin = {
+  name: 'newer-limit',
+  tier: 'prepend',
+  register: (on) => {
+    on('spare10.limit', async ($, e, next) => {
+      const raw = await $.env.get('NEWER_COPY_LIMIT')
+      return raw === undefined ? next(e) : { value: raw === 'on' }
+    })
+  },
+}
+
+/**
+ * A prepend plugin that counts each AskUserQuestion on its way down, in the world env ASKS_RAISED: also one
+ * that spare10's own withdrawal hook denies before it draws. As newerCopy, it reports through the env.
+ */
+export const askCounter: Plugin = {
+  name: 'ask-counter',
+  tier: 'prepend',
+  register: (on) => {
+    on('tool.call', { tool: /^AskUserQuestion$/ }, async ($, e, next) => {
+      const n = Number((await $.env.get('ASKS_RAISED')) ?? '0')
+      await $.env.set('ASKS_RAISED', String(n + 1))
+      return next(e)
+    })
+  },
+}
+
+/** A prepend plugin that refuses every AskUserQuestion at once, as a permission rule that allows no dialog does. */
+export const noDialog: Plugin = {
+  name: 'no-dialog',
+  tier: 'prepend',
+  register: (on) => {
+    on('tool.call', { tool: /^AskUserQuestion$/ }, () => ({ deny: 'AskUserQuestion is not allowed here' }))
   },
 }
 

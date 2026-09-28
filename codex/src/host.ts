@@ -11,6 +11,7 @@ export const HOST: Host = {
   child: 'codex exec',
   resume: 'codex exec resume',
   keepOpen: 'run spare10 set lastMinutes 0, or spare10 set weeklyLastHours 0',
+  limitOff: 'run spare10 set limitPause off',
   backIt: 'drops it',
   backPrompt: 'drops your prompt',
   blind: 'Codex reports no quota windows for this login.',

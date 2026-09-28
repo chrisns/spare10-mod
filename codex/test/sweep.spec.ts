@@ -6,7 +6,7 @@ import type { StoppedRecord } from '../../hooks/core/decide.ts'
 import { refusalText } from '../../hooks/core/flow.ts'
 import { DaemonError } from '../src/daemon.ts'
 import type { TurnInfo } from '../src/daemon.ts'
-import { coveredBy } from '../src/sweep.ts'
+import { coveredBy, keptMarks, MARKS_KEPT } from '../src/sweep.ts'
 import { INTERRUPT_MARK_MS } from '../src/timing.ts'
 import { CHILD, HOUR, MIN, SEC, SID, T0, heldCall, logicWorld } from './helpers/logic.ts'
 import type { LogicWorld } from './helpers/logic.ts'
@@ -212,6 +212,42 @@ test('sweep: a lost mark (its process died before the interrupt went out) is swe
       [SID, 'U1'],
     ].sort(),
   )
+})
+
+test('sweep: a new mark keeps the newest 64 marks and every young mark, and drops the older ones and junk', async (t) => {
+  const w = logicWorld(t, { daemon: true })
+  w.daemon.script.loaded = [SID]
+  turns(w, { [SID]: { id: 'U1', status: 'inProgress', startedAt: startedAt(T0) - 60 } })
+  bind(w, SID)
+  // A session that stayed open for weeks: 200 confirmed interrupts of old stops, 70 marks of the last
+  // seconds (other processes interrupt now), and a value that a person edited.
+  const marks: Record<string, number> = {}
+  for (let n = 0; n < 200; n += 1) marks[`old-${n}`] = T0 - HOUR - n * MIN
+  for (let n = 0; n < 70; n += 1) marks[`young-${n}`] = T0 - SEC - n
+  w.setState({ stopped: stopRecord(), interrupts: { ...marks, junk: 'x' as unknown as number } })
+  const b = w.broker()
+  assert.equal(await b.sweep.sweep(b.sx), 1)
+  const kept = w.state().interrupts ?? {}
+  assert.equal(kept['U1'], T0, 'the new mark stays')
+  assert.equal(Object.keys(kept).length, 71, 'the new mark and the 70 young marks')
+  for (let n = 0; n < 70; n += 1) assert.equal(kept[`young-${n}`], T0 - SEC - n, `young-${n} still stops a second interrupt`)
+  assert.equal(Object.keys(kept).some((k) => k.startsWith('old-') || k === 'junk'), false)
+})
+
+test('sweep: with only old marks a new mark keeps the newest 64, so CX39 still reads the newest', async (t) => {
+  const w = logicWorld(t, { daemon: true })
+  w.daemon.script.loaded = [SID]
+  turns(w, { [SID]: { id: 'U1', status: 'inProgress', startedAt: startedAt(T0) - 60 } })
+  bind(w, SID)
+  const marks: Record<string, number> = {}
+  for (let n = 0; n < 100; n += 1) marks[`old-${n}`] = T0 - HOUR - n * MIN
+  w.setState({ stopped: stopRecord(), interrupts: marks })
+  const b = w.broker()
+  assert.equal(await b.sweep.sweep(b.sx), 1)
+  const want = ['U1', ...Array.from({ length: MARKS_KEPT - 1 }, (_, n) => `old-${n}`)]
+  assert.deepEqual(Object.keys(w.state().interrupts ?? {}).sort(), want.sort())
+  // A small map stays as it is.
+  assert.deepEqual(keptMarks({ a: 1, b: 2 }, T0), { a: 1, b: 2 })
 })
 
 test('sweep: under a held stop the held work stays in place, and every other running turn is swept (4.4)', async (t) => {

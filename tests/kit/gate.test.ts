@@ -334,7 +334,7 @@ test('a reading below the trip point, a blind sensor or a lower test reading nev
   await $.session.measure(measure(undefined, ['cost']))
   await $.session.measure(measure(undefined, ['cost']))
   expect((await $.command.run(cmd('simulate 10'))).text).toContain('test reading set to 10% used')
-  expect((await $.command.run(cmd('simulate off'))).text).toContain('test reading cleared')
+  expect((await $.command.run(cmd('simulate off'))).text).toContain('test readings cleared')
   w.cap()
   await w.clock.settle()
   expect(w.ran).toEqual([])

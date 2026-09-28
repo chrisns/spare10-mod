@@ -4,8 +4,8 @@ import { VERSION } from '../../hooks/core/text.ts'
 import { HOUR, LATER, OPENS, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, real5, step, stopRec, typed, world as shipped, world02 as world } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
-// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts. Three tests use `shipped`, the
-// world with the shipped floors: the defaults test, and the two tests that list the SPARE10 variables in
+// The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts. Four tests use `shipped`, the
+// world with the shipped floors: the defaults test, and the three tests that list the SPARE10 variables in
 // the env (floor 7.5 item 4).
 // Session set-up, scope, per-run overrides, start-up warnings, env consent and stopped, and /clear
 // (design 1.2, 2.5, 2.6, 2.9, 3.5, 3.6, 8, and the 11.4 session.test.ts table).
@@ -369,6 +369,35 @@ for (const set of ['prompt', 'off', 'stop']) {
     expect(await status($)).toContain(`· claude -p runs started here: ${set}`)
   })
 }
+
+test('a failed read for a start warning still gives children SPARE10_HEADLESS=stop', async ($, on) => {
+  const w = world(on, { pct: 50, envGetFails: ['CLAUDE_AFK_TIMEOUT_MS', 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS'] })
+  await begin($, w)
+  expect(w.env.get('SPARE10_HEADLESS')).toBe('stop')
+  expect(w.commands).toEqual(['spare10'])
+  expect(await status($)).toContain('· claude -p runs started here: stop')
+})
+
+test('a failed child policy write at the start keeps the start warnings, and the debug log names the step', async ($, on) => {
+  const w = world(on, { pct: 50, env: { CLAUDE_AFK_TIMEOUT_MS: '60000' }, envSetFails: ['SPARE10_HEADLESS'] })
+  await begin($, w)
+  expect(w.env.has('SPARE10_HEADLESS')).toBe(false)
+  expect(count(transcript(w), timeoutWarning('CLAUDE_AFK_TIMEOUT_MS'))).toBe(1)
+  expect(await status($)).toContain(`⚠ ${timeoutWarning('CLAUDE_AFK_TIMEOUT_MS')}`)
+  const failed = debug(w).filter((t) => t.startsWith('spare10: a step of the session start failed: '))
+  expect(failed).toHaveLength(1)
+  expect(failed[0]).toContain('env.set SPARE10_HEADLESS failed')
+})
+
+test('a failed session id read at the start still registers /spare10 and shows the start warnings', async ($, on) => {
+  const w = world(on, { pct: 50, env: { CLAUDE_AFK_TIMEOUT_MS: '60000' }, sessionIdFails: true })
+  await begin($, w)
+  expect(w.commands).toEqual(['spare10'])
+  expect(count(transcript(w), timeoutWarning('CLAUDE_AFK_TIMEOUT_MS'))).toBe(1)
+  expect(w.env.get('SPARE10_HEADLESS')).toBe('stop')
+  // The id read has a fallback, so no step failed: the debug log names no start failure.
+  expect(debug(w).filter((t) => t.startsWith('spare10: a step of the session start failed: '))).toEqual([])
+})
 
 test('an unattended run sets no SPARE10_HEADLESS for children', async ($, on) => {
   const w = world(on, { pct: 50, surfaces: [] })
@@ -915,6 +944,15 @@ test('a --bg session warns about SPARE10 switches that it got from the daemon, a
   })
   await begin($, w)
   const warning = BG_WARNING('SPARE10="off", SPARE10_RESERVE="15", SPARE10_PAUSE_PROMPT="Stop."')
+  expect(count(transcript(w), warning)).toBe(1)
+  expect(await status($)).toContain(`⚠ ${warning}`)
+})
+
+test('a --bg session names a SPARE10_SIMULATE that it got from the daemon', async ($, on) => {
+  // The test reading trips the job, and its question looks like a real one: the warning names the variable.
+  const w = shipped(on, { pct: 50, env: { CLAUDE_CODE_SESSION_KIND: 'bg', SPARE10_SIMULATE: '92' } })
+  await begin($, w)
+  const warning = BG_WARNING('SPARE10_SIMULATE="92"')
   expect(count(transcript(w), warning)).toBe(1)
   expect(await status($)).toContain(`⚠ ${warning}`)
 })

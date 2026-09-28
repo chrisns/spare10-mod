@@ -11,15 +11,14 @@ import {
   parseWeeklyLastHours,
   parseWeeklyReserve,
 } from './config.ts'
-import type { Consent } from './decide.ts'
-import { BLIND_AFTER, KINDS, parseSimulate, windowMs } from './reading.ts'
+import { BLIND_AFTER, KINDS, RESET_JITTER_MS, parseSimulate, windowMs } from './reading.ts'
 import type { Anchored, Kind } from './reading.ts'
-import { HEADER, HEADLESS_GENERIC, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilText, yourReserves } from './text.ts'
+import { HEADER, HEADLESS_GENERIC, HELD_WAITS, LIMIT_OPTIONS, NOT_STARTED_GENERIC, QUESTION_OPTIONS, STOP_GENERIC, clockText, fmtDuration, fmtPct, untilPhrase, untilText, yourReserves } from './text.ts'
 import type { Facts } from './text.ts'
 
 // The Codex-only pure rules and texts (Codex design 7.1). No $ here, and no Node API: the Codex broker and
 // CLI (codex/src) call these functions. register.tsx never imports this file, so the Claude engine never
-// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX48, but CX17,
+// loads it. Every text that a person or the model reads on Codex only is here (CX1 to CX58, but CX17,
 // which is in text.ts). The broker puts `spare10: ` in front of each transcript line, warning and command
 // reply (withPrefix, A12), so those texts never start with `spare10`. Model texts, drop reasons, CLI lines
 // and debug lines keep their own `spare10: `.
@@ -29,8 +28,11 @@ import type { Facts } from './text.ts'
 /** How close to a trip or floor point counts as near (A19). */
 export const NEAR_TRIP_POINTS = 5
 
-/** Two resets this close are one window (3.6, A22): `resets_at` jitters by about 30 s. */
-export const RESET_JITTER_MS = 600_000
+/**
+ * Two resets this close are one window (3.6, A22): `resets_at` jitters by about 30 s. The A22 rule is the
+ * one of reading.ts, so Claude Code and Codex share one copy.
+ */
+export { RESET_JITTER_MS, voidedByReset } from './reading.ts'
 
 /** The Luna rule needs a live read this young (A7). */
 export const LIVE_LUNA_MAX_AGE_MS = 60_000
@@ -185,9 +187,6 @@ export const usableCredits = (c: CodexCredits | null | undefined): boolean =>
 /** Near a trip point (A19): at or above the trip point, or a floor point, minus NEAR_TRIP_POINTS. */
 export const nearTrip = (pct: number | undefined, trip: number, floorPoint?: number): boolean =>
   pct !== undefined && (pct >= trip - NEAR_TRIP_POINTS || (floorPoint !== undefined && pct >= floorPoint - NEAR_TRIP_POINTS))
-
-/** A22: a real consent is void when the kind's current window ends more than RESET_JITTER_MS after the consent's end. */
-export const voidedByReset = (c: Consent, windowEnd: number): boolean => windowEnd - c.until > RESET_JITTER_MS
 
 // ---- Rollout lines ----
 
@@ -442,13 +441,55 @@ export function attendedFrom(i: {
   return { attended: false }
 }
 
-/** P1 (CX9): the agent can send prompts for the person, or write spare10's files, in this turn. */
+/**
+ * P1 (CX9): the agent can send prompts for the person, or write spare10's files, in this turn. Auto review
+ * (`guardian_subagent` is its old name) approves for the person with any approval but `never`. Codex keeps
+ * `<root>/.codex` of each writable root read-only, so a writable home folder alone does not expose
+ * `~/.codex`. A writable home folder can still expose a Node.js that the broker runs: `nodeExposed` (CX58).
+ */
 export function unsafeMode(tc: TurnContextFacts | undefined, dataDir: string): boolean {
   if (tc === undefined) return false
   if (tc.sandbox === 'danger-full-access' || tc.sandbox === 'external-sandbox') return true
   if (tc.profile === 'disabled') return true
-  if (tc.reviewer === 'auto_review' && (tc.approval === 'on-request' || tc.approval === 'untrusted')) return true
-  return tc.roots.some((r) => within(dataDir, r))
+  if ((tc.reviewer === 'auto_review' || tc.reviewer === 'guardian_subagent') && tc.approval !== 'never') return true
+  return tc.roots.some((r) => within(dataDir, r) && !within(dataDir, `${bare(r) === '/' ? '' : bare(r)}/.codex`))
+}
+
+/** The fixed places of codex/bin/broker.sh, tried first. Keep them in step with broker.sh. */
+export const NODE_FIXED = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'] as const
+
+/** The folders under the home folder where broker.sh looks next: Volta, nvm, mise, asdf and fnm. */
+export const NODE_HOME = ['.volta', '.nvm', '.local/share/mise', '.asdf', '.local/share/fnm', 'Library/Application Support/fnm', '.fnm'] as const
+
+/**
+ * P1 (CX58): the folders where codex/bin/broker.sh looked for the Node.js that runs this broker. broker.sh
+ * runs each candidate, outside the sandbox, until one is Node.js 20 or later. It says where the one that
+ * runs came from in SPARE10_NODE_FROM (`fixed`, `home` or `path`) and SPARE10_NODE. So the places are the
+ * fixed ones, then with `home` the version managers under $HOME, and then with `path` the absolute PATH
+ * folders up to the one that holds that Node.js. A broker that broker.sh did not start has the fixed ones.
+ */
+export function nodePlaces(env: Readonly<Record<string, string | undefined>>): string[] {
+  const from = env['SPARE10_NODE_FROM']
+  const out: string[] = [...NODE_FIXED]
+  if (from !== 'home' && from !== 'path') return out
+  const home = env['HOME'] ?? ''
+  if (home.startsWith('/')) out.push(...NODE_HOME.map((d) => `${bare(home) === '/' ? '' : bare(home)}/${d}`))
+  if (from !== 'path') return out
+  const dirs = (env['PATH'] ?? '').split(':').filter((d) => d.startsWith('/'))
+  const node = env['SPARE10_NODE'] ?? ''
+  const at = dirs.findIndex((d) => bare(d) === bare(node.slice(0, node.lastIndexOf('/'))))
+  out.push(...(at < 0 ? dirs : dirs.slice(0, at + 1)))
+  return out
+}
+
+/**
+ * P1 (CX58): the agent can write a folder of `nodePlaces` in this turn. It can then put a file there that
+ * broker.sh runs outside the sandbox at the next thread start, such as `~/.nvm/versions/node/v99.0.0/bin/node`
+ * when the agent can write the home folder.
+ */
+export function nodeExposed(tc: TurnContextFacts | undefined, places: readonly string[]): boolean {
+  if (tc === undefined) return false
+  return tc.roots.some((r) => places.some((p) => within(p, r)))
 }
 
 // macOS keeps /tmp and /var under /private: compare both forms.
@@ -473,6 +514,7 @@ export type OptionName =
   | 'weeklyResumeFloor'
   | 'pausePrompt'
   | 'autoResume'
+  | 'limitPause'
   | 'headless'
   | 'scope'
 
@@ -486,7 +528,7 @@ export function parseAutoResumeOption(raw: unknown): boolean | undefined {
 /** 5.1: any text. A blank text is no pause prompt (null). A value that is not text is bad. */
 const parsePauseOption = (raw: unknown): string | null | undefined => (typeof raw === 'string' ? parsePausePrompt(raw) : undefined)
 
-/** The ten options of config.json (5.1): the variable that wins over each, its range text and its file parser. */
+/** The eleven options of config.json (5.1): the variable that wins over each, its range text and its file parser. */
 export const OPTIONS: ReadonlyArray<{
   name: OptionName
   env: string
@@ -501,6 +543,7 @@ export const OPTIONS: ReadonlyArray<{
   { name: 'weeklyResumeFloor', env: 'SPARE10_WEEKLY_RESUME_FLOOR', range: '0 to 99', parse: parseResumeFloor },
   { name: 'pausePrompt', env: 'SPARE10_PAUSE_PROMPT', range: 'any text', parse: parsePauseOption },
   { name: 'autoResume', env: 'SPARE10_AUTO_RESUME', range: 'on or off', parse: parseAutoResumeOption },
+  { name: 'limitPause', env: 'SPARE10_LIMIT_PAUSE', range: 'on or off', parse: parseAutoResumeOption },
   { name: 'headless', env: 'SPARE10_HEADLESS', range: 'off, prompt, stop or wait', parse: parseHeadless },
   { name: 'scope', env: 'SPARE10', range: 'all or opt-in', parse: parseScope },
 ]
@@ -510,7 +553,7 @@ export const optionOf = (name: string): (typeof OPTIONS)[number] | undefined => 
 
 /** An option value as the texts show it: 15, on, wait, an empty text, or a quoted pause prompt. */
 export function optionText(name: OptionName, value: string | number | boolean | null | undefined): string {
-  if (name === 'autoResume') return value === false ? 'off' : 'on'
+  if (name === 'autoResume' || name === 'limitPause') return value === false ? 'off' : 'on'
   if (name === 'pausePrompt') return typeof value === 'string' && value.trim() !== '' ? JSON.stringify(value) : 'an empty text'
   if (typeof value === 'number') return fmtPct(value)
   return String(value ?? '')
@@ -538,9 +581,12 @@ export function configOptions(path: string, raw: unknown): { options: PluginOpti
   return { options, warnings }
 }
 
+/** A typed pause prompt with no text: blank, or only a pair of quotes. It would turn on tell mode by mistake. */
+const blankPause = (raw: string): boolean => /^\s*(""|'')?\s*$/.test(raw)
+
 /** The typed words of `spare10 set <option> <value>` as the stored JSON value (5.1). */
 export function parseSetValue(name: OptionName, raw: string): { ok: true; value: string | number | boolean } | { ok: false } {
-  if (name === 'pausePrompt') return raw.trim() === '' ? { ok: false } : { ok: true, value: raw }
+  if (name === 'pausePrompt') return blankPause(raw) ? { ok: false } : { ok: true, value: raw }
   const o = OPTIONS.find((x) => x.name === name)
   const v = o?.parse(raw)
   if (v === undefined || v === null) return { ok: false }
@@ -595,23 +641,34 @@ export const rootOnly = (c: Command): boolean =>
 
 // ---- The question (2.2) ----
 
-/** The elicitation form of 2.2: one enum field, Stop here first and the default. CX46 names the credit balance. */
-export function elicitParams(message: string, credits?: string): { message: string; requestedSchema: object } {
+/**
+ * The elicitation form of 2.2: one enum field, Stop here first and the default. CX46 names the credit
+ * balance. `limit`: the limit question, with Continue at the reset first and the default, and no credits
+ * line (no kind is at the limit while credits pay).
+ */
+export function elicitParams(message: string, credits?: string, limit = false): { message: string; requestedSchema: object } {
+  const choice = limit
+    ? {
+        oneOf: [
+          { const: 'continue', title: LIMIT_OPTIONS[0] },
+          { const: 'stop', title: LIMIT_OPTIONS[1] },
+        ],
+        default: 'continue',
+      }
+    : {
+        oneOf: [
+          { const: 'stop', title: QUESTION_OPTIONS[0] },
+          { const: 'resume', title: QUESTION_OPTIONS[1] },
+        ],
+        default: 'stop',
+      }
   return {
-    message: credits === undefined ? message : `${message} ${codexText.creditsQuestion(credits)}`,
+    message: credits === undefined || limit ? message : `${message} ${codexText.creditsQuestion(credits)}`,
     requestedSchema: {
       type: 'object',
       required: ['choice'],
       properties: {
-        choice: {
-          type: 'string',
-          title: HEADER,
-          oneOf: [
-            { const: 'stop', title: QUESTION_OPTIONS[0] },
-            { const: 'resume', title: QUESTION_OPTIONS[1] },
-          ],
-          default: 'stop',
-        },
+        choice: { type: 'string', title: HEADER, ...choice },
       },
     },
   }
@@ -630,6 +687,19 @@ export function answerOf(result: unknown, failed: boolean): Answer {
   if (action === 'accept') return isObject(result['content']) && result['content']['choice'] === 'resume' ? 'resume' : 'stop'
   if (action === 'cancel') return 'cancel'
   return 'decline'
+}
+
+/**
+ * The limit form: `accept` with `stop` is Stop here, and any other accept is Continue at the reset.
+ * `cancel` is for the caller to read (Esc, or the step went away). A decline, an error (`failed`) or a
+ * reply of any other shape: no question could show, so the work continues at the reset.
+ */
+export function limitAnswerOf(result: unknown, failed: boolean): 'continue' | 'stop' | 'cancel' {
+  if (failed || !isObject(result)) return 'continue'
+  const action = result['action']
+  if (action === 'accept') return isObject(result['content']) && result['content']['choice'] === 'stop' ? 'stop' : 'continue'
+  if (action === 'cancel') return 'cancel'
+  return 'continue'
 }
 
 // ---- The gate answer (3.3, 4.4) ----
@@ -692,6 +762,17 @@ export function genericRefusal(site: GateSite, attended: boolean): GateResult {
   }
 }
 
+/**
+ * 4.2: the stopReason of a Stop or PreCompact gate that ends the turn. At a refusal: CX3, or CX56 when a
+ * kind that gates is at the quota limit (`limit`). At a hold: CX41, CX55 at the limit, or CX57 when the open
+ * limit question is chosen (`held`: its reset as a clock text), so the next prompt waits and asks nothing.
+ */
+export function turnEndText(verdict: 'refuse' | 'hold', limit: boolean, held?: string): string {
+  if (verdict === 'refuse') return limit ? codexText.turnEndsAtLimit : codexText.turnEnds
+  if (!limit) return codexText.turnEndsHold
+  return held === undefined ? codexText.turnEndsLimit : codexText.turnEndsLimitHeld(held)
+}
+
 export type RefuseMode = 'interrupt' | 'hold' | 'deny'
 
 /**
@@ -737,6 +818,16 @@ export function shownPath(p: string, home: string | undefined): string {
   return rest === undefined ? p : `~${rest}`
 }
 
+/**
+ * A system error text with each path under the home folder as `~/...`. Node.js puts the full path of a file
+ * in its error text, such as `EACCES: permission denied, open '/Users/me/.codex/...'`.
+ */
+export function hideHome(text: string, home: string | undefined): string {
+  const h = (home ?? '').replace(/\/+$/, '')
+  if (!h.startsWith('/')) return text // no home folder, or the root folder: nothing to hide
+  return text.split(`${h}/`).join('~/')
+}
+
 /** A path as one shell word: `"$HOME/..."` under the home folder, else the path, in single quotes when the shell would split or expand it. */
 export function shellPath(p: string, home: string | undefined): string {
   const rest = afterHome(p, home)
@@ -750,7 +841,7 @@ const pathLine = (dir: string, home: string | undefined): string => {
   return `export PATH="${rest === undefined ? inDoubleQuotes(dir) : `$HOME${inDoubleQuotes(rest)}`}:$PATH"`
 }
 
-// ---- Texts (CX1 to CX48) and debug lines ----
+// ---- Texts (CX1 to CX57) and debug lines ----
 
 /** CX5 {Rs} and {quiet}: five_hour first, as the core texts read a list of Facts. */
 const byWindow = (f: Facts | readonly Facts[]): Facts[] =>
@@ -760,9 +851,12 @@ const envList = (set: ReadonlyArray<readonly [string, string]>): string => set.m
 
 const HELP_WIDTH = 18
 
+/** CX12 and CX32: how to repair a config.json that does not parse. */
+const CONFIG_FIX = 'Correct the file, or remove it to use the defaults.'
+
 /**
  * The Codex-only texts. Transcript lines, warnings and command replies have no prefix: the broker adds
- * it (withPrefix). CX3, CX4, CX5, CX35, CX36, CX39, CX41 and CX44 keep their own `spare10: `. CX1 and
+ * it (withPrefix). CX3, CX4, CX5, CX35, CX36, CX39, CX41, CX44, CX55, CX56 and CX57 keep their own `spare10: `. CX1 and
  * CX2 are the static hook status messages of codex/hooks.json.
  */
 export const codexText = {
@@ -774,6 +868,13 @@ export const codexText = {
   turnEnds: 'spare10: the turn ends here, because work stopped at the quota reserve.',
   /** CX41: the stopReason of a Stop gate at a hold verdict. */
   turnEndsHold: 'spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.',
+  /** CX55: the stopReason of a Stop gate at a hold verdict at the quota limit. */
+  turnEndsLimit: 'spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.',
+  /** CX56: CX3 when a kind that gates is at the quota limit: work stopped there. */
+  turnEndsAtLimit: 'spare10: the turn ends here, because work stopped at the quota limit.',
+  /** CX57: CX55 after Continue at the reset: the next prompt joins the held work and asks nothing. {at}: the reset. */
+  turnEndsLimitHeld: (at: string): string =>
+    `spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until ${at}.`,
   /** CX4: the context of a steered command that spare10 lets through. */
   steerNote: 'spare10: the last user line was a command for the spare10 plugin, and spare10 handled it. Ignore that line.',
   /** CX39: before B34, B9 or B35 when spare10 interrupted a turn of the stop. */
@@ -794,6 +895,9 @@ export const codexText = {
   /** CX9 (P1): the agent can act for the person. */
   unsafe:
     "the agent can send prompts for you in this mode, or write spare10's files. So spare10 cannot tell your spare10 resume from one that the agent sends. Run Codex with a sandbox that keeps ~/.codex read-only to keep that choice yours.",
+  /** CX58 (P1): the agent can write a folder where broker.sh looks for Node.js. */
+  nodeExposed:
+    'the agent can write a folder where spare10 looks for Node.js, such as your home folder or a PATH folder. spare10 runs Node.js from there outside the Codex sandbox when a thread starts. So the agent can run its own code outside the sandbox. Do not start Codex in your home folder. Install Node.js 20 or later in /opt/homebrew/bin, /usr/local/bin or /usr/bin.',
   /** CX10 (P1): SPARE10 variables in the env of the daemon. */
   daemonEnv: (set: ReadonlyArray<readonly [string, string]>): string =>
     `this session runs on the Codex daemon, which has ${envList(set)}. A daemon session gets such values from the environment of the daemon when it started, not from your terminal. To change them, restart the Codex daemon, or run codex --no-daemon.`,
@@ -802,7 +906,7 @@ export const codexText = {
     `${path} sets ${name} to ${JSON.stringify(raw) ?? String(raw)}, which is not ${range}. spare10 uses ${used}.`,
   /** CX12: config.json exists but does not parse. */
   configUnread: (path: string, err: string): string =>
-    `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset.`,
+    `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset. ${CONFIG_FIX}`,
   /** CX13: only a weekly window, and the weekly reserve is 0. */
   weeklyOnlyOff: 'Codex reports only a weekly window, and the weekly reserve is 0. So spare10 watches no window.',
   /** CX40: only a weekly window, with a weekly open span. */
@@ -814,8 +918,8 @@ export const codexText = {
   /** CX43: an unknown app started this session on the daemon. */
   originator: (name: string): string =>
     `this session was started by ${name}, not by the Codex TUI. spare10 treats it as attended. If ${name} cannot show the spare10 question, spare10 holds the work at the reserve.`,
-  /** CX14 (P1, report only): a hard stop. */
-  hardStop: 'Codex reports that your included usage is used up. spare10 asks nothing, and continues no work, until Codex allows usage again. Work on Luna Reserve goes through.',
+  /** CX14 (report only): a watched kind is past 100% used, no credits pay, and limitPause is off. */
+  hardStop: 'past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.',
   /** CX15 (P1, report only): a workspace limit. */
   workspaceLimit: (type: string): string => `Codex reports a workspace limit (${type}). spare10 continues no work until Codex allows it.`,
   /** CX48 (B30 on Codex, report only): the stored consent of a kind ends after its window. `untilMs`: its end. Codex keeps consent in the session state, never in SPARE10_CONSENT. */
@@ -858,13 +962,40 @@ export const codexText = {
   setDefault: (name: string, value: string): string => `${name} is back to its default, ${value}. It applies from the next step.`,
   /** CX29: appended to CX27 or CX28, so it starts with a space. */
   setEnvWins: (env: string): string => ` ${env} is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.`,
+  /**
+   * CX54: appended to CX27 or CX28, so it starts with a space. The set found a torn config.json (an OS
+   * crash after a write) and wrote a new file, so each other option of that file is lost.
+   */
+  setRepaired: (path: string): string => ` spare10 could not read ${path}, so it wrote a new file. The other options are back to their defaults. Run spare10 set to check them.`,
   /** CX30 */
   setBad: (name: string, range: string): string => `${name} takes ${range}. Nothing changed.`,
+  /** CX52: `spare10 set pausePrompt` with no text. */
+  setBlankPause: 'pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.',
   /** CX31 */
   setUnknown: (name: string): string =>
-    `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.`,
-  /** CX32 */
-  setFailed: (path: string, err: string): string => `could not write ${path}: ${err}. Nothing changed.`,
+    `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, limitPause, headless and scope.`,
+  /** CX49: a typed `spare10 <word>` that is no command. */
+  unknown: (word: string): string => `unknown command "${word}". Nothing changed. Run spare10 help to list the commands.`,
+  /**
+   * CX50: `spare10 resume` with nothing to resume, while held work still waits under a stop that no longer
+   * applies. spare10 cleared the stop, so each held call decides again. A kind that gates still asks.
+   */
+  heldStopOver: 'the stop is over. Held work continues now.',
+  /**
+   * CX51 (4.4, 4.20): `spare10 stop` on an open question wrote an auto stop, and each held tool call is in a
+   * thread that no daemon hosts. So the calls wait in place under the stop. `until`: when spare10 continues
+   * them, as the core `asking` reply says it.
+   */
+  stopAskingWaits: (until?: { at: string; lead?: string }): string =>
+    until === undefined
+      ? `stopped. ${HELD_WAITS}`
+      : `stopped. Held work waits. spare10 continues it ${until.lead === undefined ? `after ${until.at}` : `at ${untilPhrase(until)}`}. Run !spare10 resume to continue it now.`,
+  /** CX53, a warning of the report: a stop no longer applies, and held work still waits under it until a resume. */
+  heldStopEnded: `the stop is over. ${HELD_WAITS}`,
+  /** CX53 at the end of the phase line of `!spare10 status` (2.9), so it starts with a space. */
+  heldStopEndedTail: ` The stop is over. ${HELD_WAITS}`,
+  /** CX32. `unread`: config.json does not parse, or is not an object, so the text says how to repair it. */
+  setFailed: (path: string, err: string, unread = false): string => `could not write ${path}: ${err}. Nothing changed.${unread ? ` ${CONFIG_FIX}` : ''}`,
   /** CX33: rows of [name, value, source]. */
   setList: (path: string, rows: ReadonlyArray<readonly [string, string, string]>): string =>
     [
@@ -901,6 +1032,15 @@ export const codexText = {
   /** CX38 (P1): the CLI row `hooks`. */
   hooksRow: (trusted: number, total: number): string =>
     trusted >= total ? `all ${total} trusted` : `${trusted} of ${total} trusted. Start codex and trust the spare10 hooks, or run /hooks.`,
+}
+
+/**
+ * CX39 (2.6): `note` (B34, B9 or B35), after interruptedNote when spare10 interrupted a turn of the stop
+ * that began at `stopAt`: an interrupt mark of the session at or after it. No stop time is no interrupt.
+ */
+export function withInterruptedNote(interrupts: Readonly<Record<string, number>> | undefined, stopAt: number | undefined, note: string): string {
+  const interrupted = stopAt !== undefined && Object.values(interrupts ?? {}).some((at) => at >= stopAt)
+  return interrupted ? `${codexText.interruptedNote} ${note}` : note
 }
 
 /** Debug lines of the broker log. They keep their own `spare10: `. */

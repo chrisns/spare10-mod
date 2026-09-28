@@ -16,6 +16,7 @@ import {
   consentPastWindow,
   consentOfEnd,
   consentedOf,
+  continuesLine,
   dueMargin,
   dueRelease,
   dueStep,
@@ -28,6 +29,9 @@ import {
   gatesAfter,
   handoverTakes,
   holdersFrom,
+  limitAt,
+  limitOf,
+  lowerAfterLimit,
   modeOf,
   namedKinds,
   namedOf,
@@ -36,8 +40,10 @@ import {
   newTold,
   noFloor,
   notStartedFor,
+  promptWaitsLine,
   questionEdges,
   questionOf,
+  quietOf,
   raiseAtFloor,
   raisesInPlace,
   realBound,
@@ -45,6 +51,8 @@ import {
   refusalText,
   resetOf,
   resetTooRecent,
+  resumeAskingReply,
+  resumeAtLimit,
   resumeCase,
   resumeNotice,
   resumeReadReply,
@@ -58,6 +66,7 @@ import {
   splitFrom,
   statusInput,
   stillHeld,
+  stopAutoOf,
   stopAskingIdle,
   stopAskingReply,
   stopCase,
@@ -72,14 +81,18 @@ import {
   stopRecordOf,
   stopTrippedReply,
   stopWriteOf,
+  stopsAtLimit,
+  supersedes,
   takenOf,
   takeoverSense,
   tellText,
   testReading,
   tickPlan,
+  tierAtResume,
   toldHas,
   toldMainOf,
   toldNotice,
+  toldWindow,
   tripOf,
   unansweredGating,
   unansweredHolders,
@@ -208,6 +221,7 @@ const senseCases: FlowCase[] = [
         point: 95,
         atFloor: false,
         realPct: 92,
+        limit: false,
       })
       eq(r.kinds[1], {
         kind: 'seven_day',
@@ -228,6 +242,7 @@ const senseCases: FlowCase[] = [
         point: 95,
         atFloor: false,
         realPct: 50,
+        limit: false,
       })
     },
   },
@@ -346,8 +361,9 @@ const senseCases: FlowCase[] = [
     run: (eq) => {
       eq(modeOf(cfgOf()), 'hold')
       eq(modeOf(cfgOf({ pausePrompt: 'Finish, then stop.' })), 'tell')
-      eq(viewedOf(k92()), { kind: 'five_hour', pct: 92, test: false })
+      eq(viewedOf(k92()), { kind: 'five_hour', pct: 92, test: false, end: R })
       eq(viewedOf(kindIn(sensed({ five: NONE }), 'five_hour')), { kind: 'five_hour', pct: 0, test: false })
+      eq(viewedOf(kindIn(sensed({ five: live(92, null) }), 'five_hour')), { kind: 'five_hour', pct: 92, test: false }) // a fallback end is no window
     },
   },
 ]
@@ -406,8 +422,8 @@ const textCases: FlowCase[] = [
         { kind: 'seven_day', test: false },
       ])
       eq(answeredOf(q), [
-        { kind: 'five_hour', test: true, to: 95 },
-        { kind: 'seven_day', test: false },
+        { kind: 'five_hour', test: true, to: 95, end: R },
+        { kind: 'seven_day', test: false, end: W },
       ])
       eq(answeredOf(undefined), [])
       eq(namedStop(stopRec({ kinds: ['seven_day'], test: true })), [{ kind: 'seven_day', test: true }])
@@ -574,12 +590,31 @@ const verdictCases: FlowCase[] = [
       const k = kindIn(s, 'five_hour')
       const h: Holder[] = [{ kind: 'five_hour', resetsAtMs: R }]
       const answered = (a: Answered[]): [number, number] => [unansweredGating(a, [k]).length, unansweredHolders(s, a, h).length]
+      const answered5 = (end: number): Answered[] => [{ kind: 'five_hour', test: false, end }]
       eq(answered([]), [1, 1])
       eq(answered([{ kind: 'five_hour', test: false }]), [0, 0])
       eq(answered([{ kind: 'five_hour', test: false, to: 95 }]), [0, 0]) // 92 is below 95
       eq(answered([{ kind: 'five_hour', test: false, to: 91 }]), [1, 1]) // past the end point: asks again
       eq(answered([{ kind: 'five_hour', test: true }]), [1, 1]) // another basis
       eq(answered([{ kind: 'seven_day', test: false }]), [1, 1])
+      // A Resume answers a kind only in the window it was asked in. A later window asks again, also past its floor.
+      const q96 = question(sensed({ five: live(96, R) })) // asked at the floor: a full Resume
+      const moved = kindIn(sensed({ five: live(99, R + 30_000) }), 'five_hour') // the same window, its reset 30 s later
+      const nextWindow = (pct: number) => kindIn(sensed({ five: live(pct, R + 5 * HOUR), now: R + HOUR }), 'five_hour')
+      eq(unansweredGating(answeredOf(q96), [moved]).length, 0)
+      eq(unansweredGating(answeredOf(q96), [nextWindow(99)]).length, 1)
+      eq(unansweredHolders(sensed({ five: live(99, R + 5 * HOUR), now: R + HOUR }), answeredOf(q96), [{ kind: 'five_hour', resetsAtMs: R + 5 * HOUR }]).length, 1)
+      eq(unansweredGating(answeredOf(question(s)), [nextWindow(92)]).length, 1) // at the reserve, below its end point
+      eq(unansweredGating(answered5(R + 5 * HOUR), [k]).length, 1) // an earlier window than the Resume's
+      eq(unansweredGating([{ kind: 'five_hour', test: false }], [nextWindow(99)]).length, 0) // no end: an older answer matches
+      eq(unansweredGating(answeredOf(q96), [kindIn(sensed({ five: live(99, null) }), 'five_hour')]).length, 0) // no reset time: unknown
+      // Codex A22: a reset credit less than half a window later is a new window past the jitter.
+      const credit = sensed({ five: live(99, R + HOUR), now: R - HOUR })
+      const kc = kindIn(credit, 'five_hour')
+      const J = 10 * MIN
+      eq([unansweredGating(answeredOf(q96), [kc]).length, unansweredGating(answeredOf(q96), [kc], J).length], [0, 1]) // Claude: the same window
+      eq(unansweredHolders(credit, answeredOf(q96), [{ kind: 'five_hour', resetsAtMs: R + HOUR }], J).length, 1)
+      eq(unansweredGating(answeredOf(q96), [moved], J).length, 0) // within the jitter
       // A holder of a kind the sense does not list reads as 0% on the real basis.
       eq(unansweredHolders({ kinds: [] }, [{ kind: 'seven_day', test: false }], [{ kind: 'seven_day', resetsAtMs: W }]), [])
       eq(unansweredHolders({ kinds: [] }, [{ kind: 'seven_day', test: false, to: 95 }], [{ kind: 'seven_day', resetsAtMs: W }]), [])
@@ -612,6 +647,39 @@ const verdictCases: FlowCase[] = [
       const next = { ...k, windowEnd: R + 5 * HOUR } // a new window starts a new set
       eq(claimTold(told, [next], 'S1:main'), true)
       eq([told.five_hour.windowEnd, [...told.five_hour.keys]], [R + 5 * HOUR, ['S1:main']])
+    },
+  },
+  {
+    name: 'toldWindow: a told loop, its told line and its debug line stay told while a real reset moves within the jitter (Codex 3.6)',
+    run: (eq) => {
+      const J = 10 * MIN
+      const k = k92()
+      const moved = { ...k, windowEnd: R - 30_000 }
+      eq([toldWindow(R, moved, J), toldWindow(R, moved), toldWindow(R, { ...k, windowEnd: R + J + 1 }, J), toldWindow(R, { ...moved, test: true }, J)], [true, false, false, false])
+      const told: Told = newTold()
+      eq(claimTold(told, [k], 'S1:main', J), true)
+      eq([claimTold(told, [moved], 'S1:main', J), toldMainOf(told, [moved], 'S1', J), told.five_hour.windowEnd], [false, true, R]) // the stored end stays
+      eq([toldHas(told, moved, 'S1:main'), toldMainOf(told, [{ ...k, windowEnd: R + J + 1 }], 'S1', J)], [false, false]) // Claude: exact
+      eq(claimTold(told, [{ ...k, windowEnd: R + 5 * HOUR }], 'S1:main', J), true) // a new window still starts a new set
+      const s = s92()
+      const marks: Record<Kind, string> = { five_hour: `${R}:reserve`, seven_day: '' }
+      eq(toldNotice(s, { gating: [moved] }, marks, J), undefined)
+      eq(marks.five_hour, `${R}:reserve`)
+      eq(toldNotice(s, { gating: [moved] }, { ...marks }), notice.told(factsFrom([moved], NOW))) // Claude: exact
+      const floor = { ...kindIn(sensed({ five: live(96, R) }), 'five_hour'), windowEnd: R - 30_000 }
+      eq(toldNotice(s, { gating: [floor] }, marks, J), notice.told(factsFrom([floor], NOW))) // another stage
+      eq(marks.five_hour, `${R - 30_000}:floor`)
+      const junk = { five_hour: 7, seven_day: '' } as unknown as Record<Kind, string>
+      eq(toldNotice(s, { gating: [k] }, junk, J), notice.told(factsFrom([k], NOW))) // a mark that is not text: shown now
+      // A shown kind keeps its first mark when another kind is new, so its end never drifts.
+      const two = sensed({ five: live(92, R), week: live(93, W) })
+      const both = [{ ...kindIn(two, 'five_hour'), windowEnd: R - 9 * MIN }, kindIn(two, 'seven_day')]
+      const kept: Record<Kind, string> = { five_hour: `${R}:reserve`, seven_day: '' }
+      eq(toldNotice(two, { gating: both }, kept, J), notice.told(factsFrom(both, NOW)))
+      eq(kept, { five_hour: `${R}:reserve`, seven_day: `${W}:reserve` })
+      const um = { reserve: { five_hour: R, seven_day: 0 }, open: { five_hour: 0, seven_day: 0 } }
+      eq(unattendedLines({ ...s, kinds: [moved] }, um, J), [])
+      eq(unattendedLines({ ...s, kinds: [moved] }, um).length, 1) // Claude: exact
     },
   },
   {
@@ -732,6 +800,45 @@ const questionCases: FlowCase[] = [
       const later = { ...q, ends: { ...q.ends }, facts: [...q.facts] }
       raiseAtFloor(later, sensed({ five: live(96, R + 2 * MIN), spans: NO_SPANS })) // another window
       eq(later.ends, q.ends)
+    },
+  },
+  {
+    name: 'lowerAfterLimit and tierAtResume: resume on a limit question whose limit is gone takes the tier now, in its window only',
+    run: (eq) => {
+      const t = (pct: number, end = R, cfg = cfgOf()): Sensed => sensed({ five: testB(pct, end), real: { five: live(50, R) }, cfg })
+      const q = question(t(100))
+      eq([q.limit, q.ends, q.mode], [true, { five_hour: { end: R, test: true } }, 'hold'])
+      const copy = (): QuestionCore => ({ ...q, ends: { ...q.ends }, facts: [...q.facts] })
+      // A new test below the floor: a consent to the floor, and the facts of the reply name it.
+      const below = copy()
+      const s91 = t(91)
+      tierAtResume(below, s91)
+      eq(below.ends, { five_hour: { end: R, test: true, to: 95 } })
+      eq(below.facts, factsFrom([kindIn(s91, 'five_hour')], NOW, false, resumeTo))
+      eq(resumeAskingReply(below, NOW), resumeReply('asking', below.facts, undefined, undefined, 'hold'))
+      // Below the reserve too: never a full Resume that a later raise in place could carry past the floor.
+      const low = copy()
+      tierAtResume(low, t(50))
+      eq(low.ends.five_hour?.to, 95)
+      // At the floor, at the limit, in another window or on another basis: the full Resume stays.
+      for (const s of [t(96), t(100), t(91, R + 2 * MIN), sensed({ five: live(91, R) })]) {
+        const x = copy()
+        tierAtResume(x, s)
+        eq(x.ends, q.ends)
+      }
+      // The mode follows the setting in force: with a pause prompt, spare10 tells the agents at the floor.
+      const tell = copy()
+      tierAtResume(tell, t(91, R, cfgOf({ pausePrompt: 'Wrap up.' })))
+      eq([tell.mode, tell.ends.five_hour?.to], ['tell', 95])
+      // A question at the reserve keeps its tier as asked, and a floor question stays a full Resume.
+      const reserve = question(s92())
+      const r2 = { ...reserve, ends: { ...reserve.ends } }
+      lowerAfterLimit(r2, sensed({ five: live(50, R) }))
+      eq(r2.ends, reserve.ends)
+      const floorQ = question(sensed({ five: live(96, R) }))
+      const f2 = { ...floorQ, ends: { ...floorQ.ends } }
+      lowerAfterLimit(f2, s92())
+      eq(f2.ends, floorQ.ends)
     },
   },
 ]
@@ -1065,6 +1172,9 @@ const commandCases: FlowCase[] = [
       // Codex design 2.1, CX17: a weekly-only plan names no 5-hour trip.
       eq(stopCase(sensed({ five: NONE }), cfgOf(), ['five_hour']), { reply: stopReply('none', undefined, 90, undefined, 90, undefined, ['five_hour']) })
       eq(stopCase(below, cfgOf(), ['five_hour']), { reply: stopReply('below', factsFrom([kindIn(below, 'five_hour')], NOW), 90, undefined, 90, undefined, ['five_hour']) })
+      // A plan with no weekly window names no weekly trip, as the report does.
+      eq(stopCase(below, cfgOf(), ['seven_day']), { reply: stopReply('below', factsFrom([kindIn(below, 'five_hour')], NOW), 90, undefined, undefined, undefined, ['seven_day']) })
+      eq(stopCase(sensed({ five: NONE }), cfgOf(), ['seven_day']), { reply: stopReply('none', undefined, 90, undefined, undefined, undefined, ['seven_day']) })
       const open = sensed({ five: live(92, R), now: R - 10 * MIN })
       eq(stopCase(open, cfgOf()), { reply: stopReply('open', factsFrom([kindIn(open, 'five_hour')], open.now)) })
       const both = sensed({ five: live(92, R), week: live(93, W), now: R - 10 * MIN })
@@ -1160,11 +1270,13 @@ const commandCases: FlowCase[] = [
   {
     name: 'simulateText: the reply of a test reading, past the floor, and over a real reading in the reserve',
     run: (eq) => {
-      const base = { inPlace: false, cfg: cfgOf(), spans: SPANS, live: undefined, mem: initialMemory(), now: NOW }
+      const base = { inPlace: false, replaces: false, cfg: cfgOf(), spans: SPANS, live: undefined, mem: initialMemory(), now: NOW }
       const reading = { pct: 92, resetsAtMs: R }
       const f: Facts = { ...factsOf(testB(92, R), 10, undefined, 'five_hour', NOW), test: true, span: 20 * MIN }
       const opens = { at: clockText(SKIP5, 'five_hour', undefined, NOW), lead: leadText(f) ?? '' }
       eq(simulateText({ ...base, spec: { pct: 92, kind: 'five_hour' }, reading }), simulateReply('set', f, opens, undefined, false))
+      // A new test over a test reading of the kind: the reply says that the consents and the stop are cleared (3.5).
+      eq(simulateText({ ...base, replaces: true, spec: { pct: 92, kind: 'five_hour' }, reading }), simulateReply('replaced', f, opens, undefined, false))
       const r96 = { pct: 96, resetsAtMs: R }
       const f96: Facts = { ...factsOf(testB(96, R), 10, undefined, 'five_hour', NOW), test: true, span: 20 * MIN }
       eq(simulateText({ ...base, inPlace: true, spec: { pct: 96, kind: 'five_hour' }, reading: r96 }), simulateReply('raised', f96, { at: opens.at, lead: leadText(f96) ?? '' }, 5, false))
@@ -1184,7 +1296,7 @@ function noSpan(f: Facts): Facts {
 
 const toldAt = (windowEnd: number, keys: string[]): Told => ({ ...newTold(), five_hour: { windowEnd, keys: new Set(keys) } })
 
-function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: StoppedRecord; question?: QuestionCore; told?: Told; present?: Kind[] } = {}) {
+function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: StoppedRecord; question?: QuestionCore; told?: Told; present?: Kind[]; jitter?: number } = {}) {
   const s = sensed(w)
   const view = seenSplit(s.kinds, o.lists ?? (() => []), s.now)
   return seenOf({
@@ -1200,6 +1312,7 @@ function seenFor(w: World, o: { lists?: (k: KindSense) => Consent[]; stop?: Stop
     told: o.told ?? newTold(),
     sessionId: 'S1',
     ...(o.present === undefined ? {} : { present: o.present }),
+    ...(o.jitter === undefined ? {} : { jitter: o.jitter }),
   })
 }
 
@@ -1233,6 +1346,9 @@ const reportCases: FlowCase[] = [
       eq([p.phase, p.toldCount], ['told', 2])
       eq(seenFor({ five: live(96, R) }, { told }).toldCount, 1) // at the floor: the floor stage only
       eq(seenFor({ five: live(92, R) }, { told: toldAt(R - HOUR, ['S1:main']) }).toldCount, 0) // another window
+      eq(seenFor({ five: live(92, R) }, { told: toldAt(R - 30_000, ['S1:main']) }).toldCount, 0) // Claude: the ends must be equal
+      eq(seenFor({ five: live(92, R) }, { told: toldAt(R - 30_000, ['S1:main']), jitter: 10 * MIN }).toldCount, 1) // Codex 3.6: a reset that moved a little
+      eq(seenFor({ five: live(92, R) }, { told: toldAt(R - HOUR, ['S1:main']), jitter: 10 * MIN }).toldCount, 0)
       // Codex design 4.15: with the kinds the host reports, the phase reads their bases, so a weekly-only plan is armed.
       eq(seenFor({ five: NONE, week: live(40, W) }).phase, 'waiting')
       eq(seenFor({ five: NONE, week: live(40, W) }, { present: ['seven_day'] }).phase, 'armed')
@@ -1295,6 +1411,7 @@ const reportCases: FlowCase[] = [
         warnings: ['w'],
         weekly: { reserve: 10, from: 'option', basis: live(50, W) },
         autoResume: { on: true, from: 'option' },
+        limitPause: { on: true, from: 'option' },
         tickerStale: false,
         spans: { lastMinutes: 20, lastMinutesFrom: 'option', weeklyLastHours: 8, weeklyLastHoursFrom: 'option' },
         floors: { resumeFloor: 5, resumeFloorFrom: 'option', weeklyResumeFloor: 5, weeklyResumeFloorFrom: 'option' },
@@ -1324,6 +1441,365 @@ const reportCases: FlowCase[] = [
   },
 ]
 
+// ---- The pause at the quota limit (limit design 1, 6.1) ----
+
+const LNOW = R - 10 * MIN // 14:50: inside the last 20 min of the 5-hour window, where its reserve is open
+const lim5 = (now = NOW): KindSense => kindIn(sensed({ five: live(100, R), now }), 'five_hour')
+const REPORT_IN = { childPolicy: 'stop', warnings: [], tickerStale: false }
+
+const limitCases: FlowCase[] = [
+  {
+    name: 'sensesOf: a kind at 100% in its last span is a limit kind: not open, no skip start, the reset as its hold end and edge',
+    run: (eq) => {
+      const r = sensesOf(cfgOf(), basesOf(live(100, R)), SPANS, LNOW, {}, mems())
+      const k = kindIn(r, 'five_hour')
+      eq([k.limit, k.tripped, k.open, k.skipAt, k.holdEnd, k.stopEnd, k.windowEnd, k.realIn, k.atFloor], [true, true, false, null, R, R, R, true, false])
+      eq(r.edges, [R]) // the reset is a badge edge, and there is no skip start
+      eq([resumeTo(k), viewedOf(k).limit, factsFrom([k], LNOW)[0]?.limit, dueMargin(k)], [undefined, true, true, RESET_MARGIN_MS])
+      // Before its span too: the reset is the hold end, never the skip start.
+      const early = sensesOf(cfgOf(), basesOf(live(100, R)), SPANS, NOW, {}, mems())
+      eq([kindIn(early, 'five_hour').holdEnd, kindIn(early, 'five_hour').skipAt, early.edges], [R, null, [R]])
+      // 99.9% is the reserve of today, open in its last span. A reading with no reset time is no limit kind.
+      eq(kindIn(sensesOf(cfgOf(), basesOf(live(99.9, R)), SPANS, LNOW, {}, mems()), 'five_hour').open, true)
+      const blind = kindIn(sensesOf(cfgOf(), basesOf(live(100, null)), SPANS, LNOW, {}, mems()), 'five_hour')
+      eq([blind.limit, blind.tripped, blind.atFloor, factsFrom([blind], LNOW)[0]?.limit], [false, true, true, undefined])
+    },
+  },
+  {
+    name: 'sensesOf: limitPause off, or credits that pay, keep the open reserve at 100%',
+    run: (eq) => {
+      const off = kindIn(sensesOf(cfgOf({ limitPause: 'off' }), basesOf(live(100, R)), SPANS, LNOW, {}, mems()), 'five_hour')
+      eq([off.limit, off.open, off.holdEnd], [false, true, R])
+      const paid = kindIn(sensesOf(cfgOf(), basesOf(live(100, R)), SPANS, LNOW, {}, mems(), undefined, { paid: true }), 'five_hour')
+      eq([paid.limit, paid.open], [false, true])
+      eq([limitOf(cfgOf(), live(100, R)), limitOf(cfgOf(), live(100, R), true), limitOf(cfgOf({ limitPause: 'off' }), live(100, R))], [true, false, false])
+      // A weekly reserve of 0 does not watch the weekly window, so it never pauses there.
+      eq(sensesOf(cfgOf({}, { weeklyReserve: 0 }), basesOf(live(50, R), live(100, W)), SPANS, NOW, {}, mems()).kinds.map((k) => [k.kind, k.limit]), [['five_hour', false]])
+    },
+  },
+  {
+    name: 'sensesOf: a test reading at 100% over a real reading in the reserve is a limit on the test basis',
+    run: (eq) => {
+      const end = NOW + 10 * MIN // a test window in its last span: under B45 it yields to the real trip
+      const k = kindIn(sensed({ five: testB(100, end), real: { five: live(92, R) } }), 'five_hour')
+      eq([k.limit, k.test, k.basis, k.open, k.holdEnd, k.windowEnd, dueMargin(k), k.realIn, k.realReset], [true, true, testB(100, end), false, end, end, TEST_MARGIN_MS, true, R])
+      eq(kindIn(sensed({ five: testB(95, end), real: { five: live(92, R) } }), 'five_hour').test, false) // below the limit: B45 as today
+      // A real reading at the limit in its own last span is never open beneath a test reading: it gates (TS1).
+      const r = kindIn(sensed({ five: testB(100, R), real: { five: live(100, R) }, now: LNOW }), 'five_hour')
+      eq([r.limit, r.realIn], [true, true])
+    },
+  },
+  {
+    name: 'splitFrom: a limit kind gates also with a full consent',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R), now: LNOW })
+      const out = splitFrom(s.kinds, () => ({ list: [env({ until: R })], failed: false }), LNOW)
+      eq([out.gating.map((k) => k.kind), out.consented, out.open], [['five_hour'], [], []])
+      eq([consentedOf(s, out.gating), checksStop(s, out.gating)], [false, true])
+      // The report keeps the consent for its row, or one to the floor that ended, and the kind gates.
+      const seen = seenSplit(s.kinds, (k) => (k.kind === 'five_hour' ? [{ until: R }] : []), LNOW)
+      eq([seen.consent.five_hour, seen.gating.map((k) => k.kind), seen.open], [{ until: R }, ['five_hour'], []])
+      const ended = seenSplit(s.kinds, (k) => (k.kind === 'five_hour' ? [{ until: R, to: 95 }] : []), LNOW)
+      eq([ended.consent, ended.ended.five_hour, ended.gating.map((k) => k.kind)], [{}, { until: R, to: 95 }, ['five_hour']])
+    },
+  },
+  {
+    name: 'verdictOf: at the limit every loop holds, in tell mode too, and a stop still refuses',
+    run: (eq) => {
+      type O = { person?: boolean; toldMain?: boolean; stopped?: boolean }
+      const v = (s: Sensed, site: 'tool' | 'step' | 'prompt', o: O = {}) =>
+        verdictOf({ s, site, person: o.person === true, gating: [kindIn(s, 'five_hour')], holders: [], stopped: o.stopped === true, toldMain: o.toldMain === true }).verdict
+      const hold = sensed({ five: live(100, R), now: LNOW })
+      const tell = sensed({ five: live(100, R), now: LNOW, cfg: cfgOf({ pausePrompt: 'Wrap up.' }) })
+      for (const s of [hold, tell]) {
+        eq([v(s, 'tool'), v(s, 'step'), v(s, 'prompt', { person: true, toldMain: true }), v(s, 'prompt')], [{ kind: 'hold' }, { kind: 'hold' }, { kind: 'hold' }, { kind: 'pass', trip: true }])
+        eq([v(s, 'tool', { stopped: true }), v(s, 'step', { stopped: true })], [{ kind: 'refuse', text: 'stop' }, { kind: 'refuse', text: 'paused' }])
+      }
+      const un = (headless: string): Sensed => sensed({ five: live(100, R), now: LNOW, attended: false, cfg: cfgOf({ headless }) })
+      eq([v(un('off'), 'tool'), v(un('stop'), 'tool'), v(un('wait'), 'tool'), v(un('prompt'), 'tool')], [
+        { kind: 'pass', trip: true },
+        { kind: 'refuse', text: 'headless' },
+        { kind: 'hold' },
+        { kind: 'tell' },
+      ])
+    },
+  },
+  {
+    name: 'unansweredGating: a full Resume never answers a limit kind',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R) })
+      const k = kindIn(s, 'five_hour')
+      const full: Answered[] = [{ kind: 'five_hour', test: false, end: R }]
+      eq(unansweredGating(full, [k]).map((x) => x.kind), ['five_hour'])
+      eq(unansweredHolders(s, full, [realHolder(k)]), [realHolder(k)])
+      eq(unansweredGating(full, [kindIn(sensed({ five: live(99, R) }), 'five_hour')]), []) // below the limit it answers
+    },
+  },
+  {
+    name: 'questionOf: a limit question names only the limit kinds, holds until the reset plus the margin, and has no tier',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R), week: live(92, W), cfg: cfgOf({ pausePrompt: 'Wrap up.' }) })
+      const q = questionOf('loop', s, { gating: s.kinds, holders: commandHolders(s.kinds) }, NOW)
+      eq(
+        [q.kinds, q.ends, q.latestEnd, q.holdEnd, q.stopEnd, q.due, q.skip, q.noteAt, q.mode, q.limit, q.chosen, q.real],
+        [['five_hour'], { five_hour: { end: R, test: false } }, R, R, R, R + RESET_MARGIN_MS, false, R, 'hold', true, undefined, [holder5]],
+      )
+      eq(q.facts, factsFrom([kindIn(s, 'five_hour')], NOW))
+      const both = sensed({ five: live(100, R), week: live(100, W) })
+      const qb = questionOf('prompt', both, { gating: both.kinds, holders: [] }, NOW)
+      eq([qb.kinds, qb.holdEnd, qb.due, qb.stopEnd, qb.noteAt], [['five_hour', 'seven_day'], W, W + RESET_MARGIN_MS, W, W])
+      const t = sensed({ five: testB(100, NOW + 10 * MIN), real: { five: live(30, R) } })
+      eq(questionOf('loop', t, { gating: t.kinds.filter((k) => k.tripped), holders: [] }, NOW).due, NOW + 10 * MIN + TEST_MARGIN_MS)
+      eq('limit' in question(s92()), false) // a question at the reserve has no limit field
+      eq([quietOf(q), quietOf({ ...q, chosen: true }), quietOf({ ...q, silent: true })], [false, true, true])
+    },
+  },
+  {
+    name: 'dueRelease: a reserve question gives way to the limit, and a limit question waits for its reset',
+    run: (eq) => {
+      const lim = lim5()
+      const reserveQ = waitQ()
+      eq([dueRelease(reserveQ, NOW + MIN, [lim], false), dueRelease({ ...reserveQ, silent: true }, NOW + MIN, [lim], false)], ['limit', undefined])
+      eq([supersedes(reserveQ, [lim]), supersedes(reserveQ, [k92()]), supersedes({ ...reserveQ, silent: true }, [lim])], [true, false, false])
+      const q = question(sensed({ five: live(100, R) }))
+      eq(supersedes(q, [lim]), false)
+      eq(dueRelease(q, NOW + MIN, [lim], false), undefined)
+      eq(dueRelease(q, NOW + MIN, [k92()], false), 'quota') // the limit is gone: it ends, and the reserve asks
+      eq(dueRelease(q, NOW + MIN, [], false), 'quota')
+      eq(dueRelease(q, NOW + MIN, [], true), undefined) // inside a real reset margin
+      eq(dueRelease(q, R + RESET_MARGIN_MS, [], false), 'reset')
+    },
+  },
+  {
+    name: 'dueStep: a chosen limit question releases by time with Continue at the reset off',
+    run: (eq) => {
+      const q = question(sensed({ five: live(100, R) }))
+      eq([dueStep(q, NOW + MIN, false), dueStep(q, R, false)], ['wait', 'note']) // no answer: it waits for the answer
+      const chosen = { ...q, chosen: true }
+      eq([dueStep(chosen, NOW + MIN, false), dueStep(chosen, R, false), dueStep(chosen, R + RESET_MARGIN_MS, false)], ['check', 'wait', 'check'])
+    },
+  },
+  {
+    name: 'againNotice: the limit lines',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R) })
+      const reserveQ = waitQ()
+      eq(againNotice(reserveQ, 'limit', [kindIn(s, 'five_hour')], s), notice.limitReached)
+      const q = question(s)
+      eq([againNotice(q, 'quota', [], s), againNotice(q, 'quota', [k92()], s)], [notice.limitOver, notice.limitOver])
+      eq(againNotice(q, 'reset', [], s), notice.resetContinues(namedOf(q)))
+      eq(againNotice(reserveQ, 'quota', [], s), notice.outOfReserve)
+    },
+  },
+  {
+    name: 'stopPlan and stopNotice: Stop here at the limit has no auto, and the hold time limit keeps the setting',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R), now: LNOW })
+      const q = question(s)
+      const sNow = stopSense(s)
+      const vias = ['dialog', 'command', 'dialog ended without an answer', 'time limit'] as const
+      eq(vias.map((via) => stopAutoOf(q, via, true)), [false, false, false, true])
+      eq([stopAutoOf(q, 'time limit', false), stopAutoOf(waitQ(), 'dialog', true)], [false, true])
+      const plan = stopPlan(q, LNOW, stopAutoOf(q, 'dialog', true), sNow)
+      // The kind at the limit that gates now is late, as on any stop while it gates: the same kind and reset here.
+      eq(plan, {
+        kind: 'write',
+        until: R,
+        late: [kindIn(s, 'five_hour')],
+        record: { kinds: ['five_hour'], windowEnd: R, work: true, auto: false, test: false, skip: false, real: [holder5] },
+        limit: true,
+      })
+      if (plan.kind !== 'write') return
+      const written = stopRecordOf(undefined, plan.record, 'S1', LNOW)
+      const u = untilFor(q.facts, R, ['five_hour'], false, LNOW)
+      eq(stopNotice(q, plan, written, 'dialog', LNOW, false), { text: notice.limitStopped(u.at), late: { record: written, until: u } })
+      eq(stopNotice(q, plan, written, 'command', LNOW, false), { late: { record: written, until: u } })
+      // The hold time limit: the auto stop of the setting in force, until the reset, with work.
+      const tl = stopPlan(q, LNOW, stopAutoOf(q, 'time limit', true), sNow)
+      if (tl.kind !== 'write') return
+      eq([tl.record.auto, tl.record.work, tl.until], [true, true, R])
+      eq(stopNotice(q, tl, stopRecordOf(undefined, tl.record, 'S1', LNOW), 'time limit', LNOW, true).text, notice.limitHoldLimit(u.at, true))
+      const off = stopPlan(q, LNOW, stopAutoOf(q, 'time limit', false), sNow)
+      if (off.kind !== 'write') return
+      eq(stopNotice(q, off, stopRecordOf(undefined, off.record, 'S1', LNOW), 'time limit', LNOW, false).text, notice.limitHoldLimit(u.at, false))
+    },
+  },
+  {
+    name: 'stopsAtLimit: a Stop here on a question at the reserve while a kind at the limit gates stops until the reset, with no auto',
+    run: (eq) => {
+      // A question at the reserve (92%, a skip owner) that is still open when the quota reaches 100%.
+      const q = question(s92())
+      const sNow = stopSense(sensed({ five: live(100, R), week: live(50, W) }))
+      const vias = ['dialog', 'command', 'dialog ended without an answer', 'could not ask', 'time limit'] as const
+      eq(vias.map((via) => stopsAtLimit(q, via, sNow)), [true, true, false, false, false])
+      eq(vias.map((via) => stopAutoOf(q, via, true, sNow)), [false, false, true, true, true])
+      // Below the limit, or with no sense: the Stop here of today.
+      eq([stopsAtLimit(q, 'dialog', stopSense(s92())), stopsAtLimit(q, 'command'), stopAutoOf(q, 'command', true)], [false, false, true])
+      const plan = stopPlan(q, NOW, false, sNow, true)
+      if (plan.kind !== 'write') throw new Error('a kind at the limit gates, so the stop is written')
+      eq([plan.until, plan.limit, plan.late.map((k) => k.kind), plan.record.auto, plan.record.skip, plan.record.work], [R, true, ['five_hour'], false, false, true])
+      const today = stopPlan(q, NOW, false, stopSense(s92()))
+      if (today.kind !== 'write') throw new Error('a kind in the reserve gates, so the stop is written')
+      eq([today.until, today.limit], [SKIP5, undefined])
+      const written = stopRecordOf(undefined, plan.record, 'S1', NOW)
+      const u = untilFor(byKind(factsFrom(plan.late, NOW, false)), R, ['five_hour'], false, NOW)
+      eq(stopNotice(q, plan, written, 'dialog', NOW, false).text, notice.limitStopped(u.at))
+      eq(stopNotice(q, plan, written, 'command', NOW, false).text, undefined)
+      eq(stopAskingReply(stopNotice(q, plan, written, 'command', NOW, false).late), stopReply('asking'))
+    },
+  },
+  {
+    name: 'stopPlan: a question at the reserve that ends with no answer at the limit stops until the reset, keeps the setting, and has the limit texts',
+    run: (eq) => {
+      const q = question(s92()) // a skip owner at 92%, still open when the quota reaches 100%
+      const sNow = stopSense(sensed({ five: live(100, R), week: live(50, W) }))
+      for (const via of ['dialog ended without an answer', 'could not ask', 'time limit'] as const) {
+        const auto = stopAutoOf(q, via, true, sNow)
+        const plan = stopPlan(q, NOW, auto, sNow, stopsAtLimit(q, via, sNow))
+        if (plan.kind !== 'write') throw new Error('a kind at the limit gates, so the stop is written')
+        eq([via, plan.until, plan.limit, plan.late.map((k) => k.kind), plan.record.auto, plan.record.skip, plan.record.work], [via, R, true, ['five_hour'], true, false, true])
+        const written = stopRecordOf(undefined, plan.record, 'S1', NOW)
+        const at = untilFor(byKind(factsFrom(plan.late, NOW, false)), R, ['five_hour'], false, NOW).at
+        eq(stopNotice(q, plan, written, via, NOW, auto).text, via === 'time limit' ? notice.limitHoldLimit(at, true) : notice.limitStopped(at, true))
+      }
+      // With autoResume off: until the reset, and nothing continues it.
+      const off = stopPlan(q, NOW, stopAutoOf(q, 'dialog ended without an answer', false, sNow), sNow)
+      if (off.kind !== 'write') throw new Error('written')
+      const at = untilFor(byKind(factsFrom(off.late, NOW, false)), R, ['five_hour'], false, NOW).at
+      eq([off.until, off.record.auto], [R, false])
+      eq(stopNotice(q, off, stopRecordOf(undefined, off.record, 'S1', NOW), 'dialog ended without an answer', NOW, false).text, notice.limitStopped(at))
+    },
+  },
+  {
+    name: 'stopNotice: a stop at the limit whose reset has passed names no time, and neither does the resume reply',
+    run: (eq) => {
+      // autoResume off: the limit question waited past its reset for the answer, and the quota is new now.
+      const q = question(sensed({ five: live(100, R), now: LNOW }), { auto: false })
+      const late = R + 15 * MIN
+      const sNow = stopSense(sensed({ five: live(3, R + 5 * HOUR), now: late }))
+      const plan = stopPlan(q, late, stopAutoOf(q, 'dialog', false, sNow), sNow)
+      if (plan.kind !== 'write') throw new Error('Stop here writes')
+      eq([plan.until, plan.record.auto, plan.late], [R, false, []])
+      const written = stopRecordOf(undefined, plan.record, 'S1', late)
+      eq(stopNotice(q, plan, written, 'dialog', late, false).text, notice.limitStopped())
+      eq(stopNotice(q, plan, written, 'time limit', late, false).text, notice.limitHoldLimit(undefined, false))
+      // Before the reset the time shows.
+      eq(stopNotice(q, plan, written, 'dialog', LNOW, false).text, notice.limitStopped(atText(R, ['five_hour'], undefined, LNOW)))
+      eq([resumeAskingReply(q, late), resumeAskingReply(q, LNOW)], [resumeReply('limit-late'), resumeReply('asking', q.facts, undefined, undefined, q.mode)])
+      const reserveQ = question(s92())
+      eq(resumeAskingReply(reserveQ, R + HOUR), resumeReply('asking', reserveQ.facts, undefined, undefined, reserveQ.mode)) // a question at the reserve: as today
+    },
+  },
+  {
+    name: 'stopKept: at the limit an auto stop, or one that ends before the reset, does not stay, and the merge drops its auto',
+    run: (eq) => {
+      const lim = [lim5()]
+      eq(stopKept(stopRec({ auto: true }), lim), false)
+      eq(stopKept(stopRec({ auto: false, windowEnd: SKIP5 }), lim), false)
+      eq(stopKept(stopRec({ auto: false }), lim), true)
+      eq(stopKept(stopRec({ auto: true, windowEnd: SKIP5 }), [k92()]), true) // below the limit: as today
+      const merged = stopRecordOf(stopRec({ auto: true, work: true, windowEnd: SKIP5, skip: true }), stopWriteOf(lim, true, false), 'S1', NOW)
+      eq([merged.auto, merged.work, merged.windowEnd, merged.skip], [false, true, R, undefined])
+    },
+  },
+  {
+    name: 'resumeAtLimit: a limit question whose limit is gone is not chosen, so the resume of today settles it',
+    run: (eq) => {
+      const q = question(sensed({ five: live(100, R) }))
+      const off = sensed({ five: live(100, R), cfg: cfgOf({ limitPause: 'off' }) })
+      eq([resumeAtLimit(off, q), resumeAtLimit(s92(), q)], [undefined, undefined])
+      eq(resumeAtLimit(sensed({ five: live(100, R) }), q)?.choose, true)
+    },
+  },
+  {
+    name: 'continuesLine and promptWaitsLine: only while the reset is ahead, and the prompt line only after Continue at the reset',
+    run: (eq) => {
+      const q = question(sensed({ five: live(100, R) }))
+      eq([continuesLine(q, R - MIN), continuesLine(q, R), continuesLine(q, R + 20 * MIN)], [notice.limitContinues(q.facts), undefined, undefined])
+      const chosen = { ...q, chosen: true }
+      eq([promptWaitsLine(q, NOW), promptWaitsLine(chosen, NOW), promptWaitsLine(chosen, R)], [undefined, notice.limitPromptWaits(q.facts), undefined])
+    },
+  },
+  {
+    name: 'stopWriteOf and stopTrippedReply: a stop at the limit has no auto, and replies with the limit text',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R), now: LNOW })
+      const c = stopCase(s, s.cfg)
+      if ('reply' in c) throw new Error('a limit kind is never open, so the stop names it')
+      eq(c.ks.map((k) => k.kind), ['five_hour'])
+      const write = stopWriteOf(c.ks, true, false)
+      eq(write, { kinds: ['five_hour'], windowEnd: R, work: false, auto: false, test: false, skip: false, real: [holder5] })
+      const written = stopRecordOf(undefined, write, 'S1', LNOW)
+      eq(stopTrippedReply(c.ks, c.facts, written, true, LNOW), stopReply('limit', undefined, undefined, { at: atText(R, ['five_hour'], undefined, LNOW) }))
+      eq(stopWriteOf([k92()], true, false).auto, true) // below the limit a stop continues at the reset
+    },
+  },
+  {
+    name: 'resumeAtLimit: an open limit question is chosen, and else nothing is written',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R) })
+      const q = question(s)
+      const nothing = { choose: false, reply: resumeReply('limit', factsFrom([kindIn(s, 'five_hour')], NOW)) }
+      eq([resumeAtLimit(s, q), resumeAtLimit(undefined, q)], [{ choose: true, reply: resumeReply('limit-asking', q.facts) }, { choose: true, reply: resumeReply('limit-asking', q.facts) }])
+      eq([resumeAtLimit(s, { ...q, chosen: true }), resumeAtLimit(s, undefined)], [nothing, nothing])
+      eq(resumeAtLimit(undefined, { ...q, chosen: true }), { choose: false, reply: resumeReply('limit', q.facts) })
+      // Below the limit: the resume of today, also for a chosen limit question whose limit is gone.
+      eq([resumeAtLimit(s92(), undefined), resumeAtLimit(s92(), question(s92())), resumeAtLimit(s92(), { ...q, chosen: true })], [undefined, undefined, undefined])
+    },
+  },
+  {
+    name: 'refusalText and notStartedFor: the limit texts',
+    run: (eq) => {
+      const s = sensed({ five: live(100, R), week: live(92, W) })
+      const gating = s.kinds.filter((k) => k.tripped)
+      const lim = factsFrom([kindIn(s, 'five_hour')], NOW)
+      eq(refusalText('stop', s, { gating }, 'S1'), stopText(lim))
+      eq(refusalText('paused', s, { gating }, 'S1'), pausedText(lim))
+      eq(refusalText('headless', s, { gating }, 'S1'), headlessText(lim, 'S1'))
+      eq(notStartedFor(s, { gating }), notStarted(lim))
+      eq(refusalText('stop', s, { gating }, 'S1') === stopText(factsFrom([kindIn(s, 'seven_day')], NOW)), false)
+    },
+  },
+  {
+    name: 'simulateText: 100 is the quota limit, and credits that pay give the reply of today',
+    run: (eq) => {
+      const spec = { pct: 100, kind: 'five_hour' as const, inMs: 2 * MIN }
+      const reading = { pct: 100, resetsAtMs: NOW + 2 * MIN }
+      const base = { spec, reading, inPlace: false, replaces: false, cfg: cfgOf(), spans: SPANS, live: undefined, mem: initialMemory(), now: NOW }
+      const f: Facts = { ...factsOf({ kind: 'test', ...reading }, 10, undefined, 'five_hour', NOW), test: true, span: 20 * MIN }
+      eq(simulateText(base), simulateReply('set', f, undefined, undefined, undefined, true))
+      eq(simulateText({ ...base, inPlace: true }), simulateReply('raised', f, undefined, undefined, undefined, true))
+      const today = simulateText({ ...base, cfg: cfgOf({ limitPause: 'off' }) })
+      eq(simulateText({ ...base, paid: true }), today)
+      eq(today === simulateText(base), false)
+    },
+  },
+  {
+    name: 'seenOf, untilOf and statusInput: the limit phase, its until and the option row',
+    run: (eq) => {
+      const w = { five: live(100, R) }
+      const until = { until: atText(R, ['five_hour'], undefined, NOW) }
+      const p = seenFor(w)
+      eq([p.phase, p.gating.map((k) => k.kind), untilOf(p), limitAt(p)], ['limit', ['five_hour'], until, { ms: R, kinds: ['five_hour'], held: false }])
+      const i = statusInput(p, REPORT_IN)
+      eq([i.limit, i.limitPause], [{ ms: R, kinds: ['five_hour'], held: false }, { on: true, from: 'option' }])
+      // An open limit question asks. After Continue at the reset: the limit phase, with held work.
+      const q = question(sensed(w))
+      eq(seenFor(w, { question: q }).phase, 'asking')
+      const chosen = seenFor(w, { question: { ...q, chosen: true } })
+      eq([chosen.phase, untilOf(chosen), statusInput(chosen, REPORT_IN).limit], ['limit', until, { ms: R, kinds: ['five_hour'], held: true }])
+      // A stop wins. Unattended: the reserve phase. Off: the open phase in the last span, and the option row.
+      eq([seenFor(w, { stop: stopRec({ auto: false }) }).phase, seenFor({ ...w, attended: false }).phase], ['stopped', 'reserve'])
+      // A stop at the limit: the report names the reset of the kinds at the limit (the stopped line names the way out).
+      eq(statusInput(seenFor(w, { stop: stopRec({ auto: false }) }), REPORT_IN).limit, { ms: R, kinds: ['five_hour'], held: false })
+      eq(statusInput(seenFor({ five: live(92, R) }, { stop: stopRec({ auto: false }) }), REPORT_IN).limit, undefined)
+      const off = seenFor({ five: live(100, R), now: LNOW, cfg: cfgOf({ limitPause: 'off' }) })
+      const oi = statusInput(off, REPORT_IN)
+      eq([off.phase, oi.limitPause, oi.limit], ['open', { on: false, from: 'env' }, undefined])
+    },
+  },
+]
+
 /** Every case, in the order of flow.ts. */
 export const FLOW_CASES: readonly FlowCase[] = [
   ...senseCases,
@@ -1335,4 +1811,5 @@ export const FLOW_CASES: readonly FlowCase[] = [
   ...waitCases,
   ...commandCases,
   ...reportCases,
+  ...limitCases,
 ]

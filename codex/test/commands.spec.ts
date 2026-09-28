@@ -1,12 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexText } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText } from '../../hooks/core/codex.ts'
 import type { Command } from '../../hooks/core/codex.ts'
 import { formatConsent, formatStopped } from '../../hooks/core/decide.ts'
 import type { StoppedRecord } from '../../hooks/core/decide.ts'
-import { VERSION, notPerson, resumeReply, simulateReply, unknownVerb } from '../../hooks/core/text.ts'
+import { HELD_WAITS, VERSION, notPerson, resumeReply, simulateReply } from '../../hooks/core/text.ts'
 import { createAttendance } from '../src/attend.ts'
 import { createCommands } from '../src/commands.ts'
 import { readJson } from '../src/files.ts'
@@ -14,7 +14,7 @@ import type { SenseApi } from '../src/sense.ts'
 import { createSettings } from '../src/settings.ts'
 import { logicWorld } from './helpers/logic.ts'
 import { memoryLog } from './helpers/log.ts'
-import { CHILD, HOUR, MIN, SID, T0, parsed, world } from './helpers/world.ts'
+import { CHILD, HOUR, MIN, SEC, SID, T0, parsed, world } from './helpers/world.ts'
 import type { World, WorldBroker } from './helpers/world.ts'
 
 // The commands (Codex design 2.8, 4.19, 4.20, 8.2 commands.spec): every reply of 2.8 through a typed
@@ -28,6 +28,9 @@ import type { World, WorldBroker } from './helpers/world.ts'
 process.env.TZ = 'UTC' // the clock texts of the sample report
 
 const RESET = T0 + 2 * HOUR
+
+/** The env of `!spare10 ...` in the root thread: the CLI prints only the phase line for `status` (2.9). */
+const BANG = { CODEX_THREAD_ID: SID, CODEX_SESSION_ID: SID }
 
 /** A typed command: its block reason, without the `spare10: ` of the first line. */
 async function typed(b: WorldBroker, prompt: string): Promise<string> {
@@ -139,6 +142,20 @@ test('commands: status in each phase', async (t) => {
   assert.equal(h.box.done, true)
 })
 
+test('commands: the report keeps a told loop while the reset moves within its jitter (3.6)', async (t) => {
+  const w = world(t, { config: { pausePrompt: 'Wind down now.' } })
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  await b.gate('tool')
+  assert.deepEqual(w.state().told, { five_hour: { windowEnd: RESET, keys: [`${SID}:main`] } })
+  // The next reading has a reset 5 minutes later: the same window, so the loop is still told.
+  await w.advance(1000)
+  w.reading(SID, 92.5, { reset: RESET + 5 * MIN })
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '⏸ told')
+  assert.match(report, /the wind-down went to 1 agent\(s\)\./)
+})
+
 test('commands: the blind phase after two live reads with no window', async (t) => {
   const w = world(t)
   const b = await w.broker()
@@ -153,7 +170,8 @@ test('commands: help, unknown verb, unknown option, and notPerson in a subagent'
   const w = world(t)
   const b = await w.broker()
   assert.equal(await typed(b, 'spare10 help'), codexText.help(w.paths.bin, w.paths.home))
-  assert.equal(await typed(b, 'spare10 pause'), unknownVerb('pause'))
+  // CX49: it names spare10 help, which lists every Codex command.
+  assert.equal(await typed(b, 'spare10 pause'), codexText.unknown('pause'))
   assert.equal(await typed(b, 'spare10 set foo'), codexText.setUnknown('foo'))
   const child = await w.broker({ thread: CHILD })
   for (const [prompt, verb] of [
@@ -246,6 +264,44 @@ test('commands: a resume whose first sense fails takes the absent kinds of the s
   assert.equal(calls, 6)
   assert.equal(w.state().consent, undefined)
   assert.equal(w.state().weeklyConsent, undefined)
+})
+
+test('commands: a resume at the limit whose first sense fails keeps a Stop here, and writes no consent', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  const lim = T0 + 10 * MIN
+  w.reading(SID, 100, { reset: lim })
+  const stop = formatStopped({ sessionId: SID, windowEnd: lim, at: T0, kinds: ['five_hour'], auto: false, work: true })
+  w.setState({ stopped: stop })
+  // The first sense of the resume fails, and the second one answers.
+  let calls = 0
+  const sense: SenseApi = {
+    ...b.sense,
+    async sense(sx, site) {
+      calls += 1
+      if (calls === 1) throw new Error('the quota read failed')
+      return b.sense.sense(sx, site)
+    },
+  }
+  const cmds = createCommands({
+    paths: w.paths,
+    clock: w.clock,
+    log: w.log,
+    owner: b.owner,
+    env: {},
+    settings: b.settings,
+    sense,
+    questions: b.questions,
+    sweep: b.sweep,
+    daemon: b.daemonLink,
+    attendance: createAttendance({ hostKind: 'tui', rollouts: b.rollouts }),
+    pidAlive: (p) => w.alive.has(p),
+  })
+  const resume: Command = { verb: 'resume', words: [], rest: '' }
+  assert.match(await cmds.exec(b.sx, resume, { cli: false }), /^nothing to resume now\. The quota limit is reached until \d\d:\d\d\. /)
+  assert.equal(calls, 2)
+  assert.equal(w.state().stopped, stop, 'the Stop here at the limit stays')
+  assert.equal(w.state().consent, undefined)
 })
 
 test('commands: `asking` replaces `stopped` while held work waits under a stop, and the stopped phase says so', async (t) => {
@@ -344,6 +400,7 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
       '  · weeklyResumeFloor 5 (default)',
       '  · pausePrompt       an empty text (default)',
       '  · autoResume        on (default)',
+      '  · limitPause        on (default)',
       '  · headless          off (default)',
       '  · scope             all (default)',
       'Change one with spare10 set <option> <value>, or spare10 set <option> default.',
@@ -352,6 +409,10 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
   assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setOk('reserve', '15', '10'))
   assert.equal(await typed(b, 'spare10 set Reserve 16'), codexText.setOk('reserve', '16', '15'))
   assert.equal(await typed(b, 'spare10 set reserve 150'), codexText.setBad('reserve', '1 to 99'))
+  // CX52: a pause prompt with no text, or only a pair of quotes, names the way to clear it.
+  for (const blank of ['spare10 set pausePrompt', 'spare10 set pausePrompt   ', 'spare10 set pausePrompt ""']) {
+    assert.equal(await typed(b, blank), codexText.setBlankPause, blank)
+  }
   assert.equal(await typed(b, 'spare10 set weeklyReserve 5'), `${codexText.setOk('weeklyReserve', '5', '10')}${codexText.setEnvWins('SPARE10_WEEKLY_RESERVE')}`)
   assert.equal(await typed(b, 'spare10 set pausePrompt Finish this, then stop.'), codexText.setOk('pausePrompt', '"Finish this, then stop."', 'an empty text'))
   assert.equal(await typed(b, 'spare10 set reserve default'), codexText.setDefault('reserve', '10'))
@@ -363,9 +424,27 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
   assert.equal(eff.autoResume, false)
   assert.match(await typed(b, 'spare10'), /· at the reset   wait for your answer \(from spare10 set\)/)
   // A config.json that is not an object is never overwritten.
-  const { writeFileSync } = await import('node:fs')
   writeFileSync(path, '[1, 2]')
-  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed(path, 'it is not a JSON object'))
+  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed(path, 'it is not a JSON object', true))
+})
+
+test('commands: spare10 set limitPause off, default, and the list row', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const path = join(w.data, 'config.json')
+  assert.equal(await typed(b, 'spare10 set limitPause off'), codexText.setOk('limitPause', 'off', 'on'))
+  assert.equal(readJson<Record<string, unknown>>(path)?.['limitPause'], false)
+  assert.match(await typed(b, 'spare10 set'), /\n {2}· limitPause {8}off \(config\.json\)\n/)
+  assert.match(await typed(b, 'spare10'), /\n {2}· at the limit {3}off\. spare10 does not pause at the limit \(from spare10 set\)\n/)
+  assert.equal(await typed(b, 'spare10 set limitPause maybe'), codexText.setBad('limitPause', 'on or off'))
+  assert.equal(await typed(b, 'spare10 set limitPause default'), codexText.setDefault('limitPause', 'on'))
+  assert.equal(readJson<Record<string, unknown>>(path)?.['limitPause'], undefined)
+  assert.match(await typed(b, 'spare10 set'), /\n {2}· limitPause {8}on \(default\)\n/)
+  assert.equal((await typed(b, 'spare10')).includes('at the limit'), false)
+  // A variable wins over the option, and the reply says so.
+  const v = world(t)
+  const c = await v.broker({ env: { SPARE10_LIMIT_PAUSE: 'on' } })
+  assert.equal(await typed(c, 'spare10 set limitPause off'), `${codexText.setOk('limitPause', 'off', 'on')}${codexText.setEnvWins('SPARE10_LIMIT_PAUSE')}`)
 })
 
 test('commands: set names a variable as the winner only when its value parses (A15)', async (t) => {
@@ -402,10 +481,19 @@ test('commands: the report, help and set never name the home folder: ~/... in a 
   assert.equal(help, codexText.help(w.paths.bin, w.paths.home))
   assert.match(help, /add export PATH="\$HOME\/data\/bin:\$PATH" to/)
   assert.match(await typed(b, 'spare10 set'), /^options, from ~\/data\/config\.json:\n/)
-  const { writeFileSync } = await import('node:fs')
   writeFileSync(join(w.data, 'config.json'), '[1, 2]')
-  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed('~/data/config.json', 'it is not a JSON object'))
+  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setFailed('~/data/config.json', 'it is not a JSON object', true))
   for (const text of [report, help]) assert.ok(!text.includes(w.root), 'no text names the home folder')
+  if (process.getuid?.() === 0) return // root reads a file with mode 000
+  // A config.json that nobody can read: the error text of Node.js names the full path, and spare10 shows it as ~/...
+  const file = join(w.data, 'config.json')
+  writeFileSync(file, JSON.stringify({ reserve: 12 }))
+  chmodSync(file, 0o000) // the temp folder goes with it: removing a file needs only its folder
+  const failed = await typed(b, 'spare10 set reserve 15')
+  assert.match(failed, /^could not write ~\/data\/config\.json: EACCES: permission denied, open '~\/data\/config\.json'/)
+  const warned = await typed(b, 'spare10')
+  assert.ok(warned.includes("(EACCES: permission denied, open '~/data/config.json')"), warned)
+  for (const text of [failed, warned]) assert.ok(!text.includes(w.root), 'no error text names the home folder')
 })
 
 test('commands: the report of 2.8 on a weekly-only plan hosted by the daemon', async (t) => {
@@ -446,4 +534,296 @@ test('commands: the report of 2.8 on a weekly-only plan hosted by the daemon', a
     '!spare10 status   run a command during a turn (see spare10 help)',
   ]
   assert.equal(report, want.join('\n'))
+})
+
+test('commands: a resume ends a stop that is over while held work still waits under it (CX50), and the report says that it waits (CX53)', async (t) => {
+  // Continue at the reset off: spare10 never ends this stop by itself (4.4), so only the person can end the wait.
+  for (const held of ['plain', 'held stop'] as const) {
+    for (const when of ['the reserve opens', 'the reset, no reading', 'the reset, a low reading'] as const) {
+      const at = `${held}, ${when}`
+      const w = world(t, { config: { autoResume: false } })
+      const b = await w.broker()
+      w.reading(SID, 92, { reset: RESET })
+      w.setState({ stopped: stopOf({ auto: false }), ...(held === 'held stop' ? { stopMeta: { noDialog: true } } : {}) })
+      if (held === 'plain') {
+        // One deny per turn (4.4), then the next call of the turn holds.
+        const first = b.call('tool', { turn: 'U1' })
+        await w.settle()
+        assert.equal((parsed(first.box.text)['hookSpecificOutput'] as Record<string, unknown> | undefined)?.['permissionDecision'], 'deny', at)
+      }
+      const h = b.call('tool', { turn: 'U1' })
+      await w.settle()
+      assert.equal(h.box.done, false, `${at}: the call holds`)
+      if (when === 'the reserve opens') await w.advance(RESET - 10 * MIN - T0)
+      else {
+        await w.advance(RESET + 5 * MIN - T0)
+        if (when === 'the reset, a low reading') w.reading(SID, 3, { reset: RESET + 5 * HOUR })
+      }
+      await w.advance(MIN)
+      assert.equal(h.box.done, false, `${at}: the stop is over, and the call still waits for the person`)
+      const report = await typed(b, 'spare10')
+      assert.ok(report.includes(`\n  ⚠ ${codexText.heldStopEnded}\n`), `${at}: ${report}`)
+      // `!spare10 status` shows only the phase line, so the line carries the hint (2.9).
+      const bang = (await w.cli(['status'], BANG)).out
+      assert.ok(bang.endsWith(`.${codexText.heldStopEndedTail}`), `${at}: ${bang}`)
+      assert.equal(await typed(b, 'spare10 resume'), codexText.heldStopOver, at)
+      assert.equal(w.state().stopped, undefined, at)
+      assert.equal(w.state().stopMeta, undefined, at)
+      assert.equal(w.state().consent, undefined, `${at}: no consent`)
+      assert.equal(w.state().weeklyConsent, undefined, `${at}: no weekly consent`)
+      await w.advance(10 * SEC)
+      assert.equal(h.box.done, true, `${at}: the held call decides again`)
+      assert.equal(parsed(h.box.text)['hookSpecificOutput'], undefined, `${at}: the held tool runs`)
+      assert.ok(!(await typed(b, 'spare10')).includes(codexText.heldStopEnded), `${at}: no warning after the resume`)
+      assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail), `${at}: no hint after the resume`)
+    }
+  }
+})
+
+test('commands: a resume ends a stop in force that no longer gates while held work waits under it (CX50)', async (t) => {
+  // An open kind never gates, and no stop holds it: a new call passes, so the held call must not wait on.
+  for (const change of ['the reading drops', 'spare10 set lastMinutes 180', 'spare10 set reserve 5'] as const) {
+    const w = world(t, { config: { autoResume: false } })
+    const b = await w.broker()
+    w.reading(SID, 92, { reset: RESET })
+    w.setState({ stopped: stopOf({ auto: false }), stopMeta: { noDialog: true } })
+    const h = b.call('tool', { turn: 'U1' })
+    await w.settle()
+    assert.equal(h.box.done, false, `${change}: the call holds`)
+    if (change === 'the reading drops') w.reading(SID, 40, { reset: RESET })
+    else assert.match(await typed(b, change), / is now /)
+    await w.advance(MIN)
+    assert.equal(h.box.done, false, `${change}: the stop until 11:40 still stands`)
+    assert.equal(parsed(await b.gate('tool', { turn: 'U1' }))['hookSpecificOutput'], undefined, `${change}: a new call passes`)
+    const report = await typed(b, 'spare10')
+    assert.notEqual(phaseOf(report), '■ stopped', change)
+    assert.ok(report.includes(`\n  ⚠ ${codexText.heldStopEnded}\n`), `${change}: ${report}`)
+    assert.ok((await w.cli(['status'], BANG)).out.endsWith(codexText.heldStopEndedTail), change)
+    assert.equal(await typed(b, 'spare10 resume'), codexText.heldStopOver, change)
+    assert.equal(w.state().stopped, undefined, change)
+    assert.equal(w.state().consent, undefined, `${change}: no consent`)
+    await w.advance(10 * SEC)
+    assert.equal(h.box.done, true, `${change}: the held call decides again`)
+    assert.equal(parsed(h.box.text)['hookSpecificOutput'], undefined, `${change}: the held tool runs`)
+  }
+})
+
+test('commands: a resume keeps a stop that TS1 holds, a stop that is over with no held work, and a stop that gates', async (t) => {
+  // TS1: the real reading of the stop's kind is in the reserve in the window of its real entry. A command
+  // counts a consented kind as a holder too (commandHolders), so the stop stays: the safe side.
+  const w = world(t, { config: { autoResume: false } })
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  const held = stopOf({ auto: false, windowEnd: T0 + 30 * MIN, real: [{ kind: 'five_hour', resetsAtMs: RESET }] })
+  w.setState({ stopped: held, stopMeta: { noDialog: true } })
+  const h = b.call('tool', { turn: 'U1' })
+  await w.settle()
+  assert.equal(h.box.done, false)
+  w.setState({ consent: formatConsent(SID, RESET) })
+  await w.advance(MIN)
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '⨯ consented')
+  assert.ok(!report.includes(codexText.heldStopEnded), report)
+  assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail))
+  assert.match(await typed(b, 'spare10 resume'), /^already resumed until /)
+  assert.equal(w.state().stopped, held)
+  await w.advance(MIN)
+  assert.equal(h.box.done, false, 'the stop that TS1 holds still holds the call')
+  // Over, but no held work: the resume changes nothing.
+  const w2 = world(t, { config: { autoResume: false } })
+  const b2 = await w2.broker()
+  w2.reading(SID, 92, { reset: RESET })
+  w2.setState({ stopped: stopOf({ auto: false }) })
+  await w2.advance(RESET + 5 * MIN - T0)
+  w2.reading(SID, 3, { reset: RESET + 5 * HOUR })
+  assert.ok(!(await typed(b2, 'spare10')).includes(codexText.heldStopEnded))
+  assert.match(await typed(b2, 'spare10 resume'), /^nothing to resume\. 3% used · 97% left · resets /)
+  assert.equal(w2.state().stopped, stopOf({ auto: false }))
+  // A stop that gates shows as the stopped phase, which names the held work itself (heldInPlace).
+  const w3 = world(t, { config: { autoResume: false } })
+  const b3 = await w3.broker()
+  w3.reading(SID, 92, { reset: RESET })
+  w3.setState({ stopped: stopOf({ auto: false }), stopMeta: { noDialog: true } })
+  const h3 = b3.call('tool', { turn: 'U1' })
+  await w3.settle()
+  assert.equal(h3.box.done, false)
+  const stopped = await typed(b3, 'spare10')
+  assert.equal(phaseOf(stopped), '■ stopped')
+  assert.ok(!stopped.includes(codexText.heldStopEnded), stopped)
+  assert.equal((await w3.cli(['status'], BANG)).out, `spare10: ■ stopped        you chose Stop here, until 11:40. ${HELD_WAITS}`)
+})
+
+test('commands: an auto stop past its time with Continue at the reset on shows no CX53, because it ends in place', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  w.setState({ stopped: stopOf({ windowEnd: RESET, skip: false }) })
+  const h = b.call('tool', { turn: 'U1' })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call holds in place')
+  await w.advance(RESET + MIN - T0)
+  w.reading(SID, 3, { reset: RESET + 5 * HOUR })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call waits for the margin after the reset')
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '● armed')
+  assert.ok(!report.includes(codexText.heldStopEnded), report)
+  assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail))
+  await w.advance(5 * MIN)
+  assert.equal(h.box.done, true, 'spare10 continues the held call at the due time')
+  assert.equal(w.state().stopped, undefined)
+})
+
+test('commands: an old stop record with held work under a new open question shows no CX53', async (t) => {
+  // A non-auto stop that is over stays in state.json. A later trip opens a question that holds a tool call.
+  const w = world(t, { config: { autoResume: false } })
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  w.setState({ stopped: stopOf({ auto: false, windowEnd: T0 - MIN }) })
+  b.script('hang')
+  const h = b.call('tool', { turn: 'U1' })
+  await w.settle()
+  assert.equal(h.box.done, false, 'the call holds on the question')
+  const report = await typed(b, 'spare10')
+  assert.equal(phaseOf(report), '? asking')
+  assert.ok(!report.includes(codexText.heldStopEnded), report)
+  assert.ok(!(await w.cli(['status'], BANG)).out.includes(codexText.heldStopEndedTail))
+})
+
+test('commands: without the daemon, a stop on an open question says that held tool calls wait in place (CX51)', async (t) => {
+  for (const via of ['prompt', 'cli'] as const) {
+    const w = world(t)
+    const b = await w.broker()
+    w.reading(SID, 92, { reset: RESET })
+    b.script('hang')
+    const h1 = b.call('tool', { turn: 'U-held' })
+    const h2 = b.call('tool', { turn: 'U-held' })
+    await w.settle()
+    assert.equal(h1.box.done || h2.box.done, false, `${via}: both calls hold on the question`)
+    const reply = via === 'cli' ? (await w.cli(['stop', '--session', SID])).out : `spare10: ${await typed(b, 'spare10 stop')}`
+    assert.equal(reply, `spare10: ${codexText.stopAskingWaits({ at: '11:40', lead: '20 min before the reset' })}`, via)
+    await w.advance(MIN)
+    assert.equal(h1.box.done || h2.box.done, false, `${via}: the calls wait under the stop, as the reply says`)
+    assert.match(await typed(b, 'spare10'), /Held work waits\. Run !spare10 resume to continue it now\./)
+  }
+  // A held prompt is blocked at Stop here, so the reply still says that held work is refused.
+  const w = world(t)
+  const b = await w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  b.script('hang')
+  const p = b.call('prompt', { prompt: 'Refactor the parser.' })
+  await w.settle()
+  assert.equal(p.box.done, false, 'the prompt holds on the question')
+  assert.match((await w.cli(['stop', '--session', SID])).out, /^spare10: stopped\. Held work is refused\./)
+  await w.settle()
+  assert.equal(p.box.done, true)
+  assert.equal(parsed(p.box.text)['decision'], 'block', 'the prompt is blocked')
+})
+
+test('commands: the report shows the unsafe mode warning once the session showed it (CX9)', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  assert.ok(!(await typed(b, 'spare10')).includes(codexText.unsafe))
+  w.setState({ warned: ['CX9'] })
+  const report = await typed(b, 'spare10')
+  assert.ok(report.includes(`\n  ⚠ ${codexText.unsafe}\n`), report)
+})
+
+test('commands: the set list marks the spans of an unread config.json, CX32 says how to repair it, and a set repairs a torn file', async (t) => {
+  const w = world(t)
+  const b = await w.broker()
+  const path = join(w.data, 'config.json')
+  writeFileSync(path, '{"reserve": 15,')
+  const list = await typed(b, 'spare10 set')
+  assert.match(list, /\n {2}· lastMinutes {7}0 \(config\.json unread\)\n/)
+  assert.match(list, /\n {2}· weeklyLastHours {3}0 \(config\.json unread\)\n/)
+  assert.match(list, /\n {2}· reserve {11}10 \(default\)\n/)
+  const failed = await typed(b, 'spare10 set lastMinutes 20')
+  assert.match(failed, /^could not write .+config\.json: .+\. Nothing changed\. Correct the file, or remove it to use the defaults\.$/)
+  assert.equal(readFileSync(path, 'utf8'), '{"reserve": 15,', 'bad JSON that a person wrote is never overwritten')
+  // An OS crash after a write left the file empty: the next set repairs it, names the 0 that was in force,
+  // and says that the other options of the file are lost (CX54).
+  writeFileSync(path, '')
+  assert.equal(await typed(b, 'spare10 set lastMinutes 20'), `${codexText.setOk('lastMinutes', '20', '0')}${codexText.setRepaired(path)}`)
+  assert.deepEqual(readJson(path), { lastMinutes: 20 })
+  assert.match(await typed(b, 'spare10 set'), /\n {2}· weeklyLastHours {3}8 \(default\)\n/)
+  // A set of another option on a torn file: both spans that the file held at 0 are back to their defaults.
+  writeFileSync(path, '{"weeklyLastHours": 0, "lastMinutes": 0}\0\0')
+  assert.equal(await typed(b, 'spare10 set reserve 15'), `${codexText.setOk('reserve', '15', '10')}${codexText.setRepaired(path)}`)
+  assert.deepEqual(readJson(path), { reserve: 15 })
+  const after = await typed(b, 'spare10 set')
+  assert.match(after, /\n {2}· lastMinutes {7}20 \(default\)\n/)
+  assert.match(after, /\n {2}· weeklyLastHours {3}8 \(default\)\n/)
+  writeFileSync(path, '\0')
+  assert.equal(await typed(b, 'spare10 set reserve default'), `${codexText.setDefault('reserve', '10')}${codexText.setRepaired(path)}`)
+  assert.deepEqual(readJson(path), {})
+  // A file that reads needs no repair, so the reply does not name one.
+  assert.equal(await typed(b, 'spare10 set reserve 15'), codexText.setOk('reserve', '15', '10'))
+})
+
+test('commands: the phase line reads only the view, with no daemon read (2.9)', async (t) => {
+  const w = logicWorld(t)
+  const b = w.broker()
+  w.reading(SID, 92, { reset: RESET })
+  const calls: string[] = []
+  const cmds = createCommands({
+    paths: w.paths,
+    clock: w.clock,
+    log: w.log,
+    owner: b.owner,
+    env: {},
+    settings: b.settings,
+    sense: b.sense,
+    questions: b.questions,
+    sweep: b.sweep,
+    daemon: {
+      get: () => {
+        calls.push('get')
+        return undefined
+      },
+      hosted: async () => {
+        calls.push('hosted')
+        return false
+      },
+    },
+    attendance: createAttendance({ hostKind: 'tui', rollouts: b.rollouts }),
+    pidAlive: (p) => w.alive.has(p),
+  })
+  const line = await cmds.phaseLine(b.sx)
+  assert.deepEqual(calls, [], 'no daemon read')
+  assert.equal(line, '⚠ tripped        spare10 holds the next step and asks you.')
+  const report = await cmds.statusText(b.sx, { cli: true })
+  assert.equal(line, (report.split('\n')[2] ?? '').replace(/^ {2}/, ''), 'the phase line of the report')
+  assert.deepEqual(calls, ['hosted'])
+  calls.length = 0
+  assert.match(await cmds.phaseLine(undefined), /^⚠ tripped {8}/)
+  assert.deepEqual(calls, [], 'no daemon read with no session either')
+})
+
+test('commands: a nested unattended report logs a parent state that it cannot read (3.10)', async (t) => {
+  const parent = '01a0da05-0000-7000-8000-00000000a11e'
+  const w = logicWorld(t)
+  const b = w.broker({ hostKind: 'exec', originator: 'codex_exec', source: 'exec', parent, env: { SPARE10_HEADLESS: 'stop' } })
+  w.reading(SID, 92, { reset: RESET })
+  mkdirSync(join(w.data, 'sessions', parent), { recursive: true })
+  writeFileSync(join(w.data, 'sessions', parent, 'state.json'), '{ not json')
+  const log = memoryLog()
+  const cmds = createCommands({
+    paths: w.paths,
+    clock: w.clock,
+    log,
+    owner: b.owner,
+    env: { SPARE10_HEADLESS: 'stop' },
+    settings: b.settings,
+    sense: b.sense,
+    questions: b.questions,
+    sweep: b.sweep,
+    daemon: b.daemonLink,
+    attendance: createAttendance({ hostKind: 'exec', rollouts: b.rollouts }),
+    pidAlive: (p) => w.alive.has(p),
+  })
+  const report = await cmds.statusText(b.sx, { cli: false })
+  assert.match(report.split('\n')[2] ?? '', /tripped {8}unattended run, policy stop\./, 'the parent consent is gone, so the kind gates (fail closed)')
+  const lines = log.lines.filter((l) => l.startsWith(codexDebug.readFailed('the parent session', '')))
+  assert.equal(lines.length, 1, JSON.stringify(log.lines))
 })

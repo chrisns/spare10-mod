@@ -14,9 +14,13 @@ import { HOST } from './host.ts'
 // A word that differs between hosts (a command, the host name) comes from HOST (host.ts). The Codex
 // bundle swaps host.ts, so the same texts carry the Codex words there (Codex design 2.1).
 
-export const VERSION: string = '0.3.0' // keep equal to .claude-plugin/plugin.json and .codex-plugin/plugin.json
+export const VERSION: string = '0.4.0' // keep equal to .claude-plugin/plugin.json and .codex-plugin/plugin.json
 export const HEADER: string = 'spare10'
 export const QUESTION_OPTIONS: readonly [string, string] = ['Stop here', 'Resume']
+/** The limit question: Continue at the reset first, with the focus. Only the exact Stop here label stops. */
+export const LIMIT_OPTIONS: readonly [string, string] = ['Continue at the reset', 'Stop here']
+/** The way out of a pause at the limit: a reading that is out of date, or paid extra usage. */
+export const LIMIT_OFF: string = `To let work run past the limit, ${HOST.limitOff}.`
 export const RESUME_LABEL: string = 'Resume'
 export const COMMAND_DESCRIPTION: string = 'Show the spare10 quota breaker, or resume or stop at the reserve.'
 export const ARGUMENT_HINT: string = '[resume|stop]'
@@ -34,6 +38,7 @@ export const W_FLAG: string =
  * The floor (floor 6.4): `to` is the end point of the consent that the text describes (the tier of a
  * question or a Resume at the reserve, or the end point now of a covering consent to the floor).
  * `floor` is set only for a kind at the floor: {R} becomes {F}. With neither, every text is the 0.2 text.
+ * `limit` is set only for a kind at the quota limit (100% used): {R} becomes the quota limit.
  */
 export type Facts = {
   used: number
@@ -48,6 +53,7 @@ export type Facts = {
   test?: boolean
   to?: number
   floor?: number
+  limit?: boolean
 }
 
 /** A window that reset or ended, for {reset}. */
@@ -161,9 +167,13 @@ const clockOf = (f: Facts): string =>
 const reserveOf = (f: Facts): string => `${fmtPct(f.reserve)}%`
 const UNTIL_RESET = 'until the window resets' // only when a caller has no figures
 
-/** {R}, or {F} for a kind at the floor (floor 2.1). */
+/** {R}, or {F} for a kind at the floor (floor 2.1), or the quota limit for a kind at 100% used. */
 const reserveName = (f: Facts): string =>
-  f.floor !== undefined
+  f.limit === true
+    ? isWeekly(f)
+      ? 'weekly quota limit'
+      : 'quota limit'
+    : f.floor !== undefined
     ? `${fmtPct(f.floor)}% ${isWeekly(f) ? 'weekly floor' : 'floor'}`
     : `${reserveOf(f)} ${isWeekly(f) ? 'weekly reserve' : 'reserve'}`
 /** {Rs} */
@@ -196,7 +206,9 @@ export function personFacts(f: Facts | readonly Facts[]): string {
 }
 
 const oneModel = (f: Facts): string =>
-  `into your ${reserveName(f)} · ${fmtPct(f.left)}% of ${isWeekly(f) ? 'weekly quota' : 'quota'} left · resets ${clockOf(f)}`
+  f.limit === true
+    ? `${fmtPct(f.used)}% of ${isWeekly(f) ? 'weekly quota' : 'quota'} used · resets ${clockOf(f)}`
+    : `into your ${reserveName(f)} · ${fmtPct(f.left)}% of ${isWeekly(f) ? 'weekly quota' : 'quota'} left · resets ${clockOf(f)}`
 
 /** {mf} */
 export const modelFacts = (f: Facts | readonly Facts[]): string => listOf(f).map(oneModel).join(', and ')
@@ -389,25 +401,70 @@ export function questionText(f: Facts | readonly Facts[], opener: 'loop' | 'prom
   return `${head} ${hold} ${ask} ${after}`
 }
 
+/** The facts of a model text: only the kinds at the quota limit when some kind is, else all. */
+const modelList = (f: Facts | readonly Facts[]): Facts[] => {
+  const fs = listOf(f)
+  const at = fs.filter((x) => x.limit === true)
+  return at.length > 0 ? at : fs
+}
+
+/** Where work stopped, as a model text says it: the quota limit, or the quota reserve. */
+const placeOf = (fs: readonly Facts[]): string => (fs.some((x) => x.limit === true) ? 'quota limit' : 'quota reserve')
+
+/** The head of a text at the quota limit: which limit is reached. Both windows: the quota limits of both. */
+export function limitHead(f: Facts | readonly Facts[]): string {
+  const fs = listOf(f)
+  if (fs.length > 1) return 'The quota limits of both windows are reached'
+  return fs.some(isWeekly) ? 'The weekly quota limit is reached' : 'The quota limit is reached'
+}
+
+/**
+ * The limit question (100% used): what it holds, and what no answer and Stop here mean. {at} is the latest
+ * reset. `auto`: autoResume when it opened. No answer: with it on, the work continues after the reset, and
+ * with it off, the work waits for the answer. Stop here stops until the reset and continues nothing. The
+ * last sentence names the way out, for a reading that is out of date or for paid extra usage (LIMIT_OFF).
+ */
+export function limitQuestionText(f: Facts | readonly Facts[], opener: 'loop' | 'prompt', auto = false): string {
+  const fs = listOf(f)
+  const { at } = whenOf(fs)
+  const head = `${limitHead(fs)}: ${personFacts(fs)}.`
+  const back = `After the reset, type a prompt to continue. ${LIMIT_OFF}`
+  if (opener === 'loop') {
+    const none = auto ? `If you do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.` : 'Until you answer, the work waits.'
+    return `${head} All work is on hold. Continue the work at the reset? ${none} Stop here stops the work. ${back}`
+  }
+  const none = auto ? `If you do not answer, all of it continues after ${at}, unless a reserve is still reached.` : 'Until you answer, all of it waits.'
+  return `${head} spare10 holds your prompt and any other work. Continue the work at the reset? ${none} Stop here ${HOST.backPrompt} and stops other work. ${back}`
+}
+
 /** B7 STOP: the deny text of a tool call. */
-export const stopText = (f: Facts | readonly Facts[]): string =>
-  `spare10: the user stopped work at the quota reserve (${modelFacts(f)}). Stop now and wait for the user. Do not call any further tools.`
+export const stopText = (f: Facts | readonly Facts[]): string => {
+  const fs = modelList(f)
+  return `spare10: the user stopped work at the ${placeOf(fs)} (${modelFacts(fs)}). Stop now and wait for the user. Do not call any further tools.`
+}
 
 /** B7 PAUSED: the answer of a refused model request. */
-export const pausedText = (f: Facts | readonly Facts[]): string =>
-  `spare10: work stopped at the quota reserve (${modelFacts(f)}). No model request was sent, so this task is not finished. Wait for the user.`
+export const pausedText = (f: Facts | readonly Facts[]): string => {
+  const fs = modelList(f)
+  return `spare10: work stopped at the ${placeOf(fs)} (${modelFacts(fs)}). No model request was sent, so this task is not finished. Wait for the user.`
+}
 
 /** B15 HEADLESS. */
-export const headlessText = (f: Facts | readonly Facts[], sessionId: string): string =>
-  `spare10 stopped this unattended run at the quota reserve (${modelFacts(f)}). No further model requests were sent. To pick it up later: ${HOST.resume} ${sessionId}`
+export const headlessText = (f: Facts | readonly Facts[], sessionId: string): string => {
+  const fs = modelList(f)
+  return `spare10 stopped this unattended run at the ${placeOf(fs)} (${modelFacts(fs)}). No further model requests were sent. To pick it up later: ${HOST.resume} ${sessionId}`
+}
 
 /** B12: spare10's template. Without user text there is no User instructions paragraph. A kind at the floor: the floor sentence. */
 export function pauseInstruction(f: Facts | readonly Facts[], pausePrompt: string | null): string {
-  const reached = listOf(f).some((x) => x.floor !== undefined)
-    ? 'You have reached the floor of the quota reserve for this session'
-    : 'You have reached the safe usage limit for this session'
+  const fs = modelList(f)
+  const reached = fs.some((x) => x.limit === true)
+    ? 'You have reached the quota limit for this session'
+    : fs.some((x) => x.floor !== undefined)
+      ? 'You have reached the floor of the quota reserve for this session'
+      : 'You have reached the safe usage limit for this session'
   const head =
-    `spare10 budget guard. ${reached} (${modelFacts(f)}). ` +
+    `spare10 budget guard. ${reached} (${modelFacts(fs)}). ` +
     'Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.'
   return pausePrompt === null || pausePrompt.trim() === '' ? head : `${head}\n\nUser instructions: ${pausePrompt}`
 }
@@ -418,8 +475,10 @@ export function resumeContext(f: Facts | readonly Facts[]): string {
   return `spare10: earlier work stopped at the ${quotaReserve(fs)}. The user now chose to continue on ${useText(fs)}. Follow their message.`
 }
 
-/** B10: the reason of a dropped prompt. */
+/** B10: the reason of a dropped prompt. At the quota limit it names only the kinds at the limit. */
 export function notStarted(f: Facts | readonly Facts[]): string {
+  const at = listOf(f).filter((x) => x.limit === true)
+  if (at.length > 0) return `spare10: not started. ${limitHead(at)} until ${whenOf(at).at}. Send the prompt again after the reset.`
   const fs = listOf(f)
   return `spare10: not started. This session is inside ${yourReserves(fs)} ${untilText(fs)}. Send the prompt again to be asked again, or run ${HOST.command} resume.`
 }
@@ -454,6 +513,7 @@ export function badWarning(
     | 'SPARE10_RESUME_FLOOR'
     | 'SPARE10_WEEKLY_RESUME_FLOOR'
     | 'SPARE10_AUTO_RESUME'
+    | 'SPARE10_LIMIT_PAUSE'
     | 'SPARE10_HEADLESS'
     | 'SPARE10',
   raw: string,
@@ -466,9 +526,20 @@ export function badWarning(
   if (name === 'SPARE10_RESUME_FLOOR') return `SPARE10_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`
   if (name === 'SPARE10_WEEKLY_RESUME_FLOOR') return `SPARE10_WEEKLY_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`
   if (name === 'SPARE10_AUTO_RESUME') return `SPARE10_AUTO_RESUME="${raw}" is not on or off. spare10 uses ${used}.`
+  if (name === 'SPARE10_LIMIT_PAUSE') return `SPARE10_LIMIT_PAUSE="${raw}" is not on or off. spare10 uses ${used}.`
   if (name === 'SPARE10_HEADLESS') return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`
 }
+
+/**
+ * B27 for SPARE10_SIMULATE: a value that is not a test reading, or a weekly test reading while the weekly
+ * reserve is 0. The second stays set: a weekly reserve that the person sets later puts it in force.
+ * Never "names the weekly window": on a Codex weekly-only plan a value with no kind word is weekly too.
+ */
+export const simulateWarning = (raw: string, weeklyOff = false): string =>
+  weeklyOff
+    ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses it only when the weekly reserve is more than 0.`
+    : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`
 
 /** B54: a floor at or above its reserve does nothing. */
 export const floorWarning = (kind: Kind, floor: number, reserve: number): string =>
@@ -570,6 +641,33 @@ export const notice = {
     return named.length === 0 && open.length === 0 ? tail : `${eventOr(named, open)}, but ${tail}`
   },
   resumeFailed: (reason: string): string => `could not continue the stopped work: ${reason}. Type a prompt to continue.`,
+  /** Continue at the reset on the limit question: held work waits for the reset. It names the way out (LIMIT_OFF). */
+  limitContinues: (f: Facts | readonly Facts[]): string =>
+    `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`,
+  /** A person prompt after Continue at the reset: it waits with the held work, and asks nothing. */
+  limitPromptWaits: (f: Facts | readonly Facts[]): string =>
+    `your prompt waits with the held work until ${whenOf(f).at}. Then spare10 continues all of it, unless a reserve is still reached.`,
+  /**
+   * A stop at the quota limit: Stop here, or a question at the reserve that ends with no answer at the limit.
+   * `cont`: the stop continues the work at the reset. No `at`: the reset has passed, so the line names no time.
+   */
+  limitStopped: (at?: string, cont = false): string =>
+    at === undefined
+      ? 'stopped at the quota limit. Type a prompt to continue.'
+      : cont
+        ? `stopped at the quota limit until ${at}. Then spare10 continues the work, unless a reserve is still reached.`
+        : `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /** The hold time limit at the quota limit. `cont`: the stop continues the work at the reset. No `at` (only without `cont`): the reset has passed. */
+  limitHoldLimit: (at: string | undefined, cont: boolean): string =>
+    at === undefined
+      ? 'the hold reached its time limit. The work is stopped at the quota limit. Type a prompt to continue.'
+      : cont
+        ? `the hold reached its time limit. The work is stopped at the quota limit until ${at}. Then spare10 continues it, unless a reserve is still reached.`
+        : `the hold reached its time limit. The work is stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /** A question at the reserve gives way to the limit question. */
+  limitReached: 'the quota limit is reached. spare10 asks you again.',
+  /** A limit question ends before its reset: no kind that gates is at the quota limit now. */
+  limitOver: 'the pause at the limit is over. Held work continues, unless a reserve is still reached.',
 }
 
 /** Debug lines (B12, B15, 2.5, 4.5, 4.7, 10.9.6). The engine does not prefix them, so they keep `spare10: `. */
@@ -587,6 +685,7 @@ export const debugLine = {
   budget: (min: number, ms: number): string => `spare10: held ${min} min. Budget left ${ms} ms.`,
   checkFailed: (err: string): string => `spare10: the reset check did not run: ${err}`,
   settleFailed: (err: string): string => `spare10: could not write the answer: ${err}`,
+  startFailed: (err: string): string => `spare10: a step of the session start failed: ${err}`,
 }
 
 export type StatusInput = {
@@ -614,6 +713,8 @@ export type StatusInput = {
     | { reserve: number; from: Source; basis: Basis; facts?: Facts; consentUntil?: number; consentTo?: number; consentEnded?: boolean }
     | 'off' // reserve 0 is off too
   autoResume?: { on: boolean; from: Source }
+  limitPause?: { on: boolean; from: Source } // the pause at the quota limit. Its row shows only while it is off
+  limit?: { ms: number; kinds: readonly Kind[]; held: boolean } // the limit phase: when held work continues. held: a limit question after Continue at the reset. The stopped phase: the reset of the kinds at the limit
   at?: { ms: number; kinds: readonly Kind[]; skip?: boolean } // when an open question or a stop continues. skip: a skip start ('at', not 'after')
   work?: boolean // the stop has work
   autoStop?: boolean // the stop has auto, and autoResume is on
@@ -639,6 +740,7 @@ const GLYPH: Record<Phase, string> = {
   blind: '⚠',
   waiting: '⧗',
   armed: '●',
+  limit: '‖',
   consented: '⨯',
   open: '↻',
   stopped: '■',
@@ -671,12 +773,16 @@ function quietOf(s: StatusInput): string {
 
 function phaseLine(s: StatusInput): string {
   const at = s.at === undefined ? undefined : atText(s.at.ms, s.at.kinds, s.timeZone, s.now)
-  const again = s.heldInPlace === true ? HELD_WAITS : AGAIN
+  // A stop at the quota limit: the resume command changes nothing until the reset, so the line names the reset and the way out.
+  const limitClock = s.phase === 'stopped' && s.limit !== undefined ? atText(s.limit.ms, s.limit.kinds, s.timeZone, s.now) : undefined
+  const again = limitClock !== undefined ? `Type a prompt to be asked again. ${LIMIT_OFF}` : s.heldInPlace === true ? HELD_WAITS : AGAIN
   const open = s.open === undefined ? [] : listOf(s.open)
   const openRs = open.length === 0 ? '' : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`
   const stopped =
     at === undefined
-      ? `you chose Stop here. ${again}`
+      ? limitClock === undefined
+        ? `you chose Stop here. ${again}`
+        : `you chose Stop here, until ${limitClock}. ${again}`
       : s.skipStop === true
         ? s.work === true && s.autoStop === true
           ? `you chose Stop here. spare10 continues the work at ${at}. ${again}`
@@ -696,6 +802,7 @@ function phaseLine(s: StatusInput): string {
     blind: `${HOST.blind} spare10 lets all work through.`,
     waiting: 'no reading yet. spare10 lets all work through.',
     armed: stepsIn(s.reserve, absentKind(s, 'seven_day') ? undefined : watchedWeekly(s)?.reserve, absentKind(s, 'five_hour')),
+    limit: limitLine(s),
     consented:
       s.consented !== undefined && s.consented.some((f) => f.to !== undefined)
         ? `you chose to continue. ${asksText(s.consented, s.mode)}`
@@ -715,6 +822,17 @@ function phaseLine(s: StatusInput): string {
   }
   const name = s.phase === 'reserve' ? 'tripped' : s.phase
   return `  ${GLYPH[s.phase]} ${name.padEnd(LABEL_WIDTH)}${detail[s.phase]}`
+}
+
+/**
+ * The limit phase line: held work waits for the reset, or the next step holds and asks. Both name the way
+ * out, for a reading that is out of date or for paid extra usage (how-it-works items 58 and 59).
+ */
+function limitLine(s: StatusInput): string {
+  const l = s.limit
+  const at = l === undefined ? 'the reset' : atText(l.ms, l.kinds, s.timeZone, s.now)
+  if (l?.held === true) return `the quota limit is reached. Held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`
+  return `the quota limit is reached until ${at}. spare10 holds the next step and asks you. ${LIMIT_OFF}`
 }
 
 /** The host reports no window of this kind (CX17). */
@@ -842,6 +960,8 @@ export function statusReport(s: StatusInput): string {
     s.autoResume === undefined || !s.attended
       ? []
       : [field('at the reset', `${s.autoResume.on ? 'continue by itself' : 'wait for your answer'} (${fromText(s.autoResume.from, 'SPARE10_AUTO_RESUME')})`)]
+  // The pause at the quota limit shows only while it is off, so a default report stays as it was.
+  const atLimit = s.limitPause === undefined || s.limitPause.on ? [] : [field('at the limit', `off. spare10 does not pause at the limit (${fromText(s.limitPause.from, 'SPARE10_LIMIT_PAUSE')})`)]
   const lines = [
     `version ${VERSION}`,
     '',
@@ -852,6 +972,7 @@ export function statusReport(s: StatusInput): string {
     ...floorRows(s),
     field('at the reserve', actionValue(s)),
     ...atReset,
+    ...atLimit,
     field('reading', readingValue(s.basis, s.facts ?? factsOf(s.basis, s.reserve, s.timeZone), s.now, absentKind(s, 'five_hour'))),
     ...weekly.reading,
     field('consent', consent),
@@ -891,10 +1012,11 @@ const resumedPart = (f: Facts): string => {
  * B23 ('tripped' is "tripped, not stopped"). 'overdue': a stop past its end that nobody released yet,
  * with the windows that reset and the open ones. 'open': no kind gates and some kind is open (`f`: the
  * open kinds). `absent` (Codex design 2.1): the kinds the host reports no window for. With five_hour in
- * it, a reply with no figures names no 5-hour reading.
+ * it, a reply with no figures names no 5-hour reading. 'limit-late': a resume settles a limit question
+ * whose reset has passed (it waited for the answer), so the reply names no time.
  */
 export function resumeReply(
-  c: ReplyCase | 'overdue' | 'open',
+  c: ReplyCase | 'overdue' | 'open' | 'limit-asking' | 'limit' | 'limit-late',
   f?: Facts | readonly Facts[],
   named?: readonly Named[],
   open?: readonly Facts[],
@@ -928,6 +1050,12 @@ export function resumeReply(
       return noReading
     case 'off':
       return 'this run is not guarded. Nothing changed.'
+    case 'limit-asking':
+      return notice.limitContinues(fs)
+    case 'limit':
+      return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then. ${LIMIT_OFF}`
+    case 'limit-late':
+      return 'resumed. Held work continues.'
   }
 }
 
@@ -946,7 +1074,8 @@ export function stopReply(
     | 'overdue-skip'
     | 'open'
     | 'asking-soon'
-    | 'asking-open',
+    | 'asking-open'
+    | 'limit',
   f?: Facts | readonly Facts[],
   trip?: number,
   auto?: { at: string; lead?: string; continues?: boolean },
@@ -990,6 +1119,8 @@ export function stopReply(
     }
     case 'off':
       return 'this run is not guarded. Nothing changed.'
+    case 'limit':
+      return notice.limitStopped(auto?.at ?? 'the reset')
   }
 }
 
@@ -1004,17 +1135,20 @@ export const unknownVerb = (verb: string): string =>
  * Section 12.1, 2.9. `opens` (skip 2.9), for a test reading at or above the trip point with a span:
  * when its reserve opens ({at} and {lead}), 'now' when it is open at once (`f.span` gives {span}), or
  * 'real' when the real reading beneath is in the reserve too and keeps the hold (B45). Floor 2.9:
- * 'raised' is a raise in place (B53). `pastFloor`: the floor of the kind when the test reading is past
- * it. `realIn`: the real reading beneath is in the reserve, so a Resume on the test reading covers it.
+ * 'raised' is a raise in place (B53). 'replaced' replaces a test reading of the kind: a new test (3.5),
+ * so the consents of both windows and the stop are cleared. `pastFloor`: the floor of the kind when the
+ * test reading is past it. `realIn`: the real reading beneath is in the reserve, so a Resume on the test
+ * reading covers it.
  */
 export function simulateReply(
-  kind: 'set' | 'raised' | 'off' | 'bad' | 'weekly-off',
+  kind: 'set' | 'raised' | 'replaced' | 'off' | 'bad' | 'weekly-off',
   f?: Facts,
   opens?: { at: string; lead: string } | 'now' | 'real',
   pastFloor?: number,
   realIn?: boolean,
+  limit?: boolean,
 ): string {
-  if (kind === 'off') return 'test reading cleared. Consent and stop for this window are cleared too.'
+  if (kind === 'off') return 'test readings cleared. Your consents for both windows and any stop are cleared too.'
   if (kind === 'weekly-off') return 'the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.'
   if (kind === 'bad' || f === undefined) {
     return `${HOST.leadSimulate} takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.`
@@ -1036,9 +1170,16 @@ export function simulateReply(
   // Floor 2.9: the test reading is past the floor, and a Resume on it covers the real reading beneath.
   const floorText = pastFloor === undefined ? '' : ` This is past your ${fmtPct(pastFloor)}% ${weekly ? 'weekly floor' : 'floor'}.`
   const realText = realIn === true ? ` A Resume on the test reading also lets real work use the ${weekly ? 'weekly reserve' : 'reserve'}.` : ''
+  // The quota limit: all work holds until the test window ends. It takes the place of the other sentences.
+  const limitText = limit === true ? ` This is the quota limit, so spare10 holds all work until the ${weekly ? 'weekly test window' : 'test window'} ends.` : ''
   const verb = kind === 'raised' ? 'raised' : 'set'
-  const stays = kind === 'raised' ? ' Your earlier answers stay.' : ''
-  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run ${HOST.command} simulate off to clear it.`
+  const stays =
+    kind === 'raised'
+      ? ' Your earlier answers stay.'
+      : kind === 'replaced'
+        ? ' This starts a new test. Your consents for both windows and any stop are cleared.'
+        : ''
+  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${limitText === '' ? `${floorText}${opensText}${realText}` : limitText} Run ${HOST.command} simulate off to clear it.`
 }
 
 /** A /spare10 that threw. */

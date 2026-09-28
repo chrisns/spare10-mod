@@ -1,4 +1,5 @@
 import type { SessionRateLimit } from 'claude-code'
+import type { ConsentSlots } from './decide.ts'
 
 // The reading rule of the gate (design section 6), as pure functions. No $ here: register.tsx feeds
 // in what $.session.usage(), session.measure, $.store and the clock said. 0.2: one rule per kind.
@@ -42,6 +43,27 @@ export const TEST_WINDOW_MS = 5 * 3_600_000
 
 /** The length of a window: 5 h or 7 d. */
 export const windowMs = (kind: Kind): number => (kind === 'seven_day' ? WEEK_MS : 5 * 3_600_000)
+
+/** Two resets this close are one window (A22): a reset time moves by seconds, an early reset by much more. */
+export const RESET_JITTER_MS = 600_000
+
+/**
+ * A22: a real consent is void when the kind's real window ends more than RESET_JITTER_MS after the
+ * consent's end: the window reset early, and the consent belongs to the old one.
+ */
+export const voidedByReset = (c: { until: number }, windowEnd: number): boolean => windowEnd - c.until > RESET_JITTER_MS
+
+/**
+ * A22: this copy's real slots of a kind without the consents that an early reset voided. `realEnd`: the
+ * reset of the real reading, null when it is unknown (then nothing is void). Undefined when nothing is left.
+ */
+export function withoutVoided(s: ConsentSlots | undefined, realEnd: number | null): ConsentSlots | undefined {
+  if (s === undefined || realEnd === null) return s
+  const full = s.full !== undefined && !voidedByReset({ until: s.full }, realEnd) ? s.full : undefined
+  const floor = s.floor !== undefined && !voidedByReset(s.floor, realEnd) ? s.floor : undefined
+  if (full === undefined && floor === undefined) return undefined
+  return { ...(full === undefined ? {} : { full }), ...(floor === undefined ? {} : { floor }) }
+}
 
 const kindOfLimit = (live: SessionRateLimit): Kind => (live.kind === 'seven_day' ? 'seven_day' : 'five_hour')
 
@@ -152,6 +174,12 @@ const tripAt = (reserve: number): number => pointOf(reserve)
 
 /** The first point of the reserve trips: reserve 10 trips at 90.0 and passes at 89.9. */
 export const isTripped = (b: Basis, reserve: number): boolean => b.kind !== 'none' && b.pct >= tripAt(reserve)
+
+/** The quota limit: 100% used. Past it the host refuses each model request until the reset. */
+export const LIMIT_PCT = 100
+
+/** A basis at or past the quota limit, with a known reset. A reading without a reset time never counts. */
+export const atLimit = (b: Basis): boolean => b.kind !== 'none' && b.resetsAtMs !== null && b.pct >= LIMIT_PCT
 
 /** B48: a basis at or past a floor point. None with no point, and never for a none basis. */
 export const atPoint = (b: Basis, point: number | null): boolean => point !== null && b.kind !== 'none' && b.pct >= point
@@ -272,8 +300,11 @@ export function parseSimulate(words: readonly string[], defaultKind: Kind = 'fiv
   return inMs === undefined ? { pct, kind: k } : { pct, kind: k, inMs: Math.min(inMs, windowMs(k)) }
 }
 
+/** SPARE10_SIMULATE as words: split on white space. A blank value has none. */
+export const simulateWords = (raw: string | undefined): string[] => (raw ?? '').trim().split(/\s+/).filter((w) => w !== '')
+
 /** SPARE10_SIMULATE: the same words, split on white space. `off` and junk are no test reading. */
 export function parseSimulateEnv(raw: string | undefined, defaultKind: Kind = 'five_hour'): TestSpec | undefined {
-  const spec = parseSimulate((raw ?? '').trim().split(/\s+/).filter((w) => w !== ''), defaultKind)
+  const spec = parseSimulate(simulateWords(raw), defaultKind)
   return spec === 'off' ? undefined : spec
 }

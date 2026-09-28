@@ -13,6 +13,8 @@ var BLIND_AFTER = 2;
 var FALLBACK_MS = 36e5;
 var TEST_WINDOW_MS = 5 * 36e5;
 var windowMs = (kind) => kind === "seven_day" ? WEEK_MS : 5 * 36e5;
+var RESET_JITTER_MS = 6e5;
+var voidedByReset = (c, windowEnd) => windowEnd - c.until > RESET_JITTER_MS;
 var kindOfLimit = (live) => live.kind === "seven_day" ? "seven_day" : "five_hour";
 var initialMemory = () => ({ misses: 0 });
 function parseReset(iso) {
@@ -68,6 +70,8 @@ function firstSight(n, live, now) {
 var pointOf = (floor) => Math.round((100 - floor) * 10) / 10;
 var tripAt = (reserve) => pointOf(reserve);
 var isTripped = (b, reserve) => b.kind !== "none" && b.pct >= tripAt(reserve);
+var LIMIT_PCT = 100;
+var atLimit = (b) => b.kind !== "none" && b.resetsAtMs !== null && b.pct >= LIMIT_PCT;
 var atPoint = (b, point) => point !== null && b.kind !== "none" && b.pct >= point;
 var inResetMargin = (seed, reserve, now) => seed !== void 0 && seed.resetsAtMs <= now && now - seed.resetsAtMs < RESET_MARGIN_MS && seed.pct >= tripAt(reserve);
 var pctOf = (b) => b.kind === "none" ? void 0 : b.pct;
@@ -142,10 +146,7 @@ function parseSimulate(words, defaultKind = "five_hour") {
   const k = kind ?? defaultKind;
   return inMs === void 0 ? { pct, kind: k } : { pct, kind: k, inMs: Math.min(inMs, windowMs(k)) };
 }
-function parseSimulateEnv(raw, defaultKind = "five_hour") {
-  const spec = parseSimulate((raw ?? "").trim().split(/\s+/).filter((w) => w !== ""), defaultKind);
-  return spec === "off" ? void 0 : spec;
-}
+var simulateWords = (raw) => (raw ?? "").trim().split(/\s+/).filter((w) => w !== "");
 
 // codex/src/host.ts
 var HOST = {
@@ -156,6 +157,7 @@ var HOST = {
   child: "codex exec",
   resume: "codex exec resume",
   keepOpen: "run spare10 set lastMinutes 0, or spare10 set weeklyLastHours 0",
+  limitOff: "run spare10 set limitPause off",
   backIt: "drops it",
   backPrompt: "drops your prompt",
   blind: "Codex reports no quota windows for this login.",
@@ -168,9 +170,11 @@ var HOST = {
 };
 
 // hooks/core/text.ts
-var VERSION = "0.3.0";
+var VERSION = "0.4.0";
 var HEADER = "spare10";
 var QUESTION_OPTIONS = ["Stop here", "Resume"];
+var LIMIT_OPTIONS = ["Continue at the reset", "Stop here"];
+var LIMIT_OFF = `To let work run past the limit, ${HOST.limitOff}.`;
 var STOP_GENERIC = "spare10: stopped at the quota reserve. Stop now and wait for the user. Do not call any further tools.";
 var NOT_STARTED_GENERIC = `spare10: not started. spare10 could not ask you. Send the prompt again, or run ${HOST.command} resume.`;
 var HEADLESS_GENERIC = "spare10 stopped this unattended run at the quota reserve. No further model requests were sent.";
@@ -240,7 +244,7 @@ var onlyOf = (fs) => fs.length === 1 ? fs[0] : void 0;
 var clockOf = (f) => f.resetsAtMs === null ? "at an unknown time" : clockText(f.resetsAtMs, kindOf(f), f.timeZone, f.now);
 var reserveOf = (f) => `${fmtPct(f.reserve)}%`;
 var UNTIL_RESET = "until the window resets";
-var reserveName = (f) => f.floor !== void 0 ? `${fmtPct(f.floor)}% ${isWeekly(f) ? "weekly floor" : "floor"}` : `${reserveOf(f)} ${isWeekly(f) ? "weekly reserve" : "reserve"}`;
+var reserveName = (f) => f.limit === true ? isWeekly(f) ? "weekly quota limit" : "quota limit" : f.floor !== void 0 ? `${fmtPct(f.floor)}% ${isWeekly(f) ? "weekly floor" : "floor"}` : `${reserveOf(f)} ${isWeekly(f) ? "weekly reserve" : "reserve"}`;
 var yourReserves = (fs) => fs.map((f) => `your ${reserveName(f)}`).join(" and ");
 var isAre = (fs) => fs.length > 1 ? "are" : "is";
 var quotaReserve = (fs) => {
@@ -262,7 +266,7 @@ function personFacts(f) {
   if (one !== void 0) return onePerson(one);
   return fs.map((x) => `${isWeekly(x) ? "weekly" : "5-hour"} window ${onePerson(x)}`).join(", ");
 }
-var oneModel = (f) => `into your ${reserveName(f)} · ${fmtPct(f.left)}% of ${isWeekly(f) ? "weekly quota" : "quota"} left · resets ${clockOf(f)}`;
+var oneModel = (f) => f.limit === true ? `${fmtPct(f.used)}% of ${isWeekly(f) ? "weekly quota" : "quota"} used · resets ${clockOf(f)}` : `into your ${reserveName(f)} · ${fmtPct(f.left)}% of ${isWeekly(f) ? "weekly quota" : "quota"} left · resets ${clockOf(f)}`;
 var modelFacts = (f) => listOf(f).map(oneModel).join(", and ");
 function untilText(f) {
   const fs = listOf(f);
@@ -369,12 +373,45 @@ function questionText(f, opener, mode, auto = false) {
   const after = opener === "loop" ? `If you choose Stop here or do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.` : mode === "tell" ? `If you do not answer, your prompt goes in after ${at}, unless a reserve is still reached. Stop here ${HOST.backIt}.` : `If you do not answer, all of it continues after ${at}, unless a reserve is still reached. Stop here ${HOST.backPrompt} and pauses other work until ${at}.`;
   return `${head} ${hold} ${ask} ${after}`;
 }
-var stopText = (f) => `spare10: the user stopped work at the quota reserve (${modelFacts(f)}). Stop now and wait for the user. Do not call any further tools.`;
-var pausedText = (f) => `spare10: work stopped at the quota reserve (${modelFacts(f)}). No model request was sent, so this task is not finished. Wait for the user.`;
-var headlessText = (f, sessionId) => `spare10 stopped this unattended run at the quota reserve (${modelFacts(f)}). No further model requests were sent. To pick it up later: ${HOST.resume} ${sessionId}`;
+var modelList = (f) => {
+  const fs = listOf(f);
+  const at = fs.filter((x) => x.limit === true);
+  return at.length > 0 ? at : fs;
+};
+var placeOf = (fs) => fs.some((x) => x.limit === true) ? "quota limit" : "quota reserve";
+function limitHead(f) {
+  const fs = listOf(f);
+  if (fs.length > 1) return "The quota limits of both windows are reached";
+  return fs.some(isWeekly) ? "The weekly quota limit is reached" : "The quota limit is reached";
+}
+function limitQuestionText(f, opener, auto = false) {
+  const fs = listOf(f);
+  const { at } = whenOf(fs);
+  const head = `${limitHead(fs)}: ${personFacts(fs)}.`;
+  const back = `After the reset, type a prompt to continue. ${LIMIT_OFF}`;
+  if (opener === "loop") {
+    const none2 = auto ? `If you do not answer, the work waits until ${at}. Then spare10 continues it, unless a reserve is still reached.` : "Until you answer, the work waits.";
+    return `${head} All work is on hold. Continue the work at the reset? ${none2} Stop here stops the work. ${back}`;
+  }
+  const none = auto ? `If you do not answer, all of it continues after ${at}, unless a reserve is still reached.` : "Until you answer, all of it waits.";
+  return `${head} spare10 holds your prompt and any other work. Continue the work at the reset? ${none} Stop here ${HOST.backPrompt} and stops other work. ${back}`;
+}
+var stopText = (f) => {
+  const fs = modelList(f);
+  return `spare10: the user stopped work at the ${placeOf(fs)} (${modelFacts(fs)}). Stop now and wait for the user. Do not call any further tools.`;
+};
+var pausedText = (f) => {
+  const fs = modelList(f);
+  return `spare10: work stopped at the ${placeOf(fs)} (${modelFacts(fs)}). No model request was sent, so this task is not finished. Wait for the user.`;
+};
+var headlessText = (f, sessionId) => {
+  const fs = modelList(f);
+  return `spare10 stopped this unattended run at the ${placeOf(fs)} (${modelFacts(fs)}). No further model requests were sent. To pick it up later: ${HOST.resume} ${sessionId}`;
+};
 function pauseInstruction(f, pausePrompt) {
-  const reached = listOf(f).some((x) => x.floor !== void 0) ? "You have reached the floor of the quota reserve for this session" : "You have reached the safe usage limit for this session";
-  const head = `spare10 budget guard. ${reached} (${modelFacts(f)}). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.`;
+  const fs = modelList(f);
+  const reached = fs.some((x) => x.limit === true) ? "You have reached the quota limit for this session" : fs.some((x) => x.floor !== void 0) ? "You have reached the floor of the quota reserve for this session" : "You have reached the safe usage limit for this session";
+  const head = `spare10 budget guard. ${reached} (${modelFacts(fs)}). Immediately wrap up your work and stop. Immediately stop any subagent, unless the user instructs otherwise.`;
   return pausePrompt === null || pausePrompt.trim() === "" ? head : `${head}
 
 User instructions: ${pausePrompt}`;
@@ -384,6 +421,8 @@ function resumeContext(f) {
   return `spare10: earlier work stopped at the ${quotaReserve(fs)}. The user now chose to continue on ${useText(fs)}. Follow their message.`;
 }
 function notStarted(f) {
+  const at = listOf(f).filter((x) => x.limit === true);
+  if (at.length > 0) return `spare10: not started. ${limitHead(at)} until ${whenOf(at).at}. Send the prompt again after the reset.`;
   const fs = listOf(f);
   return `spare10: not started. This session is inside ${yourReserves(fs)} ${untilText(fs)}. Send the prompt again to be asked again, or run ${HOST.command} resume.`;
 }
@@ -407,9 +446,11 @@ function badWarning(name, raw, used) {
   if (name === "SPARE10_RESUME_FLOOR") return `SPARE10_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`;
   if (name === "SPARE10_WEEKLY_RESUME_FLOOR") return `SPARE10_WEEKLY_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`;
   if (name === "SPARE10_AUTO_RESUME") return `SPARE10_AUTO_RESUME="${raw}" is not on or off. spare10 uses ${used}.`;
+  if (name === "SPARE10_LIMIT_PAUSE") return `SPARE10_LIMIT_PAUSE="${raw}" is not on or off. spare10 uses ${used}.`;
   if (name === "SPARE10_HEADLESS") return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`;
   return `SPARE10="${raw}" is not on or off. spare10 uses the scope option (${used}).`;
 }
+var simulateWarning = (raw, weeklyOff = false) => weeklyOff ? `SPARE10_SIMULATE="${raw}" is a weekly test reading, and the weekly reserve is 0. spare10 uses it only when the weekly reserve is more than 0.` : `SPARE10_SIMULATE="${raw}" is not a test reading. spare10 uses none.`;
 var floorWarning = (kind, floor, reserve) => kind === "seven_day" ? `the weekly resume floor (${fmtPct(floor)}%) is not below the weekly reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the weekly reserve, or to 0.` : `the resume floor (${fmtPct(floor)}%) is not below the reserve (${fmtPct(reserve)}%), so it does nothing. Set it below the reserve, or to 0.`;
 var AGAIN = `Type a prompt to be asked again, or run ${HOST.command} resume.`;
 var HELD_WAITS = `Held work waits. Run ${HOST.anytime} resume to continue it now.`;
@@ -471,7 +512,22 @@ var notice = {
     const tail = `${yourReserves(fs)} ${isAre(fs)} reached. The stop lasts until ${at}.`;
     return named.length === 0 && open.length === 0 ? tail : `${eventOr(named, open)}, but ${tail}`;
   },
-  resumeFailed: (reason) => `could not continue the stopped work: ${reason}. Type a prompt to continue.`
+  resumeFailed: (reason) => `could not continue the stopped work: ${reason}. Type a prompt to continue.`,
+  /** Continue at the reset on the limit question: held work waits for the reset. It names the way out (LIMIT_OFF). */
+  limitContinues: (f) => `held work waits until ${whenOf(f).at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`,
+  /** A person prompt after Continue at the reset: it waits with the held work, and asks nothing. */
+  limitPromptWaits: (f) => `your prompt waits with the held work until ${whenOf(f).at}. Then spare10 continues all of it, unless a reserve is still reached.`,
+  /**
+   * A stop at the quota limit: Stop here, or a question at the reserve that ends with no answer at the limit.
+   * `cont`: the stop continues the work at the reset. No `at`: the reset has passed, so the line names no time.
+   */
+  limitStopped: (at, cont = false) => at === void 0 ? "stopped at the quota limit. Type a prompt to continue." : cont ? `stopped at the quota limit until ${at}. Then spare10 continues the work, unless a reserve is still reached.` : `stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /** The hold time limit at the quota limit. `cont`: the stop continues the work at the reset. No `at` (only without `cont`): the reset has passed. */
+  limitHoldLimit: (at, cont) => at === void 0 ? "the hold reached its time limit. The work is stopped at the quota limit. Type a prompt to continue." : cont ? `the hold reached its time limit. The work is stopped at the quota limit until ${at}. Then spare10 continues it, unless a reserve is still reached.` : `the hold reached its time limit. The work is stopped at the quota limit until ${at}. After the reset, type a prompt to continue.`,
+  /** A question at the reserve gives way to the limit question. */
+  limitReached: "the quota limit is reached. spare10 asks you again.",
+  /** A limit question ends before its reset: no kind that gates is at the quota limit now. */
+  limitOver: "the pause at the limit is over. Held work continues, unless a reserve is still reached."
 };
 var debugLine = {
   unattended: (f, policy) => `spare10: unattended run inside the reserve (${personFacts(f)}), policy ${policy}.`,
@@ -484,13 +540,15 @@ var debugLine = {
   boxDefer: (n) => `spare10: the prompt box has text. The resume prompt waits (${n} of 10).`,
   budget: (min, ms) => `spare10: held ${min} min. Budget left ${ms} ms.`,
   checkFailed: (err) => `spare10: the reset check did not run: ${err}`,
-  settleFailed: (err) => `spare10: could not write the answer: ${err}`
+  settleFailed: (err) => `spare10: could not write the answer: ${err}`,
+  startFailed: (err) => `spare10: a step of the session start failed: ${err}`
 };
 var GLYPH = {
   off: "○",
   blind: "⚠",
   waiting: "⧗",
   armed: "●",
+  limit: "‖",
   consented: "⨯",
   open: "↻",
   stopped: "■",
@@ -513,10 +571,11 @@ function quietOf(s) {
 }
 function phaseLine(s) {
   const at = s.at === void 0 ? void 0 : atText(s.at.ms, s.at.kinds, s.timeZone, s.now);
-  const again = s.heldInPlace === true ? HELD_WAITS : AGAIN;
+  const limitClock = s.phase === "stopped" && s.limit !== void 0 ? atText(s.limit.ms, s.limit.kinds, s.timeZone, s.now) : void 0;
+  const again = limitClock !== void 0 ? `Type a prompt to be asked again. ${LIMIT_OFF}` : s.heldInPlace === true ? HELD_WAITS : AGAIN;
   const open = s.open === void 0 ? [] : listOf(s.open);
   const openRs = open.length === 0 ? "" : `${cap(yourReserves(open))} ${isAre(open)} open ${untilText(open)}`;
-  const stopped = at === void 0 ? `you chose Stop here. ${again}` : s.skipStop === true ? s.work === true && s.autoStop === true ? `you chose Stop here. spare10 continues the work at ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}` : s.autoStop !== true ? `you chose Stop here. ${again}` : s.work === true ? `you chose Stop here. spare10 continues the work after ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}`;
+  const stopped = at === void 0 ? limitClock === void 0 ? `you chose Stop here. ${again}` : `you chose Stop here, until ${limitClock}. ${again}` : s.skipStop === true ? s.work === true && s.autoStop === true ? `you chose Stop here. spare10 continues the work at ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}` : s.autoStop !== true ? `you chose Stop here. ${again}` : s.work === true ? `you chose Stop here. spare10 continues the work after ${at}. ${again}` : `you chose Stop here, until ${at}. ${again}`;
   const openNote = openRs === "" ? "" : ` ${openRs}, so new work goes on.`;
   const asking = at === void 0 || s.autoResume?.on !== true ? `a question is open. Held work waits until you answer.${openNote} If no ${HOST.dialog} shows, run ${HOST.anytime} resume or ${HOST.anytime} stop.` : `a question is open. Held work waits until you answer, or until ${at}.${openNote} If no ${HOST.dialog} shows, run ${HOST.anytime} resume or ${HOST.anytime} stop.`;
   const detail = {
@@ -524,6 +583,7 @@ function phaseLine(s) {
     blind: `${HOST.blind} spare10 lets all work through.`,
     waiting: "no reading yet. spare10 lets all work through.",
     armed: stepsIn(s.reserve, absentKind(s, "seven_day") ? void 0 : watchedWeekly(s)?.reserve, absentKind(s, "five_hour")),
+    limit: limitLine(s),
     consented: s.consented !== void 0 && s.consented.some((f) => f.to !== void 0) ? `you chose to continue. ${asksText(s.consented, s.mode)}` : `you chose to continue. spare10 is quiet ${quietOf(s)}.`,
     open: openRs === "" ? "the reset is near, so spare10 lets all work through." : `the reset is near. ${openRs}, so spare10 lets all work through.`,
     stopped,
@@ -534,6 +594,12 @@ function phaseLine(s) {
   };
   const name = s.phase === "reserve" ? "tripped" : s.phase;
   return `  ${GLYPH[s.phase]} ${name.padEnd(LABEL_WIDTH)}${detail[s.phase]}`;
+}
+function limitLine(s) {
+  const l = s.limit;
+  const at = l === void 0 ? "the reset" : atText(l.ms, l.kinds, s.timeZone, s.now);
+  if (l?.held === true) return `the quota limit is reached. Held work waits until ${at}. Then spare10 continues it, unless a reserve is still reached. ${LIMIT_OFF}`;
+  return `the quota limit is reached until ${at}. spare10 holds the next step and asks you. ${LIMIT_OFF}`;
 }
 var absentKind = (s, kind) => s.absent?.includes(kind) === true;
 function readingValue(b, f, now, absent2 = false, kind = "five_hour") {
@@ -625,6 +691,7 @@ function statusReport(s) {
   const consent = consentValue(s.consentUntil === void 0 ? void 0 : formatClock(s.consentUntil, s.timeZone), s.consentTo, s.consentEnded);
   const weekly = weeklyRows(s);
   const atReset = s.autoResume === void 0 || !s.attended ? [] : [field("at the reset", `${s.autoResume.on ? "continue by itself" : "wait for your answer"} (${fromText(s.autoResume.from, "SPARE10_AUTO_RESUME")})`)];
+  const atLimit2 = s.limitPause === void 0 || s.limitPause.on ? [] : [field("at the limit", `off. spare10 does not pause at the limit (${fromText(s.limitPause.from, "SPARE10_LIMIT_PAUSE")})`)];
   const lines = [
     `version ${VERSION}`,
     "",
@@ -635,6 +702,7 @@ function statusReport(s) {
     ...floorRows(s),
     field("at the reserve", actionValue(s)),
     ...atReset,
+    ...atLimit2,
     field("reading", readingValue(s.basis, s.facts ?? factsOf(s.basis, s.reserve, s.timeZone), s.now, absentKind(s, "five_hour"))),
     ...weekly.reading,
     field("consent", consent),
@@ -684,6 +752,12 @@ function resumeReply(c, f, named, open, mode = "hold", absent2) {
       return noReading2;
     case "off":
       return "this run is not guarded. Nothing changed.";
+    case "limit-asking":
+      return notice.limitContinues(fs);
+    case "limit":
+      return `nothing to resume now. ${limitHead(fs)} until ${whenOf(fs).at}. spare10 holds all work until then. ${LIMIT_OFF}`;
+    case "limit-late":
+      return "resumed. Held work continues.";
   }
 }
 function stopReply(c, f, trip, auto, weeklyTrip, ended, absent2) {
@@ -719,12 +793,13 @@ function stopReply(c, f, trip, auto, weeklyTrip, ended, absent2) {
     }
     case "off":
       return "this run is not guarded. Nothing changed.";
+    case "limit":
+      return notice.limitStopped(auto?.at ?? "the reset");
   }
 }
 var notPerson = (verb) => `only you can run ${HOST.command} ${verb}. Nothing changed.`;
-var unknownVerb = (verb) => `unknown command "${verb}". Use ${HOST.command}, ${HOST.command} resume or ${HOST.command} stop.`;
-function simulateReply(kind, f, opens, pastFloor, realIn) {
-  if (kind === "off") return "test reading cleared. Consent and stop for this window are cleared too.";
+function simulateReply(kind, f, opens, pastFloor, realIn, limit) {
+  if (kind === "off") return "test readings cleared. Your consents for both windows and any stop are cleared too.";
   if (kind === "weekly-off") return "the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.";
   if (kind === "bad" || f === void 0) {
     return `${HOST.leadSimulate} takes a percentage from 0 to 100, or off. Add weekly for the weekly window, and in 22m for a test window that resets in 22 minutes.`;
@@ -741,9 +816,10 @@ function simulateReply(kind, f, opens, pastFloor, realIn) {
   }
   const floorText = pastFloor === void 0 ? "" : ` This is past your ${fmtPct(pastFloor)}% ${weekly ? "weekly floor" : "floor"}.`;
   const realText = realIn === true ? ` A Resume on the test reading also lets real work use the ${weekly ? "weekly reserve" : "reserve"}.` : "";
+  const limitText = limit === true ? ` This is the quota limit, so spare10 holds all work until the ${weekly ? "weekly test window" : "test window"} ends.` : "";
   const verb = kind === "raised" ? "raised" : "set";
-  const stays = kind === "raised" ? " Your earlier answers stay." : "";
-  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${floorText}${opensText}${realText} Run ${HOST.command} simulate off to clear it.`;
+  const stays = kind === "raised" ? " Your earlier answers stay." : kind === "replaced" ? " This starts a new test. Your consents for both windows and any stop are cleared." : "";
+  return `test reading ${verb} to ${fmtPct(f.used)}% used${of}, resets ${clockOf(f)}.${stays} It can only raise the real reading.${limitText === "" ? `${floorText}${opensText}${realText}` : limitText} Run ${HOST.command} simulate off to clear it.`;
 }
 var commandFailed = (message) => `${HOST.leadFailed} failed: ${message}`;
 
@@ -758,6 +834,7 @@ var DEFAULTS = {
   weeklyResumeFloor: 5,
   pausePrompt: null,
   autoResume: true,
+  limitPause: true,
   headless: "off",
   scope: "all",
   badge: true
@@ -809,6 +886,7 @@ function parseSwitch(raw) {
 }
 var parseBadge = (raw) => raw !== false;
 var parseAutoResume = (raw) => raw !== false;
+var parseLimitPause = (raw) => raw !== false;
 function fromOptions(options) {
   return {
     reserve: parseReserve(options["reserve"]) ?? DEFAULTS.reserve,
@@ -819,6 +897,7 @@ function fromOptions(options) {
     weeklyResumeFloor: parseResumeFloor(options["weeklyResumeFloor"]) ?? DEFAULTS.weeklyResumeFloor,
     pausePrompt: parsePausePrompt(options["pausePrompt"]),
     autoResume: parseAutoResume(options["autoResume"]),
+    limitPause: parseLimitPause(options["limitPause"]),
     headless: parseHeadless(options["headless"]) ?? DEFAULTS.headless,
     scope: parseScope(options["scope"]) ?? DEFAULTS.scope,
     badge: parseBadge(options["badge"])
@@ -841,6 +920,7 @@ function withEnv(base, env, o = {}) {
       weeklyResumeFloor: "option",
       pausePrompt: "option",
       autoResume: "option",
+      limitPause: "option",
       headless: "option",
       enabled: "scope"
     },
@@ -906,6 +986,14 @@ function withEnv(base, env, o = {}) {
       out.from.autoResume = "env";
     }
   }
+  if (env.limitPause !== void 0) {
+    const l = parseSwitch(env.limitPause);
+    if (l === void 0) warnings.push(badWarning("SPARE10_LIMIT_PAUSE", env.limitPause, base.limitPause ? "on" : "off"));
+    else {
+      out.limitPause = l === "on";
+      out.from.limitPause = "env";
+    }
+  }
   if (env.headless !== void 0) {
     const h = parseHeadless(env.headless);
     if (h === void 0) warnings.push(badWarning("SPARE10_HEADLESS", env.headless, base.headless));
@@ -922,8 +1010,12 @@ function withEnv(base, env, o = {}) {
       out.from.enabled = "SPARE10";
     }
   }
-  const spec = parseSimulateEnv(env.simulate, o.simulateKind);
+  const words = simulateWords(env.simulate);
+  const parsed = parseSimulate(words, o.simulateKind);
+  if (parsed === void 0 && words.length > 0) warnings.push(simulateWarning(env.simulate ?? ""));
+  const spec = parsed === "off" ? void 0 : parsed;
   if (spec !== void 0) {
+    if (spec.kind === "seven_day" && out.weeklyReserve <= 0) warnings.push(simulateWarning(env.simulate ?? "", true));
     out.testPct = spec.pct;
     if (spec.kind !== "five_hour") out.testKind = spec.kind;
     if (spec.inMs !== void 0) out.testInMs = spec.inMs;
@@ -937,7 +1029,6 @@ function withEnv(base, env, o = {}) {
 
 // hooks/core/codex.ts
 var NEAR_TRIP_POINTS = 5;
-var RESET_JITTER_MS = 6e5;
 var LIVE_LUNA_MAX_AGE_MS = 6e4;
 var isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var finite = (v) => typeof v === "number" && Number.isFinite(v);
@@ -1010,7 +1101,6 @@ function pickSeed(a, b) {
 }
 var usableCredits = (c) => isObject(c) && (c.unlimited === true || (c.hasCredits ?? c.has_credits) === true);
 var nearTrip = (pct, trip, floorPoint) => pct !== void 0 && (pct >= trip - NEAR_TRIP_POINTS || floorPoint !== void 0 && pct >= floorPoint - NEAR_TRIP_POINTS);
-var voidedByReset = (c, windowEnd) => windowEnd - c.until > RESET_JITTER_MS;
 function jsonLine(line) {
   try {
     const v = JSON.parse(line);
@@ -1051,6 +1141,36 @@ function turnEndOf(line) {
   const turnId = p["turn_id"];
   if (how === void 0 || typeof turnId !== "string" || turnId === "") return void 0;
   return { turnId, how, startedAt: finite(p["started_at"]) ? p["started_at"] : null };
+}
+var SPECIAL_ROOTS = { root: "/", slash_tmp: "/tmp" };
+function turnContextOf(line) {
+  if (!line.includes('"turn_context"')) return void 0;
+  const o = jsonLine(line);
+  const p = o === void 0 ? void 0 : payloadOf(o);
+  if (o === void 0 || p === void 0 || o["type"] !== "turn_context") return void 0;
+  const typeOf = (v) => isObject(v) && typeof v["type"] === "string" ? v["type"] : void 0;
+  const str = (v) => typeof v === "string" ? v : void 0;
+  const roots = [];
+  const profile = isObject(p["permission_profile"]) ? p["permission_profile"] : void 0;
+  const fsPolicy = profile !== void 0 && isObject(profile["file_system"]) ? profile["file_system"] : void 0;
+  const entries = fsPolicy !== void 0 && Array.isArray(fsPolicy["entries"]) ? fsPolicy["entries"] : [];
+  for (const e of entries) {
+    if (!isObject(e) || e["access"] !== "write" || !isObject(e["path"])) continue;
+    const path = e["path"];
+    if (path["type"] === "path" && typeof path["path"] === "string") roots.push(path["path"]);
+    const kind = path["type"] === "special" && isObject(path["value"]) ? path["value"]["kind"] : void 0;
+    if (typeof kind === "string" && SPECIAL_ROOTS[kind] !== void 0) roots.push(SPECIAL_ROOTS[kind]);
+  }
+  const out = { roots };
+  const sandbox = typeOf(p["sandbox_policy"]);
+  const prof = typeOf(profile);
+  const approval = str(p["approval_policy"]);
+  const reviewer = str(p["approvals_reviewer"]);
+  if (sandbox !== void 0) out.sandbox = sandbox;
+  if (prof !== void 0) out.profile = prof;
+  if (approval !== void 0) out.approval = approval;
+  if (reviewer !== void 0) out.reviewer = reviewer;
+  return out;
 }
 function liveOf(result, at, route) {
   if (!isObject(result)) return { error: "the reply is not an object" };
@@ -1132,6 +1252,41 @@ function attendedFrom(i) {
   }
   return { attended: false };
 }
+function unsafeMode(tc, dataDir) {
+  if (tc === void 0) return false;
+  if (tc.sandbox === "danger-full-access" || tc.sandbox === "external-sandbox") return true;
+  if (tc.profile === "disabled") return true;
+  if ((tc.reviewer === "auto_review" || tc.reviewer === "guardian_subagent") && tc.approval !== "never") return true;
+  return tc.roots.some((r) => within(dataDir, r) && !within(dataDir, `${bare(r) === "/" ? "" : bare(r)}/.codex`));
+}
+var NODE_FIXED = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+var NODE_HOME = [".volta", ".nvm", ".local/share/mise", ".asdf", ".local/share/fnm", "Library/Application Support/fnm", ".fnm"];
+function nodePlaces(env) {
+  const from = env["SPARE10_NODE_FROM"];
+  const out = [...NODE_FIXED];
+  if (from !== "home" && from !== "path") return out;
+  const home = env["HOME"] ?? "";
+  if (home.startsWith("/")) out.push(...NODE_HOME.map((d) => `${bare(home) === "/" ? "" : bare(home)}/${d}`));
+  if (from !== "path") return out;
+  const dirs = (env["PATH"] ?? "").split(":").filter((d) => d.startsWith("/"));
+  const node = env["SPARE10_NODE"] ?? "";
+  const at = dirs.findIndex((d) => bare(d) === bare(node.slice(0, node.lastIndexOf("/"))));
+  out.push(...at < 0 ? dirs : dirs.slice(0, at + 1));
+  return out;
+}
+function nodeExposed(tc, places) {
+  if (tc === void 0) return false;
+  return tc.roots.some((r) => places.some((p) => within(p, r)));
+}
+var bare = (p) => {
+  const t = p.replace(/\/+$/, "");
+  return t.startsWith("/private/") ? t.slice("/private".length) : t === "" ? "/" : t;
+};
+var within = (path, root) => {
+  const p = bare(path);
+  const r = bare(root);
+  return r === "/" || p === r || p.startsWith(`${r}/`);
+};
 function parseAutoResumeOption(raw) {
   if (typeof raw === "boolean") return raw;
   const s = parseSwitch(raw);
@@ -1147,12 +1302,13 @@ var OPTIONS = [
   { name: "weeklyResumeFloor", env: "SPARE10_WEEKLY_RESUME_FLOOR", range: "0 to 99", parse: parseResumeFloor },
   { name: "pausePrompt", env: "SPARE10_PAUSE_PROMPT", range: "any text", parse: parsePauseOption },
   { name: "autoResume", env: "SPARE10_AUTO_RESUME", range: "on or off", parse: parseAutoResumeOption },
+  { name: "limitPause", env: "SPARE10_LIMIT_PAUSE", range: "on or off", parse: parseAutoResumeOption },
   { name: "headless", env: "SPARE10_HEADLESS", range: "off, prompt, stop or wait", parse: parseHeadless },
   { name: "scope", env: "SPARE10", range: "all or opt-in", parse: parseScope }
 ];
 var optionOf = (name) => OPTIONS.find((o) => o.name.toLowerCase() === name.toLowerCase());
 function optionText(name, value) {
-  if (name === "autoResume") return value === false ? "off" : "on";
+  if (name === "autoResume" || name === "limitPause") return value === false ? "off" : "on";
   if (name === "pausePrompt") return typeof value === "string" && value.trim() !== "" ? JSON.stringify(value) : "an empty text";
   if (typeof value === "number") return fmtPct(value);
   return String(value ?? "");
@@ -1170,8 +1326,9 @@ function configOptions(path, raw) {
   }
   return { options, warnings };
 }
+var blankPause = (raw) => /^\s*(""|'')?\s*$/.test(raw);
 function parseSetValue(name, raw) {
-  if (name === "pausePrompt") return raw.trim() === "" ? { ok: false } : { ok: true, value: raw };
+  if (name === "pausePrompt") return blankPause(raw) ? { ok: false } : { ok: true, value: raw };
   const o = OPTIONS.find((x) => x.name === name);
   const v = o?.parse(raw);
   if (v === void 0 || v === null) return { ok: false };
@@ -1206,22 +1363,27 @@ function parseCommand(prompt) {
   return { verb: "unknown", word: words[1] ?? "" };
 }
 var rootOnly = (c) => c.verb === "resume" || c.verb === "stop" || c.verb === "simulate" || c.verb === "set" && c.words.length > 0;
-function elicitParams(message, credits) {
+function elicitParams(message, credits, limit = false) {
+  const choice = limit ? {
+    oneOf: [
+      { const: "continue", title: LIMIT_OPTIONS[0] },
+      { const: "stop", title: LIMIT_OPTIONS[1] }
+    ],
+    default: "continue"
+  } : {
+    oneOf: [
+      { const: "stop", title: QUESTION_OPTIONS[0] },
+      { const: "resume", title: QUESTION_OPTIONS[1] }
+    ],
+    default: "stop"
+  };
   return {
-    message: credits === void 0 ? message : `${message} ${codexText.creditsQuestion(credits)}`,
+    message: credits === void 0 || limit ? message : `${message} ${codexText.creditsQuestion(credits)}`,
     requestedSchema: {
       type: "object",
       required: ["choice"],
       properties: {
-        choice: {
-          type: "string",
-          title: HEADER,
-          oneOf: [
-            { const: "stop", title: QUESTION_OPTIONS[0] },
-            { const: "resume", title: QUESTION_OPTIONS[1] }
-          ],
-          default: "stop"
-        }
+        choice: { type: "string", title: HEADER, ...choice }
       }
     }
   };
@@ -1232,6 +1394,13 @@ function answerOf(result, failed) {
   if (action === "accept") return isObject(result["content"]) && result["content"]["choice"] === "resume" ? "resume" : "stop";
   if (action === "cancel") return "cancel";
   return "decline";
+}
+function limitAnswerOf(result, failed) {
+  if (failed || !isObject(result)) return "continue";
+  const action = result["action"];
+  if (action === "accept") return isObject(result["content"]) && result["content"]["choice"] === "stop" ? "stop" : "continue";
+  if (action === "cancel") return "cancel";
+  return "continue";
 }
 var GATE_SITES = ["start", "prompt", "tool", "step", "compact", "spawn", "stop", "interrupt"];
 var isGateSite = (v) => typeof v === "string" && GATE_SITES.includes(v);
@@ -1269,6 +1438,11 @@ function genericRefusal(site, attended) {
       return { kind: "pass" };
   }
 }
+function turnEndText(verdict, limit, held) {
+  if (verdict === "refuse") return limit ? codexText.turnEndsAtLimit : codexText.turnEnds;
+  if (!limit) return codexText.turnEndsHold;
+  return held === void 0 ? codexText.turnEndsLimit : codexText.turnEndsLimitHeld(held);
+}
 function refuseModeOf(i) {
   if (i.noDialog) return "hold";
   if (i.attended && i.hosted) return "interrupt";
@@ -1288,6 +1462,11 @@ function shownPath(p, home) {
   const rest = afterHome(p, home);
   return rest === void 0 ? p : `~${rest}`;
 }
+function hideHome(text3, home) {
+  const h = (home ?? "").replace(/\/+$/, "");
+  if (!h.startsWith("/")) return text3;
+  return text3.split(`${h}/`).join("~/");
+}
 function shellPath(p, home) {
   const rest = afterHome(p, home);
   if (rest !== void 0) return `"$HOME${inDoubleQuotes(rest)}"`;
@@ -1300,6 +1479,7 @@ var pathLine = (dir, home) => {
 var byWindow = (f) => (Array.isArray(f) ? [...f] : [f]).sort((a, b) => Number(a.kind === "seven_day") - Number(b.kind === "seven_day"));
 var envList = (set2) => set2.map(([name, raw]) => `${name}=${JSON.stringify(raw)}`).join(", ");
 var HELP_WIDTH = 18;
+var CONFIG_FIX = "Correct the file, or remove it to use the defaults.";
 var codexText = {
   /** CX1: the status message of the four gating hooks. */
   statusHold: "spare10 checks the quota reserve. Esc stops a held step.",
@@ -1309,6 +1489,12 @@ var codexText = {
   turnEnds: "spare10: the turn ends here, because work stopped at the quota reserve.",
   /** CX41: the stopReason of a Stop gate at a hold verdict. */
   turnEndsHold: "spare10: the turn ends here, because the quota reserve is reached. spare10 asks at your next prompt.",
+  /** CX55: the stopReason of a Stop gate at a hold verdict at the quota limit. */
+  turnEndsLimit: "spare10: the turn ends here, because the quota limit is reached. spare10 asks at your next prompt.",
+  /** CX56: CX3 when a kind that gates is at the quota limit: work stopped there. */
+  turnEndsAtLimit: "spare10: the turn ends here, because work stopped at the quota limit.",
+  /** CX57: CX55 after Continue at the reset: the next prompt joins the held work and asks nothing. {at}: the reset. */
+  turnEndsLimitHeld: (at) => `spare10: the turn ends here, because the quota limit is reached. Held work and your next prompt wait until ${at}.`,
   /** CX4: the context of a steered command that spare10 lets through. */
   steerNote: "spare10: the last user line was a command for the spare10 plugin, and spare10 handled it. Ignore that line.",
   /** CX39: before B34, B9 or B35 when spare10 interrupted a turn of the stop. */
@@ -1324,12 +1510,14 @@ var codexText = {
   approvalNever: "Codex runs with approval never here, so spare10 cannot show its question. At a reserve, spare10 holds the work instead. Press Esc to stop it, or run !spare10 resume to continue (spare10 help says how).",
   /** CX9 (P1): the agent can act for the person. */
   unsafe: "the agent can send prompts for you in this mode, or write spare10's files. So spare10 cannot tell your spare10 resume from one that the agent sends. Run Codex with a sandbox that keeps ~/.codex read-only to keep that choice yours.",
+  /** CX58 (P1): the agent can write a folder where broker.sh looks for Node.js. */
+  nodeExposed: "the agent can write a folder where spare10 looks for Node.js, such as your home folder or a PATH folder. spare10 runs Node.js from there outside the Codex sandbox when a thread starts. So the agent can run its own code outside the sandbox. Do not start Codex in your home folder. Install Node.js 20 or later in /opt/homebrew/bin, /usr/local/bin or /usr/bin.",
   /** CX10 (P1): SPARE10 variables in the env of the daemon. */
   daemonEnv: (set2) => `this session runs on the Codex daemon, which has ${envList(set2)}. A daemon session gets such values from the environment of the daemon when it started, not from your terminal. To change them, restart the Codex daemon, or run codex --no-daemon.`,
   /** CX11: a bad value in config.json. */
   configBad: (path, name, raw, range, used) => `${path} sets ${name} to ${JSON.stringify(raw) ?? String(raw)}, which is not ${range}. spare10 uses ${used}.`,
   /** CX12: config.json exists but does not parse. */
-  configUnread: (path, err) => `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset.`,
+  configUnread: (path, err) => `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset. ${CONFIG_FIX}`,
   /** CX13: only a weekly window, and the weekly reserve is 0. */
   weeklyOnlyOff: "Codex reports only a weekly window, and the weekly reserve is 0. So spare10 watches no window.",
   /** CX40: only a weekly window, with a weekly open span. */
@@ -1338,8 +1526,8 @@ var codexText = {
   optInDaemon: "scope is set to opt-in, and this session runs on the Codex daemon, so spare10 only watches here. To guard a session, run codex --no-daemon with SPARE10=on, or run spare10 set scope all.",
   /** CX43: an unknown app started this session on the daemon. */
   originator: (name) => `this session was started by ${name}, not by the Codex TUI. spare10 treats it as attended. If ${name} cannot show the spare10 question, spare10 holds the work at the reserve.`,
-  /** CX14 (P1, report only): a hard stop. */
-  hardStop: "Codex reports that your included usage is used up. spare10 asks nothing, and continues no work, until Codex allows usage again. Work on Luna Reserve goes through.",
+  /** CX14 (report only): a watched kind is past 100% used, no credits pay, and limitPause is off. */
+  hardStop: "past 100% used, Codex refuses each model request until the reset. spare10 does not pause at the limit, because limitPause is off.",
   /** CX15 (P1, report only): a workspace limit. */
   workspaceLimit: (type) => `Codex reports a workspace limit (${type}). spare10 continues no work until Codex allows it.`,
   /** CX48 (B30 on Codex, report only): the stored consent of a kind ends after its window. `untilMs`: its end. Codex keeps consent in the session state, never in SPARE10_CONSENT. */
@@ -1373,12 +1561,36 @@ var codexText = {
   setDefault: (name, value) => `${name} is back to its default, ${value}. It applies from the next step.`,
   /** CX29: appended to CX27 or CX28, so it starts with a space. */
   setEnvWins: (env) => ` ${env} is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.`,
+  /**
+   * CX54: appended to CX27 or CX28, so it starts with a space. The set found a torn config.json (an OS
+   * crash after a write) and wrote a new file, so each other option of that file is lost.
+   */
+  setRepaired: (path) => ` spare10 could not read ${path}, so it wrote a new file. The other options are back to their defaults. Run spare10 set to check them.`,
   /** CX30 */
   setBad: (name, range) => `${name} takes ${range}. Nothing changed.`,
+  /** CX52: `spare10 set pausePrompt` with no text. */
+  setBlankPause: "pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.",
   /** CX31 */
-  setUnknown: (name) => `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.`,
-  /** CX32 */
-  setFailed: (path, err) => `could not write ${path}: ${err}. Nothing changed.`,
+  setUnknown: (name) => `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, limitPause, headless and scope.`,
+  /** CX49: a typed `spare10 <word>` that is no command. */
+  unknown: (word2) => `unknown command "${word2}". Nothing changed. Run spare10 help to list the commands.`,
+  /**
+   * CX50: `spare10 resume` with nothing to resume, while held work still waits under a stop that no longer
+   * applies. spare10 cleared the stop, so each held call decides again. A kind that gates still asks.
+   */
+  heldStopOver: "the stop is over. Held work continues now.",
+  /**
+   * CX51 (4.4, 4.20): `spare10 stop` on an open question wrote an auto stop, and each held tool call is in a
+   * thread that no daemon hosts. So the calls wait in place under the stop. `until`: when spare10 continues
+   * them, as the core `asking` reply says it.
+   */
+  stopAskingWaits: (until) => until === void 0 ? `stopped. ${HELD_WAITS}` : `stopped. Held work waits. spare10 continues it ${until.lead === void 0 ? `after ${until.at}` : `at ${untilPhrase(until)}`}. Run !spare10 resume to continue it now.`,
+  /** CX53, a warning of the report: a stop no longer applies, and held work still waits under it until a resume. */
+  heldStopEnded: `the stop is over. ${HELD_WAITS}`,
+  /** CX53 at the end of the phase line of `!spare10 status` (2.9), so it starts with a space. */
+  heldStopEndedTail: ` The stop is over. ${HELD_WAITS}`,
+  /** CX32. `unread`: config.json does not parse, or is not an object, so the text says how to repair it. */
+  setFailed: (path, err, unread = false) => `could not write ${path}: ${err}. Nothing changed.${unread ? ` ${CONFIG_FIX}` : ""}`,
   /** CX33: rows of [name, value, source]. */
   setList: (path, rows) => [
     `options, from ${path}:`,
@@ -1411,6 +1623,10 @@ var codexText = {
   /** CX38 (P1): the CLI row `hooks`. */
   hooksRow: (trusted, total) => trusted >= total ? `all ${total} trusted` : `${trusted} of ${total} trusted. Start codex and trust the spare10 hooks, or run /hooks.`
 };
+function withInterruptedNote(interrupts, stopAt, note) {
+  const interrupted = stopAt !== void 0 && Object.values(interrupts ?? {}).some((at) => at >= stopAt);
+  return interrupted ? `${codexText.interruptedNote} ${note}` : note;
+}
 var codexDebug = {
   gateError: (e) => `spare10: the gate failed: ${e}`,
   interruptFailed: (e) => `spare10: turn/interrupt failed: ${e}`,
@@ -1448,7 +1664,7 @@ var codexDebug = {
 import { join as join12 } from "node:path";
 
 // codex/src/attend.ts
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // codex/src/files.ts
 import { randomBytes } from "node:crypto";
@@ -1486,6 +1702,10 @@ function decide(s) {
     if (s.site === "tool") return { kind: "refuse", text: "stop" };
     if (s.site === "step") return { kind: "refuse", text: "paused" };
     return s.person ? { kind: "hold" } : THROUGH;
+  }
+  if (s.limit === true) {
+    if (s.site === "prompt") return s.person ? { kind: "hold" } : THROUGH;
+    return { kind: "hold" };
   }
   if (s.mode === "tell") {
     if (s.site === "tool") return { kind: "tell" };
@@ -1537,10 +1757,11 @@ function bury(tombs, t, now) {
   return [...live.filter((x) => !(x.until === t.until && x.to <= t.to)), t];
 }
 var unbury = (tombs, c) => (tombs ?? []).filter((t) => !buried([t], c));
-var answers = (named, k) => named.some((a) => a.kind === k.kind && a.test === k.test && (a.to === void 0 || k.pct < a.to));
-function joinableAt(outcome, named, gating) {
+var answerWindow = (a, k, jitter) => sameWindow(k.kind, a.end ?? null, k.end ?? null) && (jitter <= 0 || k.test || a.end === void 0 || k.end === void 0 || k.end - a.end <= jitter);
+var answers = (named, k, jitter = 0) => k.limit !== true && named.some((a) => a.kind === k.kind && a.test === k.test && answerWindow(a, k, jitter) && (a.to === void 0 || k.pct < a.to));
+function joinableAt(outcome, named, gating, jitter = 0) {
   if (outcome === void 0 || outcome === "stop") return true;
-  return outcome === "resume" && gating.every((k) => answers(named, k));
+  return outcome === "resume" && gating.every((k) => answers(named, k, jitter));
 }
 var answersQuestion = (c, end, now) => consentCovers(c.until, now, end.end) && (c.to === void 0 || end.to !== void 0 && c.to >= end.to);
 var isoMs = (text3) => /^\d{4}-\d{2}-\d{2}T/.test(text3) ? Date.parse(text3) : Number.NaN;
@@ -1557,8 +1778,8 @@ function parseConsent(raw) {
   }
   const stamped = m === null ? Number.NaN : isoMs(m[2] ?? "");
   if (m !== null && Number.isFinite(stamped)) return { until: stamped, sessionId: m[1] ?? "" };
-  const bare = /\s/.test(text3) ? Number.NaN : isoMs(text3);
-  return Number.isFinite(bare) ? { until: bare } : void 0;
+  const bare2 = /\s/.test(text3) ? Number.NaN : isoMs(text3);
+  return Number.isFinite(bare2) ? { until: bare2 } : void 0;
 }
 var formatConsent = (sessionId, until, to) => `${sessionId} ${new Date(until).toISOString()}${to === void 0 ? "" : ` to:${String(Math.round(to * 10) / 10 + 0)}`}`;
 var fullCovers = (prev, ids, until, now) => prev !== void 0 && prev.to === void 0 && prev.sessionId !== void 0 && ids.includes(prev.sessionId) && consentCovers(prev.until, now, until);
@@ -1597,10 +1818,12 @@ function perKind(entries, kinds = KINDS) {
   }
   return out;
 }
+var DATE_MAX_MS = 864e13;
 function parseStopped(raw) {
   const m = /^(\S+) (\d+) (\d+)(?: (\S+))?$/.exec(raw ?? "");
   if (m === null) return void 0;
   const rec = { sessionId: m[1] ?? "", windowEnd: Number(m[2]), at: Number(m[3]) };
+  if (rec.windowEnd > DATE_MAX_MS || rec.at > DATE_MAX_MS) return void 0;
   if (m[4] === void 0) return rec;
   const tags = m[4].split(",");
   if (tags.some((t) => !TAGS.has(t) && realOf(t) === void 0)) return void 0;
@@ -1679,6 +1902,7 @@ function phaseOf(i) {
   const bs = i.bases ?? [i.basis];
   if (!i.tripped && bs.every((b) => b.kind === "none")) return bs.length > 0 && bs.every((b) => b.kind === "none" && b.why === "blind") ? "blind" : "waiting";
   if (!i.tripped) return "armed";
+  if (i.limit === true && i.attended && !i.stopped) return "limit";
   if (i.consented) return "consented";
   if (i.open === true) return "open";
   if (i.stopped && i.attended) return "stopped";
@@ -1691,6 +1915,7 @@ function phaseOf(i) {
 var FIRST_READ_WAIT_MS = 2e3;
 var LIVE_RELEASE_MAX_AGE_MS = 3e4;
 var LIVE_POLL_MS = 6e4;
+var CLOCK_SKEW_MS = 6e4;
 var LIVE_NEAR_MAX_AGE_MS = 15e3;
 var LIVE_LOCK_STALE_MS = 2e4;
 var LIVE_LOCK_POLL_MS = 100;
@@ -1708,6 +1933,7 @@ var LOCK_SLEEP_MAX_MS = 10;
 var PRUNE_AFTER_MS = 30 * 24 * 36e5;
 var PRUNE_EVERY_MS = 24 * 36e5;
 var PRUNE_MAX = 500;
+var PRUNE_AGAIN_MS = 10 * 6e4;
 var WAKE_POLL_MS = 1e3;
 var DAEMON_CONNECT_MS = 1e3;
 var A_READ_MS = 5e3;
@@ -1835,14 +2061,35 @@ function isStale(s, now, staleMs, alive) {
   return Math.abs(now - s.holder.at) > staleMs || !alive(s.holder.pid);
 }
 function breakStale(lockFile, s) {
+  const guard = `${lockFile}.break`;
+  let fd;
   try {
+    fd = openSync(guard, "wx", 384);
+  } catch (e) {
+    if (absent(e)) return true;
+    if (codeOf(e) !== "EEXIST") throw e;
+    try {
+      if (Math.abs(Date.now() - lstatSync(guard).mtimeMs) > LOCK_STALE_MS) unlinkSync(guard);
+    } catch (e2) {
+      if (!absent(e2)) throw e2;
+    }
+    return false;
+  }
+  try {
+    closeSync(fd);
     const st = lstatSync(lockFile);
-    if (Number(st.dev) !== s.dev || Number(st.ino) !== s.ino || st.mtimeMs !== s.mtimeMs) return;
-    if (readFileSync(lockFile, "utf8") !== s.text) return;
+    if (Number(st.dev) !== s.dev || Number(st.ino) !== s.ino || st.mtimeMs !== s.mtimeMs) return true;
+    if (readFileSync(lockFile, "utf8") !== s.text) return true;
     unlinkSync(lockFile);
   } catch (e) {
     if (!absent(e)) throw e;
+  } finally {
+    try {
+      unlinkSync(guard);
+    } catch {
+    }
   }
+  return true;
 }
 function createLock(lockFile) {
   for (let tries = 0; ; tries += 1) {
@@ -1887,10 +2134,7 @@ function withLock(lockFile, owner, fn, o = {}) {
     const seen = seeLock(lockFile);
     if (seen === void 0) continue;
     last = seen.holder;
-    if (isStale(seen, Date.now(), staleMs, alive)) {
-      breakStale(lockFile, seen);
-      continue;
-    }
+    if (isStale(seen, Date.now(), staleMs, alive) && breakStale(lockFile, seen)) continue;
     sleepSync(LOCK_SLEEP_MIN_MS + Math.random() * (LOCK_SLEEP_MAX_MS - LOCK_SLEEP_MIN_MS));
   }
   let result;
@@ -1921,8 +2165,7 @@ function tryLock(lockFile, owner, o = {}) {
     }
     const seen = seeLock(lockFile);
     if (seen === void 0) continue;
-    if (!isStale(seen, Date.now(), staleMs, alive)) return void 0;
-    breakStale(lockFile, seen);
+    if (!isStale(seen, Date.now(), staleMs, alive) || !breakStale(lockFile, seen)) return void 0;
   }
   return void 0;
 }
@@ -2018,8 +2261,124 @@ function firstLine(file, max = FIRST_LINE_MAX_BYTES) {
 
 // codex/src/store.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { existsSync, readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, rmSync, statSync, unlinkSync as unlinkSync2 } from "node:fs";
+import { readFileSync as readFileSync2, readdirSync, renameSync as renameSync2, rmSync, statSync as statSync2, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+
+// codex/src/settings.ts
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+var ENV_NAMES = [
+  ["reserve", "SPARE10_RESERVE"],
+  ["weeklyReserve", "SPARE10_WEEKLY_RESERVE"],
+  ["lastMinutes", "SPARE10_LAST_MINUTES"],
+  ["weeklyLastHours", "SPARE10_WEEKLY_LAST_HOURS"],
+  ["resumeFloor", "SPARE10_RESUME_FLOOR"],
+  ["weeklyResumeFloor", "SPARE10_WEEKLY_RESUME_FLOOR"],
+  ["pausePrompt", "SPARE10_PAUSE_PROMPT"],
+  ["autoResume", "SPARE10_AUTO_RESUME"],
+  ["limitPause", "SPARE10_LIMIT_PAUSE"],
+  ["headless", "SPARE10_HEADLESS"],
+  ["onOff", "SPARE10"],
+  ["simulate", "SPARE10_SIMULATE"]
+];
+function envReadsOf(env) {
+  const out = {};
+  for (const [field2, name] of ENV_NAMES) {
+    const v = env[name];
+    if (v !== void 0) out[field2] = v;
+  }
+  return out;
+}
+var ownsSimulate = (hostKind) => hostKind === void 0 || hostKind === "exec" || hostKind === "tui";
+var configPath = (paths) => join(paths.data, "config.json");
+function readConfig(path) {
+  try {
+    const raw = readJson(path);
+    return { raw: raw === void 0 ? {} : raw };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function markOf(path) {
+  try {
+    const st = statSync(path);
+    return `${st.ino}:${st.size}:${st.mtimeMs}`;
+  } catch (e) {
+    const code = e.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "-" : `error:${String(code)}`;
+  }
+}
+function createSettings(d) {
+  const path = configPath(d.paths);
+  const shown = shownPath(path, d.paths.home);
+  const base = envReadsOf(d.env);
+  if (base.simulate !== void 0 && !ownsSimulate(d.hostKind)) {
+    delete base.simulate;
+    d.log.debug(codexDebug.simulateIgnored);
+  }
+  let cache;
+  const parentChild = () => {
+    if (base.headless !== void 0) return void 0;
+    try {
+      return d.parentChild();
+    } catch (e) {
+      d.log.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
+      return void 0;
+    }
+  };
+  const build = (child, simulateKind) => {
+    const env = base.headless === void 0 && child !== void 0 ? { ...base, headless: child } : { ...base };
+    const read = readConfig(path);
+    if ("raw" in read && isObject2(read.raw)) {
+      const { options, warnings } = configOptions(shown, read.raw);
+      const eff2 = withEnv(fromOptions(options), env, { simulateKind });
+      eff2.warnings = [...warnings, ...eff2.warnings];
+      return eff2;
+    }
+    const cx12 = "error" in read ? codexText.configUnread(shown, hideHome(read.error, d.paths.home)) : configOptions(shown, read.raw).warnings[0];
+    const eff = withEnv(DEFAULTS, env, { simulateKind });
+    if (eff.from.lastMinutes !== "env") {
+      eff.lastMinutes = 0;
+      eff.from.lastMinutes = "unread";
+    }
+    if (eff.from.weeklyLastHours !== "env") {
+      eff.weeklyLastHours = 0;
+      eff.from.weeklyLastHours = "unread";
+    }
+    eff.warnings = [...cx12 === void 0 ? [] : [cx12], ...eff.warnings];
+    return eff;
+  };
+  return {
+    path,
+    get() {
+      const child = parentChild();
+      const simulateKind = d.simulateKind();
+      const key = `${markOf(path)}|${child ?? ""}|${simulateKind}`;
+      if (cache?.key !== key) cache = { key, eff: build(child, simulateKind) };
+      return structuredClone(cache.eff);
+    }
+  };
+}
+var ConfigUnreadError = class extends Error {
+};
+function setOption(paths, owner, name, value) {
+  const path = configPath(paths);
+  return withLock(join(paths.data, "config.lock"), owner, () => {
+    const read = readOwnJson(path);
+    const repaired = read === void 0 && existsSync(path);
+    const raw = read === void 0 ? {} : read;
+    if (!isObject2(raw)) throw new ConfigUnreadError("it is not a JSON object");
+    const next = { ...raw };
+    const old = next[name];
+    if (value === void 0) delete next[name];
+    else next[name] = value;
+    writeJson(path, next);
+    return { old, ...repaired ? { repaired: true } : {} };
+  });
+}
+
+// codex/src/store.ts
 var FORMAT = 1;
 var FormatError = class extends Error {
   file;
@@ -2030,11 +2389,12 @@ var FormatError = class extends Error {
   }
 };
 var SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+var isSafeId = (id) => SAFE_ID.test(id) && !id.includes("..");
 function checkId(what, id) {
-  if (!SAFE_ID.test(id) || id.includes("..")) throw new Error(`spare10: the ${what} ${JSON.stringify(id)} cannot name a file`);
+  if (!isSafeId(id)) throw new Error(`spare10: the ${what} ${JSON.stringify(id)} cannot name a file`);
 }
-var sessionDir = (paths, sid) => join(paths.data, "sessions", sid);
-var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var sessionDir = (paths, sid) => join2(paths.data, "sessions", sid);
+var isObject3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var freshState = (sid) => ({ v: 1, by: VERSION, rev: 0, sessionId: sid, updatedAt: 0 });
 var freshThread = (sid, tid) => ({
   v: 1,
@@ -2051,7 +2411,7 @@ var freshThread = (sid, tid) => ({
 function readStamped(file) {
   const v = readOwnJson(file);
   if (v === void 0) return void 0;
-  if (!isObject2(v) || v["v"] !== FORMAT) throw new FormatError(file, isObject2(v) ? v["v"] : void 0);
+  if (!isObject3(v) || v["v"] !== FORMAT) throw new FormatError(file, isObject3(v) ? v["v"] : void 0);
   return v;
 }
 var testOf = (state, hostPid) => state.test !== void 0 && state.test.hostPid === hostPid ? state.test : void 0;
@@ -2061,15 +2421,24 @@ function warnOnce(state, id, text3, now) {
   state.notices = [...state.notices ?? [], { at: now, text: text3 }];
   return true;
 }
+var BROKER_ENV_NAMES = ENV_NAMES.map(([, name]) => name).filter((name) => name !== "SPARE10_SIMULATE");
+function brokerEnvOf(env) {
+  const out = {};
+  for (const name of BROKER_ENV_NAMES) {
+    const v = env[name];
+    if (typeof v === "string") out[name] = v;
+  }
+  return out;
+}
 var text = (v) => JSON.stringify(v);
 function sessionStore(paths, sid, owner, wake, o = {}) {
   checkId("session id", sid);
   const dir = sessionDir(paths, sid);
-  const stateFile = join(dir, "state.json");
-  const lockFile = join(dir, "state.lock");
-  const questionFile = join(dir, "question.json");
-  const answerFile = join(dir, "answer.json");
-  const threadFile = (tid) => join(dir, "threads", `${tid}.json`);
+  const stateFile = join2(dir, "state.json");
+  const lockFile = join2(dir, "state.lock");
+  const questionFile = join2(dir, "question.json");
+  const answerFile = join2(dir, "answer.json");
+  const threadFile = (tid) => join2(dir, "threads", `${tid}.json`);
   const now = () => (o.clock ?? Date).now();
   let inLock = false;
   const hideForeignTest = (s) => {
@@ -2209,18 +2578,18 @@ function sessionStore(paths, sid, owner, wake, o = {}) {
 function changedSince(dir, since) {
   const newer2 = (file) => {
     try {
-      return statSync(file).mtimeMs > since;
+      return statSync2(file).mtimeMs > since;
     } catch {
       return false;
     }
   };
-  if (["state.json", "question.json", "answer.json"].some((name) => newer2(join(dir, name)))) return true;
+  if (["state.json", "question.json", "answer.json"].some((name) => newer2(join2(dir, name)))) return true;
   let threads = [];
   try {
-    threads = readdirSync(join(dir, "threads"));
+    threads = readdirSync(join2(dir, "threads"));
   } catch {
   }
-  return threads.some((name) => newer2(join(dir, "threads", name)));
+  return threads.some((name) => newer2(join2(dir, "threads", name)));
 }
 var PRUNED = ".pruned-";
 function removeTree(dir) {
@@ -2230,8 +2599,8 @@ function removeTree(dir) {
   }
 }
 function pruneSessions(paths, owner, now, alive) {
-  const root = join(paths.data, "sessions");
-  const stamp = join(paths.data, "pruned");
+  const root = join2(paths.data, "sessions");
+  const stamp = join2(paths.data, "pruned");
   let names;
   try {
     let last = Number.NaN;
@@ -2247,21 +2616,26 @@ function pruneSessions(paths, owner, now, alive) {
   }
   const live = (pid) => pid !== void 0 && pid > 0 && alive(pid);
   const unused = (dir) => {
-    if (changedSince(dir, now - PRUNE_AFTER_MS) || existsSync(join(dir, "question.json"))) return false;
+    if (changedSince(dir, now - PRUNE_AFTER_MS)) return false;
     try {
-      const st = readOwnJson(join(dir, "state.json"));
-      if (st !== void 0 && (st.v !== FORMAT || live(st.hostPid))) return false;
+      const q = readOwnJson(join2(dir, "question.json"));
+      if (q !== void 0 && (q.v !== FORMAT || live(q.leader?.pid))) return false;
+      const st = readOwnJson(join2(dir, "state.json"));
+      if (st !== void 0 && st.v !== FORMAT) return false;
+      const daemon = st?.hostKind === "daemon" ? st.hostPid : void 0;
+      const host = (pid) => pid !== daemon && live(pid);
+      if (host(st?.hostPid)) return false;
       const stop = parseStopped(st?.stopped);
       if (stop !== void 0 && stop.windowEnd > now - PRUNE_AFTER_MS) return false;
       let threads = [];
       try {
-        threads = readdirSync(join(dir, "threads"));
+        threads = readdirSync(join2(dir, "threads"));
       } catch {
       }
       for (const name of threads.filter((n) => n.endsWith(".json"))) {
-        const th = readOwnJson(join(dir, "threads", name));
+        const th = readOwnJson(join2(dir, "threads", name));
         if (th === void 0) continue;
-        if (th.v !== FORMAT || live(th.brokerPid) || live(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false;
+        if (th.v !== FORMAT || live(th.brokerPid) || host(th.hostPid) || (th.held ?? []).some((e) => live(e.brokerPid))) return false;
       }
     } catch {
       return false;
@@ -2271,17 +2645,17 @@ function pruneSessions(paths, owner, now, alive) {
   const gone = [];
   for (const name of names) {
     if (name.startsWith(PRUNED)) {
-      removeTree(join(root, name));
+      removeTree(join2(root, name));
       continue;
     }
     if (gone.length >= PRUNE_MAX) break;
     if (!SAFE_ID.test(name)) continue;
-    const dir = join(root, name);
+    const dir = join2(root, name);
     if (!unused(dir)) continue;
-    const trash = join(root, `${PRUNED}${name}-${randomBytes2(4).toString("hex")}`);
+    const trash = join2(root, `${PRUNED}${name}-${randomBytes2(4).toString("hex")}`);
     try {
       const moved = withLock(
-        join(dir, "state.lock"),
+        join2(dir, "state.lock"),
         owner,
         () => {
           if (!unused(dir)) return false;
@@ -2296,6 +2670,12 @@ function pruneSessions(paths, owner, now, alive) {
     }
     removeTree(trash);
     gone.push(name);
+  }
+  if (gone.length >= PRUNE_MAX) {
+    try {
+      writeFileAtomic(stamp, String(now - PRUNE_EVERY_MS + PRUNE_AGAIN_MS));
+    } catch {
+    }
   }
   return gone;
 }
@@ -2324,7 +2704,7 @@ function parentChildOf(paths, env, sid) {
   const parent = nestedParent(env, sid);
   if (parent === void 0) return void 0;
   checkId("session id", parent);
-  const st = readOwnJson(join2(sessionDir(paths, parent), "state.json"));
+  const st = readOwnJson(join3(sessionDir(paths, parent), "state.json"));
   if (typeof st !== "object" || st === null || st.v !== 1) return void 0;
   return st.child === "stop" ? "stop" : void 0;
 }
@@ -2348,17 +2728,22 @@ function windowEndFor(kind, b, now, fallback) {
   fallback[kind] = now + FALLBACK_MS;
   return now + FALLBACK_MS;
 }
-function sensesOf(cfg, bases, spans, now, fallback, mems, watched = watchedKinds(cfg)) {
+var limitOf = (cfg, b, paid = false) => cfg.limitPause && !paid && atLimit(b);
+function sensesOf(cfg, bases, spans, now, fallback, mems, watched = watchedKinds(cfg), o = {}) {
   const edges = [];
+  const paid = o.paid === true;
   const kinds = watched.map((kind) => {
     const reserve = reserveOf2(cfg, kind);
     const span = spanOf(spans, kind);
     const real = bases[kind].real;
-    const v = viewOf(real, bases[kind].basis, reserve, span, now);
+    const withTest = bases[kind].basis;
+    const limit = limitOf(cfg, withTest, paid);
+    const v = limit ? { basis: withTest, tripped: true, skipAt: null, open: false } : viewOf(real, withTest, reserve, span, now);
     const rv = viewOf(real, real, reserve, span, now);
     const b = v.basis;
     const windowEnd = windowEndFor(kind, b, now, fallback);
     if (v.tripped && v.skipAt !== null) edges.push(v.skipAt);
+    if (limit && b.kind !== "none" && b.resetsAtMs !== null) edges.push(b.resetsAtMs);
     const floor = floorOf(cfg, kind);
     const point = floor > 0 ? pointOf(floor) : null;
     return {
@@ -2374,22 +2759,31 @@ function sensesOf(cfg, bases, spans, now, fallback, mems, watched = watchedKinds
       open: v.open,
       test: b.kind === "test",
       seed: b.kind === "seed",
-      realIn: rv.tripped && !rv.open,
+      realIn: rv.tripped && (!rv.open || limitOf(cfg, real, paid)),
+      // a real reading at the limit is never open
       realReset: real.kind === "none" ? null : real.resetsAtMs,
       floor,
       point,
-      atFloor: v.tripped && !v.open && atPoint(b, point),
-      realPct: real.kind === "none" ? void 0 : real.pct
+      atFloor: !limit && v.tripped && !v.open && atPoint(b, point),
+      // the limit question replaces the second question
+      realPct: real.kind === "none" ? void 0 : real.pct,
+      limit
     };
   });
   return { kinds, edges };
 }
 var noFloor = (k) => ({ ...k, floor: 0, point: null, atFloor: false });
-var resumeTo = (k) => k.tripped && !k.open && !k.atFloor && k.point !== null ? k.point : void 0;
+var resumeTo = (k) => k.tripped && !k.open && !k.atFloor && !k.limit && k.point !== null ? k.point : void 0;
 var consentOfEnd = (end) => ({ until: end.end, ...end.to === void 0 ? {} : { to: end.to } });
 var realHolder = (k) => ({ kind: k.kind, resetsAtMs: k.realReset });
 var commandHolders = (kinds) => kinds.filter((k) => k.realIn).map(realHolder);
-var viewedOf = (k) => ({ kind: k.kind, pct: pctOf(k.basis) ?? 0, test: k.test });
+var viewedOf = (k) => ({
+  kind: k.kind,
+  pct: pctOf(k.basis) ?? 0,
+  test: k.test,
+  ...k.basis.kind === "none" || k.basis.resetsAtMs === null ? {} : { end: k.windowEnd },
+  ...k.limit ? { limit: true } : {}
+});
 var realBound = (k, now) => k.test ? k.realReset ?? now + FALLBACK_MS : k.windowEnd;
 var modeOf = (cfg) => cfg.pausePrompt === null ? "hold" : "tell";
 function testReading(pct, kind, live, now, inMs) {
@@ -2410,7 +2804,8 @@ function factsFrom(ks, now, owner = false, toOf) {
       ...k.test ? { test: true } : {},
       ...owner && k.skipAt !== null ? { span: k.span } : {},
       ...k.atFloor ? { floor: k.floor } : {},
-      ...to === void 0 ? {} : { to }
+      ...to === void 0 ? {} : { to },
+      ...k.limit ? { limit: true } : {}
     };
   });
 }
@@ -2430,7 +2825,7 @@ var notStartedFor = (s, a) => notStarted(factsFrom(namedKinds(s, a), s.now));
 var namedOf = (q) => q.kinds.map((kind) => ({ kind, test: q.ends[kind]?.test === true }));
 var answeredOf = (q) => q === void 0 ? [] : q.kinds.map((kind) => {
   const end = q.ends[kind];
-  return { kind, test: end?.test === true, ...end?.to === void 0 ? {} : { to: end.to } };
+  return { kind, test: end?.test === true, ...end?.to === void 0 ? {} : { to: end.to }, ...end === void 0 ? {} : { end: end.end } };
 });
 var namedStop = (r) => (r.kinds ?? ["five_hour"]).map((kind) => ({ kind, test: r.test === true }));
 var byKind = (fs) => [...fs].sort((a, b) => KINDS.indexOf(a.kind ?? "five_hour") - KINDS.indexOf(b.kind ?? "five_hour"));
@@ -2451,6 +2846,10 @@ function floorEndsOf(k, list, now, failed = false) {
   return { unset, tombs };
 }
 function splitKind(out, k, list, failed, now) {
+  if (k.limit) {
+    out.gating.push(k);
+    return;
+  }
   const use = failed ? [] : list;
   const c = coveringConsent(
     use.map((e) => e.c),
@@ -2497,22 +2896,23 @@ function holdersFrom(kinds, gating, realLists, now) {
   }
   return out;
 }
-var unansweredGating = (resumed, gating) => gating.filter((k) => !answers(resumed, viewedOf(k)));
-function unansweredHolders(s, resumed, holders) {
+var unansweredGating = (resumed, gating, jitter = 0) => gating.filter((k) => !answers(resumed, viewedOf(k), jitter));
+function unansweredHolders(s, resumed, holders, jitter = 0) {
   const viewOfKind = (kind) => {
     const k = s.kinds.find((x) => x.kind === kind);
     return k === void 0 ? { kind, pct: 0, test: false } : viewedOf(k);
   };
-  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind)));
+  return holders.filter((h) => !answers(resumed, viewOfKind(h.kind), jitter));
 }
 var consentedOf = (s, gating) => s.cfg.enabled && s.tripped && gating.length === 0;
 var checksStop = (s, gating) => s.cfg.enabled && s.attended && !consentedOf(s, gating);
 var newTold = () => ({ five_hour: { windowEnd: 0, keys: /* @__PURE__ */ new Set() }, seven_day: { windowEnd: 0, keys: /* @__PURE__ */ new Set() } });
-function toldHas(told, k, key) {
+var toldWindow = (end, k, jitter = 0) => end === k.windowEnd || jitter > 0 && !k.test && Math.abs(end - k.windowEnd) <= jitter;
+function toldHas(told, k, key, jitter = 0) {
   const t = told[k.kind];
-  return t.windowEnd === k.windowEnd && t.keys.has(stageKey(key, k.atFloor));
+  return toldWindow(t.windowEnd, k, jitter) && t.keys.has(stageKey(key, k.atFloor));
 }
-var toldMainOf = (told, gating, sessionId) => gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`));
+var toldMainOf = (told, gating, sessionId, jitter = 0) => gating.length > 0 && gating.every((k) => toldHas(told, k, `${sessionId}:main`, jitter));
 function verdictOf(i) {
   const { s, gating } = i;
   const verdict = decide({
@@ -2526,14 +2926,15 @@ function verdictOf(i) {
     person: i.person,
     stopped: i.stopped,
     mainTold: i.toldMain,
-    seedOnly: gating.length > 0 && gating.every((k) => k.seed)
+    seedOnly: gating.length > 0 && gating.every((k) => k.seed),
+    limit: gating.some((k) => k.limit)
   });
   return { verdict, stopped: i.stopped, gating, holders: i.holders };
 }
-function claimTold(told, gating, key) {
+function claimTold(told, gating, key, jitter = 0) {
   let fresh = false;
   for (const k of gating) {
-    if (told[k.kind].windowEnd !== k.windowEnd) told[k.kind] = { windowEnd: k.windowEnd, keys: /* @__PURE__ */ new Set() };
+    if (!toldWindow(told[k.kind].windowEnd, k, jitter)) told[k.kind] = { windowEnd: k.windowEnd, keys: /* @__PURE__ */ new Set() };
     const staged = stageKey(key, k.atFloor);
     if (told[k.kind].keys.has(staged)) continue;
     told[k.kind].keys.add(staged);
@@ -2542,20 +2943,30 @@ function claimTold(told, gating, key) {
   return fresh;
 }
 var toldMark = (k) => `${k.windowEnd}:${k.atFloor ? "floor" : "reserve"}`;
-function toldNotice(s, a, marks) {
+function toldNotice(s, a, marks, jitter = 0) {
   const ks = namedKinds(s, a);
-  if (ks.every((k) => marks[k.kind] === toldMark(k))) return void 0;
-  for (const k of ks) marks[k.kind] = toldMark(k);
+  const shown = (k) => {
+    const m = marks[k.kind];
+    if (typeof m !== "string") return false;
+    const mine = toldMark(k);
+    if (m === mine) return true;
+    const cut = m.lastIndexOf(":");
+    const end = Number(m.slice(0, cut));
+    return cut > 0 && m.slice(cut) === mine.slice(mine.lastIndexOf(":")) && Number.isFinite(end) && toldWindow(end, k, jitter);
+  };
+  const fresh = ks.filter((k) => !shown(k));
+  if (fresh.length === 0) return void 0;
+  for (const k of fresh) marks[k.kind] = toldMark(k);
   return notice.told(factsFrom(ks, s.now));
 }
-function unattendedLines(s, marks) {
+function unattendedLines(s, marks, jitter = 0) {
   const out = [];
-  const fresh = s.kinds.filter((k) => k.tripped && !k.open && marks.reserve[k.kind] !== k.windowEnd);
+  const fresh = s.kinds.filter((k) => k.tripped && !k.open && !toldWindow(marks.reserve[k.kind], k, jitter));
   if (fresh.length > 0) {
     for (const k of fresh) marks.reserve[k.kind] = k.windowEnd;
     out.push(debugLine.unattended(factsFrom(fresh, s.now), s.cfg.headless));
   }
-  const opened = s.kinds.filter((k) => k.open && marks.open[k.kind] !== k.windowEnd);
+  const opened = s.kinds.filter((k) => k.open && !toldWindow(marks.open[k.kind], k, jitter));
   if (opened.length > 0) {
     for (const k of opened) marks.open[k.kind] = k.windowEnd;
     out.push(debugLine.unattendedOpen(factsFrom(opened, s.now)));
@@ -2564,7 +2975,9 @@ function unattendedLines(s, marks) {
 }
 var dueMargin = (k) => marginOf(k.skipAt !== null, k.test);
 function questionOf(opener, s, a, now) {
-  const g = namedKinds(s, a);
+  const g0 = namedKinds(s, a);
+  const limit = g0.some((k) => k.limit);
+  const g = limit ? g0.filter((k) => k.limit) : g0;
   const ends = {};
   for (const k of g) {
     const to = resumeTo(k);
@@ -2590,13 +3003,19 @@ function questionOf(opener, s, a, now) {
     auto: s.cfg.autoResume,
     loops: opener === "loop" ? 1 : 0,
     since: now,
-    mode: modeOf(s.cfg),
+    mode: limit ? "hold" : modeOf(s.cfg),
     opener,
     facts: factsFrom(g, now, skip, resumeTo),
     handoffs: 0,
-    noted: false
+    noted: false,
+    ...limit ? { limit: true } : {}
   };
 }
+var quietOf2 = (q) => q.silent || q.chosen === true;
+var supersedes = (q, gating) => q.limit !== true && !q.silent && gating.some((k) => k.limit);
+var stopsAtLimit = (q, via, sNow) => via !== "time limit" && (q.limit === true || (via === "dialog" || via === "command") && sNow?.split.gating.some((k) => k.limit) === true);
+var stopAutoOf = (q, via, auto, sNow) => stopsAtLimit(q, via, sNow) ? false : auto;
+var continuesLine = (q, now) => now < q.holdEnd ? notice.limitContinues(q.facts) : void 0;
 function resumeNotice(q, now) {
   const open = q.kinds.filter((kind) => (q.ends[kind]?.end ?? 0) > now);
   return open.length > 0 ? notice.continuing(
@@ -2649,11 +3068,12 @@ function endedFor(named, s, gatingNow, owner) {
   const reset = named.filter((n) => !open.some((f) => (f.kind ?? "five_hour") === n.kind) && !gatingNow.some((k) => k.kind === n.kind));
   return { reset, open };
 }
-function stopPlan(q, now, auto, sNow) {
+function stopPlan(q, now, auto, sNow, atLimit2 = false) {
   const work = q.loops > 0;
   const passed = auto ? q.holdEnd <= now : q.skip && q.stopEnd <= now;
   const real = sNow === void 0 ? q.real : sNow.holders;
-  const late = sNow !== void 0 && passed ? sNow.split.gating : [];
+  const limitNow = sNow === void 0 ? [] : sNow.split.gating.filter((k) => k.limit);
+  const late = sNow === void 0 ? [] : passed ? sNow.split.gating : limitNow;
   const opened = sNow !== void 0 && passed ? sNow.split.open.filter((k) => q.kinds.includes(k.kind)) : [];
   const until = auto ? Math.max(q.holdEnd, ...late.map((k) => k.holdEnd)) : Math.max(q.stopEnd, ...late.map((k) => k.stopEnd));
   const ended = sNow === void 0 || opened.length === 0 ? void 0 : endedFor(namedOf(q), sNow.s, late, true);
@@ -2665,7 +3085,14 @@ function stopPlan(q, now, auto, sNow) {
     ...late.map((k) => k.skipAt).filter((t) => t !== null)
   ];
   const skip = skipTag(until, starts, [q.due, ...late.map((k) => k.holdEnd + dueMargin(k))], auto);
-  return { kind: "write", until, ...ended === void 0 ? {} : { ended }, late, record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real } };
+  return {
+    kind: "write",
+    until,
+    ...ended === void 0 ? {} : { ended },
+    late,
+    record: { kinds, windowEnd: until, work, auto, test: allTest, skip, real },
+    ...atLimit2 || limitNow.length > 0 ? { limit: true } : {}
+  };
 }
 function stopOpenNotice(q, ended, via) {
   if (via === "time limit") return notice.holdLimitLate(q.facts, ended, false);
@@ -2681,6 +3108,11 @@ function stopNotice(q, plan, written, via, now, auto) {
   );
   const u = untilFor(facts, written.windowEnd, written.kinds ?? plan.record.kinds, written.skip === true, now);
   const text3 = (limit, stopped) => via === "time limit" ? { text: limit } : via !== "command" ? { text: stopped } : {};
+  if (q.limit === true || plan.limit === true) {
+    const cont = auto && written.auto === true && written.work === true;
+    const at = cont || written.windowEnd > now ? u.at : void 0;
+    return { ...text3(notice.limitHoldLimit(at, cont), notice.limitStopped(at, cont)), late: { record: written, until: u } };
+  }
   const ended = plan.ended;
   if (ended !== void 0 && late.length === 0 && auto && work && plan.until <= now) {
     return { ...text3(notice.holdLimitLate(facts, ended, true), notice.stoppedLate(facts, ended, true)), late: { record: written, ended, until: u } };
@@ -2702,7 +3134,7 @@ var takenOf = (record, s) => ({
 var dueWait = (q, now) => !(now >= q.due) && now < q.nextCheck && (q.noted || now < q.noteAt);
 function dueStep(q, now, auto) {
   const due = now >= q.due;
-  if (!q.silent && !auto) {
+  if (!quietOf2(q) && !auto) {
     if (!q.noted && now >= q.noteAt) return q.skip ? "noteSensed" : "note";
     return "wait";
   }
@@ -2719,11 +3151,14 @@ function sensedNote(q, s, gatingNow, now) {
 }
 function dueRelease(q, now, gatingNow, tooRecent) {
   const due = now >= q.due;
-  if (!due && gatingNow.length > 0) return void 0;
+  if (supersedes(q, gatingNow)) return "limit";
+  if (!due && (q.limit === true ? gatingNow.some((k) => k.limit) : gatingNow.length > 0)) return void 0;
   if (gatingNow.length === 0 && tooRecent) return void 0;
   return due ? "reset" : "quota";
 }
 function againNotice(q, via, gatingNow, s) {
+  if (via === "limit") return notice.limitReached;
+  if (via === "quota" && q.limit === true) return notice.limitOver;
   const ended = endedFor(namedOf(q), s, gatingNow, q.skip);
   if (!q.skip && ended.open.length === 0) {
     if (via === "quota") return notice.outOfReserve;
@@ -2749,6 +3184,24 @@ function raiseAtFloor(q, sNow) {
     q.ends[k.kind] = full;
     q.facts = byKind([...q.facts.filter((f) => (f.kind ?? "five_hour") !== k.kind), ...factsFrom([k], sNow.now, q.skip)]);
   }
+}
+function lowerAfterLimit(q, sNow) {
+  if (q.limit !== true) return;
+  let lowered = false;
+  for (const k of sNow.kinds) {
+    const end = q.ends[k.kind];
+    if (end === void 0 || end.to !== void 0 || k.limit || k.test !== end.test || Math.abs(k.windowEnd - end.end) > 6e4) continue;
+    const to = k.open || k.atFloor || k.point === null ? void 0 : k.point;
+    if (to === void 0) continue;
+    q.ends[k.kind] = { ...end, to };
+    q.facts = byKind([...q.facts.filter((f) => (f.kind ?? "five_hour") !== k.kind), ...factsFrom([k], sNow.now, q.skip, () => to)]);
+    lowered = true;
+  }
+  if (lowered) q.mode = modeOf(sNow.cfg);
+}
+function tierAtResume(q, sNow) {
+  raiseAtFloor(q, sNow);
+  lowerAfterLimit(q, sNow);
 }
 function resumeReadReply(s, absent2) {
   const read = s.kinds.filter((k) => k.basis.kind !== "none");
@@ -2783,6 +3236,14 @@ function resumeCase(s, split, mode) {
   });
   return { gating, write, facts: factsFrom(gating, s.now, false, resumeTo) };
 }
+function resumeAtLimit(sNow, q) {
+  const at = sNow?.kinds.filter((k) => k.limit) ?? [];
+  if (q?.limit === true && q.chosen !== true && (sNow === void 0 || at.length > 0)) return { choose: true, reply: resumeReply("limit-asking", q.facts) };
+  if (sNow !== void 0 && at.length > 0) return { choose: false, reply: resumeReply("limit", factsFrom(at, sNow.now)) };
+  if (sNow === void 0 && q?.limit === true) return { choose: false, reply: resumeReply("limit", q.facts) };
+  return void 0;
+}
+var resumeAskingReply = (q, now) => q?.limit === true && q.holdEnd <= now ? resumeReply("limit-late") : resumeReply("asking", q?.facts, void 0, void 0, q?.mode);
 var gatesAfter = (sNow) => sNow?.kinds.some((k) => k.tripped && !k.open) === true;
 function stopOverdueReply(t) {
   if (t.open.length > 0) return stopReply("overdue-open", t.open);
@@ -2809,7 +3270,7 @@ function stopAskingIdle(q, auto, now) {
 }
 function stopCase(s, cfg, absent2) {
   const trip = tripOf(cfg.reserve);
-  const weeklyTrip = cfg.weeklyReserve > 0 ? tripOf(cfg.weeklyReserve) : void 0;
+  const weeklyTrip = cfg.weeklyReserve > 0 && absent2?.includes("seven_day") !== true ? tripOf(cfg.weeklyReserve) : void 0;
   const read = s.kinds.filter((k) => k.basis.kind !== "none");
   if (read.length === 0) return { reply: stopReply("none", void 0, trip, void 0, weeklyTrip, void 0, absent2) };
   if (!s.tripped) return { reply: stopReply("below", factsFrom(read, s.now), trip, void 0, weeklyTrip, void 0, absent2) };
@@ -2818,13 +3279,14 @@ function stopCase(s, cfg, absent2) {
   if (ks.length === 0) return { reply: stopReply("open", factsFrom(trippedKinds, s.now)) };
   return { ks, facts: factsFrom(trippedKinds, s.now), real: ks.filter((k) => k.realIn).map(realHolder) };
 }
-var stopKept = (st, ks) => st !== void 0 && ks.every((k) => (st.kinds ?? ["five_hour"]).includes(k.kind));
+var stopKept = (st, ks) => st !== void 0 && ks.every((k) => (st.kinds ?? ["five_hour"]).includes(k.kind)) && ks.every((k) => !k.limit || st.auto !== true && st.windowEnd >= k.stopEnd);
 function stopKeptReply(st, facts, autoResume, now, heldInPlace = false) {
   const shows = st.kinds !== void 0 && (st.auto === true && autoResume || st.skip === true);
   const reply = stopReply("stopped", facts, void 0, shows && st.kinds !== void 0 ? { at: atText(st.windowEnd, st.kinds, void 0, now) } : void 0);
   return heldInPlace ? `${reply} ${HELD_WAITS}` : reply;
 }
-function stopWriteOf(ks, auto, work) {
+function stopWriteOf(ks, autoResume, work) {
+  const auto = autoResume && !ks.some((k) => k.limit);
   const until = auto ? Math.max(...ks.map((k) => k.holdEnd)) : Math.max(...ks.map((k) => k.stopEnd));
   const skip = skipTag(
     until,
@@ -2843,6 +3305,7 @@ function stopWriteOf(ks, auto, work) {
   };
 }
 function stopTrippedReply(ks, facts, written, auto, now) {
+  if (ks.some((k) => k.limit)) return stopReply("limit", void 0, void 0, { at: atText(written.windowEnd, written.kinds ?? ks.map((k) => k.kind), void 0, now) });
   const wSkip = written.skip === true;
   const u = untilFor(
     factsFrom(ks, now, wSkip),
@@ -2881,13 +3344,15 @@ function simulateText(i) {
   const testBasis = { kind: "test", ...i.reading };
   const span = spanOf(i.spans, spec.kind);
   const f = { ...factsOf(testBasis, reserve, void 0, spec.kind, now), test: true, ...span > 0 ? { span } : {} };
+  const kind = i.inPlace ? "raised" : i.replaces ? "replaced" : "set";
+  if (i.cfg.limitPause && i.paid !== true && spec.pct >= LIMIT_PCT) return simulateReply(kind, f, void 0, void 0, void 0, true);
   const realBasis2 = basis(i.live, i.mem, now, void 0, spec.kind);
   const opens = simulateOpens(testBasis, realBasis2, reserve, span, now, f);
   const floor = floorOf(i.cfg, spec.kind);
   const pastFloor = floor > 0 && spec.pct >= pointOf(floor) && opens !== "now" ? floor : void 0;
   const rv = viewOf(realBasis2, realBasis2, reserve, span, now);
   const realIn = rv.tripped && !rv.open && (pctOf(realBasis2) ?? 100) < spec.pct;
-  return simulateReply(i.inPlace ? "raised" : "set", f, opens, pastFloor, realIn);
+  return simulateReply(kind, f, opens, pastFloor, realIn);
 }
 function seenSplit(kinds, lists, now) {
   const out = { consent: {}, ended: {}, gating: [], open: [] };
@@ -2895,6 +3360,13 @@ function seenSplit(kinds, lists, now) {
     const list = lists(k);
     const pct = pctOf(k.basis) ?? 0;
     const c = coveringConsent(list, now, k.windowEnd, pct, k.point);
+    if (k.limit) {
+      const e2 = c === void 0 ? endedFloor(list, now, k.windowEnd, pct, k.point) : void 0;
+      if (c !== void 0) out.consent[k.kind] = c;
+      if (e2 !== void 0) out.ended[k.kind] = e2;
+      out.gating.push(k);
+      continue;
+    }
     if (c !== void 0 && !(k.open && c.to !== void 0)) {
       out.consent[k.kind] = c;
       continue;
@@ -2912,7 +3384,7 @@ function seenOf(i) {
   const toldKeys = /* @__PURE__ */ new Set();
   for (const k of split.gating) {
     const t = i.told[k.kind];
-    if (t.windowEnd !== k.windowEnd) continue;
+    if (!toldWindow(t.windowEnd, k, i.jitter)) continue;
     for (const key of t.keys) {
       const ks = keyStage(key);
       if (key.startsWith(prefix) && ks.atFloor === k.atFloor) toldKeys.add(ks.base);
@@ -2925,9 +3397,10 @@ function seenOf(i) {
     consented: cfg.enabled && tripped && split.gating.length === 0 && split.open.length === 0,
     open: cfg.enabled && tripped && split.gating.length === 0 && split.open.length > 0,
     stopped: stop !== void 0,
-    asking: question !== void 0 && !question.silent,
+    asking: question !== void 0 && !quietOf2(question),
     told: tripped && toldKeys.size > 0,
     attended: i.attended,
+    limit: split.gating.some((k) => k.limit),
     ...i.present === void 0 ? {} : { bases: i.present.map((k) => i.bases[k].basis) }
   });
   return {
@@ -2947,6 +3420,14 @@ function seenOf(i) {
     phase
   };
 }
+function limitAt(p) {
+  const q = p.question;
+  if (q?.limit === true) return { ms: q.holdEnd, kinds: q.kinds, held: q.chosen === true };
+  const at = p.gating.filter((k) => k.limit);
+  if (at.length === 0) return void 0;
+  return { ms: Math.max(...at.map(resetOf)), kinds: at.map((k) => k.kind), held: false };
+}
+var resetOf = (k) => k.basis.kind === "none" ? Number.POSITIVE_INFINITY : k.basis.resetsAtMs ?? Number.POSITIVE_INFINITY;
 function consentPastWindow(k, raw, now) {
   const c = parseConsent(raw);
   if (c === void 0) return void 0;
@@ -2958,6 +3439,7 @@ function statusInput(p, i) {
   const week = p.bases.seven_day;
   const q = p.question;
   const st = p.stop;
+  const lim = p.phase === "limit" ? limitAt(p) : p.phase === "stopped" ? limitAt({ gating: p.gating }) : void 0;
   const at = q !== void 0 ? { ms: q.holdEnd, kinds: q.kinds, skip: q.skip } : st?.kinds !== void 0 && (st.auto === true || st.skip === true) ? { ms: st.windowEnd, kinds: st.kinds, skip: st.skip === true } : void 0;
   const rowOf = (kind) => {
     const k = p.kinds.find((x) => x.kind === kind);
@@ -3000,6 +3482,8 @@ function statusInput(p, i) {
       ...rowOf("seven_day")
     },
     autoResume: { on: p.cfg.autoResume, from: p.cfg.from.autoResume },
+    limitPause: { on: p.cfg.limitPause, from: p.cfg.from.limitPause },
+    ...lim === void 0 ? {} : { limit: lim },
     ...at === void 0 ? {} : { at },
     ...st === void 0 ? {} : { work: st.work === true, autoStop: st.auto === true && p.cfg.autoResume, skipStop: st.skip === true },
     tickerStale: i.tickerStale,
@@ -3058,16 +3542,18 @@ function removeDead(st, dead) {
     if (st[field2] === d.raw) delete st[field2];
   }
 }
+function parentOf(sx, attended, log) {
+  if (attended || sx.parent === void 0) return void 0;
+  try {
+    return sx.parent.read();
+  } catch (e) {
+    log?.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
+    return void 0;
+  }
+}
 function consentsOf(sx, q, log) {
   const state = sx.store.read();
-  let parent;
-  if (!q.attended && sx.parent !== void 0) {
-    try {
-      parent = sx.parent.read();
-    } catch (e) {
-      log?.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
-    }
-  }
+  const parent = parentOf(sx, q.attended, log);
   const r = consentsIn({ ...q, state, ...parent === void 0 ? {} : { parent }, hostPid: sx.hostPid });
   if (r.dead.length > 0) {
     try {
@@ -3128,7 +3614,7 @@ function setTombs(st, kind, tombs) {
 
 // codex/src/held.ts
 import { readdirSync as readdirSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 var callId = (call) => String(call.id);
 var BEAT_EVERY_MS = TICK_MS;
 function addHeld(tx, tid, call, owner, now, question) {
@@ -3140,7 +3626,6 @@ function addHeld(tx, tid, call, owner, now, question) {
     ...call.turn === void 0 ? {} : { turn: call.turn },
     since: call.since,
     ...question === void 0 ? {} : { question },
-    ...call.prompt === void 0 ? {} : { prompt: call.prompt },
     brokerPid: owner.brokerPid,
     hostPid: owner.hostPid
   };
@@ -3157,7 +3642,7 @@ function removeHeld(tx, tid, call, brokerPid) {
 }
 function threadIds(store) {
   try {
-    return readdirSync2(join3(store.dir, "threads")).filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -".json".length)).sort();
+    return readdirSync2(join4(store.dir, "threads")).filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -".json".length)).filter(isSafeId).sort();
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT" || code === "ENOTDIR") return [];
@@ -3165,7 +3650,7 @@ function threadIds(store) {
   }
 }
 function readThread(store, tid) {
-  const v = readOwnJson(join3(store.dir, "threads", `${tid}.json`));
+  const v = readOwnJson(join4(store.dir, "threads", `${tid}.json`));
   if (typeof v !== "object" || v === null || v.v !== FORMAT) return void 0;
   return v;
 }
@@ -3233,7 +3718,7 @@ function waiterOf(d, dir, signal) {
 }
 
 // codex/src/quota.ts
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 
 // codex/src/clock.ts
 var MAX_TIMER_MS = 2147483647;
@@ -3299,11 +3784,12 @@ var realClock = {
 };
 
 // codex/src/quota.ts
-var isObject3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var finite2 = (v) => typeof v === "number" && Number.isFinite(v);
 var errText = (e) => e instanceof Error ? e.message : String(e);
+var ahead = (at, now) => at > now + CLOCK_SKEW_MS;
 var limitIn = (s, k) => codexLimits(s).find((l) => l.kind === k);
-var asSeed = (v) => isObject3(v) && finite2(v["pct"]) && finite2(v["resetsAtMs"]) && finite2(v["at"]) ? { pct: v["pct"], resetsAtMs: v["resetsAtMs"], at: v["at"] } : void 0;
+var asSeed = (v) => isObject4(v) && finite2(v["pct"]) && finite2(v["resetsAtMs"]) && finite2(v["at"]) ? { pct: v["pct"], resetsAtMs: v["resetsAtMs"], at: v["at"] } : void 0;
 function liveReadOf(f) {
   const { v: _v, by: _by, recent: _recent, ...read } = f;
   return read;
@@ -3311,11 +3797,11 @@ function liveReadOf(f) {
 var sameCounts = (a, b) => KINDS.every((k) => (a[k] ?? 0) === (b[k] ?? 0));
 var noRollout = (sx) => sx.transcript === null || sx.transcript === "";
 function createQuota(d) {
-  const livePath = join4(d.paths.data, "live.json");
-  const liveLock = join4(d.paths.data, "live.lock");
-  const errorPath = join4(d.paths.data, "live-error.json");
-  const seedPath = join4(d.paths.data, "seed.json");
-  const seedLock = join4(d.paths.data, "seed.lock");
+  const livePath = join5(d.paths.data, "live.json");
+  const liveLock = join5(d.paths.data, "live.lock");
+  const errorPath = join5(d.paths.data, "live-error.json");
+  const seedPath = join5(d.paths.data, "seed.json");
+  const seedLock = join5(d.paths.data, "seed.lock");
   const lockClock = d.lockClock ?? realClock;
   let inflight;
   let firstDone = () => {
@@ -3327,16 +3813,27 @@ function createQuota(d) {
   const readFile2 = (file, valid) => {
     try {
       const v = readJson(file);
-      return isObject3(v) && v["v"] === 1 && valid(v) ? v : void 0;
+      return isObject4(v) && v["v"] === 1 && valid(v) ? v : void 0;
     } catch (e) {
       d.log.debug(codexDebug.readFailed(file, errText(e)));
       return void 0;
     }
   };
-  const readLive = () => readFile2(livePath, (v) => finite2(v["at"]));
+  const readLive = () => readFile2(livePath, (v) => finite2(v["at"]) && (v["recent"] === void 0 || Array.isArray(v["recent"])));
   const readError = () => readFile2(errorPath, (v) => finite2(v["at"]) && typeof v["error"] === "string");
-  const readSeed = () => readFile2(seedPath, () => true);
-  const young = (f, maxAgeMs) => f !== void 0 && d.clock.now() - f.at < maxAgeMs;
+  const readSeed = () => {
+    const f = readFile2(seedPath, () => true);
+    if (f === void 0) return void 0;
+    const out = { ...f };
+    for (const k of KINDS) if (out[k] !== void 0 && asSeed(out[k]) === void 0) delete out[k];
+    const c = out.credits;
+    if (c !== void 0 && !(isObject4(c) && finite2(c["at"]) && isObject4(c["value"]))) delete out.credits;
+    return out;
+  };
+  const young = (f, maxAgeMs) => {
+    const now = d.clock.now();
+    return f !== void 0 && now - f.at < maxAgeMs && !ahead(f.at, now);
+  };
   const write = (file, v) => {
     try {
       writeJson(file, v);
@@ -3431,8 +3928,9 @@ function createQuota(d) {
     inflight = p;
     return p;
   };
-  const presentOf = (store, seen, seedInWindow) => {
+  const presentOf = (store, seen, seedInWindow, now) => {
     const state = store.read();
+    const since = (at) => at === void 0 || ahead(at, now) ? 0 : at;
     let count = { ...state.absentCount ?? {} };
     const apply = (from, after) => {
       const news = seen.filter((o) => o.at > after && isObservation(o.snapshot)).sort((a, b) => a.at - b.at);
@@ -3442,11 +3940,11 @@ function createQuota(d) {
       for (const k of KINDS) if (p.count[k] !== void 0) capped[k] = Math.min(BLIND_AFTER, p.count[k] ?? 0);
       return { count: capped, at: news.length === 0 ? after : Math.max(after, news[news.length - 1]?.at ?? after) };
     };
-    const next = apply(count, state.absentAt ?? 0);
+    const next = apply(count, since(state.absentAt));
     if (!sameCounts(next.count, count)) {
       try {
         count = store.locked((tx) => {
-          const again = apply(tx.state.absentCount ?? {}, tx.state.absentAt ?? 0);
+          const again = apply(tx.state.absentCount ?? {}, since(tx.state.absentAt));
           tx.state.absentCount = again.count;
           tx.state.absentAt = again.at;
           return again.count;
@@ -3458,16 +3956,16 @@ function createQuota(d) {
     }
     return KINDS.filter((k) => (count[k] ?? 0) < BLIND_AFTER || seedInWindow(k));
   };
-  const updateSeed = (own, credits, file) => {
+  const updateSeed = (own, credits, file, now) => {
+    const older = (had, at) => had === void 0 || at > had.at || ahead(had.at, now);
     const entries = [];
     for (const k of KINDS) {
       const o = own[k];
       const a = o === void 0 ? void 0 : anchoredOf(o.limit);
       if (o === void 0 || a === void 0) continue;
-      const had = file?.[k];
-      if (had === void 0 || o.at > had.at) entries.push([k, { ...a, at: o.at }]);
+      if (older(file?.[k], o.at)) entries.push([k, { ...a, at: o.at }]);
     }
-    const newCredits = credits !== void 0 && (file?.credits === void 0 || credits.at > file.credits.at);
+    const newCredits = credits !== void 0 && older(file?.credits, credits.at);
     if (entries.length === 0 && !newCredits) return;
     try {
       withLock(seedLock, d.owner, () => {
@@ -3475,13 +3973,12 @@ function createQuota(d) {
         const next = { ...cur, v: 1, by: VERSION };
         let changed = false;
         for (const [k, e] of entries) {
-          const had = asSeed(cur[k]);
-          if (had === void 0 || e.at > had.at) {
+          if (older(cur[k], e.at)) {
             next[k] = e;
             changed = true;
           }
         }
-        if (newCredits && credits !== void 0 && (cur.credits === void 0 || credits.at > cur.credits.at)) {
+        if (newCredits && credits !== void 0 && older(cur.credits, credits.at)) {
           next.credits = credits;
           changed = true;
         }
@@ -3492,27 +3989,30 @@ function createQuota(d) {
     }
   };
   const view = (sx, now, points = {}) => {
-    const liveFile = readLive();
-    const liveError = readError();
+    const known = (r) => r === void 0 || !ahead(r.at, now) ? r : { ...r, at: 0 };
+    const rawLive = readLive();
+    const liveFile = known(rawLive);
+    const liveError = known(readError());
     const seedFile = readSeed();
     const roll = sx.transcript === null || sx.transcript === "" ? void 0 : d.rollouts.read(sx.transcript);
     const liveOwn = !noRollout(sx) || routeNow() !== void 0;
     const liveLimit = (k) => liveFile?.codex === void 0 || liveFile.codex === null ? void 0 : limitIn(liveFile.codex, k);
     const own = {};
     for (const k of KINDS) {
-      const tc = roll?.byKind[k];
+      const tc = known(roll?.byKind[k]);
       const l = tc === void 0 ? void 0 : limitIn(tc.snapshot, k);
       if (tc !== void 0 && l !== void 0) own[k] = { at: tc.at, limit: l, from: "rollout" };
       const lf = liveLimit(k);
       const prev = own[k];
       if (liveOwn && liveFile !== void 0 && lf !== void 0 && (prev === void 0 || liveFile.at >= prev.at)) own[k] = { at: liveFile.at, limit: lf, from: liveFile.route };
     }
-    const newerObs = roll?.newestObs !== void 0 && liveFile !== void 0 && roll.newestObs.at > liveFile.at;
+    const newestObs = known(roll?.newestObs);
+    const newerObs = newestObs !== void 0 && liveFile !== void 0 && newestObs.at > liveFile.at;
     const blind = liveFile !== void 0 && blindFrom(liveFile.recent ?? []) && !newerObs;
     const seed = {};
     const readings = {};
     for (const k of KINDS) {
-      let s = asSeed(seedFile?.[k]);
+      let s = known(asSeed(seedFile?.[k]));
       const ll = liveOwn ? void 0 : liveLimit(k);
       const la = ll === void 0 ? void 0 : anchoredOf(ll);
       if (la !== void 0 && liveFile !== void 0 && (s === void 0 || liveFile.at > s.at)) s = { ...la, at: liveFile.at };
@@ -3537,29 +4037,28 @@ function createQuota(d) {
       const r = readings[k]?.seed;
       return r !== void 0 && inWindow(r, now, k);
     };
-    const seen = [...roll?.fresh ?? []];
-    const obs = roll?.newestObs;
+    const seen = (roll?.fresh ?? []).map((o) => known(o) ?? o);
+    const obs = newestObs;
     if (obs !== void 0 && !seen.some((o) => o.at === obs.at)) seen.push(obs);
     if (liveFile?.codex !== void 0 && liveFile.codex !== null) seen.push({ at: liveFile.at, snapshot: liveFile.codex });
-    const present = presentOf(sx.store, seen, seedInWindow);
+    const present = presentOf(sx.store, seen, seedInWindow, now);
     const sources = [];
-    if (liveFile !== void 0 && isObject3(liveFile.credits)) sources.push({ at: liveFile.at, value: liveFile.credits, own: true });
+    if (liveFile !== void 0 && isObject4(liveFile.credits)) sources.push({ at: liveFile.at, value: liveFile.credits, own: true });
     const rc = roll?.newest?.snapshot.credits;
-    if (roll?.newest !== void 0 && isObject3(rc)) sources.push({ at: roll.newest.at, value: rc, own: true });
-    if (seedFile?.credits !== void 0 && isObject3(seedFile.credits.value) && finite2(seedFile.credits.at)) {
-      sources.push({ at: seedFile.credits.at, value: seedFile.credits.value, own: false });
-    }
-    const best = sources.reduce((a, b) => a === void 0 || b.at > a.at ? b : a, void 0);
+    if (roll?.newest !== void 0 && isObject4(rc)) sources.push({ at: roll.newest.at, value: rc, own: true });
+    if (seedFile?.credits !== void 0) sources.push({ at: seedFile.credits.at, value: seedFile.credits.value, own: false });
+    const best = sources.map((c) => known(c) ?? c).reduce((a, b) => a === void 0 || b.at > a.at ? b : a, void 0);
     const near = KINDS.some((k) => {
       const p = points[k];
       return p !== void 0 && nearTrip(readings[k]?.pct, p.trip, p.floorPoint);
     });
-    updateSeed(own, best?.own === true ? { at: best.at, value: best.value } : void 0, seedFile);
+    updateSeed(own, best?.own === true ? { at: best.at, value: best.value } : void 0, seedFile, now);
     const out = { own, seed, readings, present, blind, creditsUsable: usableCredits(best?.value), near };
     if (best !== void 0) out.credits = best.value;
-    if (liveFile !== void 0) out.live = liveReadOf(liveFile);
+    if (rawLive !== void 0) out.live = liveReadOf(rawLive);
     if (liveError !== void 0 && (liveFile === void 0 || liveError.at > liveFile.at)) out.liveError = { at: liveError.at, error: liveError.error };
     if (roll?.newest !== void 0) out.newest = roll.newest;
+    if (roll?.turnContext !== void 0) out.turnContext = roll.turnContext;
     return out;
   };
   return {
@@ -3737,7 +4236,7 @@ function createSense(d) {
     };
     const present = KINDS.filter((k) => view.present.includes(k) || inForce(k));
     const spans = spansOf(cfg, bases, view.creditsUsable);
-    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present));
+    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable });
     const tripped = kinds.some((k) => k.tripped);
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
     return {
@@ -3763,14 +4262,7 @@ function createSense(d) {
       d.log.debug(codexDebug.readFailed("the consents", errText2(e)));
       return {};
     }
-    let parent;
-    if (!attended && sx.parent !== void 0) {
-      try {
-        parent = sx.parent.read();
-      } catch (e) {
-        d.log.debug(codexDebug.readFailed("the parent session", errText2(e)));
-      }
-    }
+    const parent = parentOf(sx, attended, d.log);
     return { state, ...parent === void 0 ? {} : { parent } };
   };
   const split = (sx, s) => {
@@ -3815,10 +4307,10 @@ function createSense(d) {
   };
   const noteUnattended = (sx, s) => {
     try {
-      if (unattendedLines(s, unattendedMarksOf(sx.store.read())).length === 0) return;
+      if (unattendedLines(s, unattendedMarksOf(sx.store.read()), RESET_JITTER_MS).length === 0) return;
       const lines = sx.store.locked((tx) => {
         const m = unattendedMarksOf(tx.state);
-        const ls = unattendedLines(s, m);
+        const ls = unattendedLines(s, m, RESET_JITTER_MS);
         if (ls.length > 0) {
           tx.state.unattendedNote = m.reserve;
           tx.state.openNote = m.open;
@@ -3836,8 +4328,8 @@ function createSense(d) {
     holders,
     async act(sx, s, c) {
       const resumed = c.resumed ?? [];
-      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating) : [];
-      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating)) : [];
+      const gating = s.cfg.enabled ? unansweredGating(resumed, split(sx, s).gating, RESET_JITTER_MS) : [];
+      const hs = s.cfg.enabled ? unansweredHolders(s, resumed, holders(sx, s, gating), RESET_JITTER_MS) : [];
       let stopped = false;
       if (checksStop(s, gating)) {
         try {
@@ -3848,7 +4340,7 @@ function createSense(d) {
       }
       let toldMain = false;
       try {
-        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid);
+        toldMain = toldMainOf(toldOf(sx.store.read()), gating, sx.sid, RESET_JITTER_MS);
       } catch (e) {
         d.log.debug(codexDebug.readFailed("the told loops", errText2(e)));
       }
@@ -3861,10 +4353,10 @@ function createSense(d) {
       try {
         const fresh = sx.store.locked((tx) => {
           const told = toldOf(tx.state);
-          if (!claimTold(told, namedKinds(s, a), key)) return false;
+          if (!claimTold(told, namedKinds(s, a), key, RESET_JITTER_MS)) return false;
           tx.state.told = toldBack(told);
           const marks = marksOf(tx.state.toldNotice);
-          const text3 = toldNotice(s, a, marks);
+          const text3 = toldNotice(s, a, marks, RESET_JITTER_MS);
           tx.state.toldNotice = marks;
           if (text3 !== void 0) noticeIn(tx.state, text3, s.now);
           return true;
@@ -3878,116 +4370,6 @@ function createSense(d) {
     },
     memOf: (sid, kind) => ({ ...memsOf(sid)[kind] })
   };
-}
-
-// codex/src/settings.ts
-import { statSync as statSync2 } from "node:fs";
-import { join as join5 } from "node:path";
-var ENV_NAMES = [
-  ["reserve", "SPARE10_RESERVE"],
-  ["weeklyReserve", "SPARE10_WEEKLY_RESERVE"],
-  ["lastMinutes", "SPARE10_LAST_MINUTES"],
-  ["weeklyLastHours", "SPARE10_WEEKLY_LAST_HOURS"],
-  ["resumeFloor", "SPARE10_RESUME_FLOOR"],
-  ["weeklyResumeFloor", "SPARE10_WEEKLY_RESUME_FLOOR"],
-  ["pausePrompt", "SPARE10_PAUSE_PROMPT"],
-  ["autoResume", "SPARE10_AUTO_RESUME"],
-  ["headless", "SPARE10_HEADLESS"],
-  ["onOff", "SPARE10"],
-  ["simulate", "SPARE10_SIMULATE"]
-];
-function envReadsOf(env) {
-  const out = {};
-  for (const [field2, name] of ENV_NAMES) {
-    const v = env[name];
-    if (v !== void 0) out[field2] = v;
-  }
-  return out;
-}
-var ownsSimulate = (hostKind) => hostKind === void 0 || hostKind === "exec" || hostKind === "tui";
-var configPath = (paths) => join5(paths.data, "config.json");
-function readConfig(path) {
-  try {
-    const raw = readJson(path);
-    return { raw: raw === void 0 ? {} : raw };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
-}
-var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function markOf(path) {
-  try {
-    const st = statSync2(path);
-    return `${st.ino}:${st.size}:${st.mtimeMs}`;
-  } catch (e) {
-    const code = e.code;
-    return code === "ENOENT" || code === "ENOTDIR" ? "-" : `error:${String(code)}`;
-  }
-}
-function createSettings(d) {
-  const path = configPath(d.paths);
-  const shown = shownPath(path, d.paths.home);
-  const base = envReadsOf(d.env);
-  if (base.simulate !== void 0 && !ownsSimulate(d.hostKind)) {
-    delete base.simulate;
-    d.log.debug(codexDebug.simulateIgnored);
-  }
-  let cache;
-  const parentChild = () => {
-    if (base.headless !== void 0) return void 0;
-    try {
-      return d.parentChild();
-    } catch (e) {
-      d.log.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
-      return void 0;
-    }
-  };
-  const build = (child, simulateKind) => {
-    const env = base.headless === void 0 && child !== void 0 ? { ...base, headless: child } : { ...base };
-    const read = readConfig(path);
-    if ("raw" in read && isObject4(read.raw)) {
-      const { options, warnings } = configOptions(shown, read.raw);
-      const eff2 = withEnv(fromOptions(options), env, { simulateKind });
-      eff2.warnings = [...warnings, ...eff2.warnings];
-      return eff2;
-    }
-    const cx12 = "error" in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0];
-    const eff = withEnv(DEFAULTS, env, { simulateKind });
-    if (eff.from.lastMinutes !== "env") {
-      eff.lastMinutes = 0;
-      eff.from.lastMinutes = "unread";
-    }
-    if (eff.from.weeklyLastHours !== "env") {
-      eff.weeklyLastHours = 0;
-      eff.from.weeklyLastHours = "unread";
-    }
-    eff.warnings = [...cx12 === void 0 ? [] : [cx12], ...eff.warnings];
-    return eff;
-  };
-  return {
-    path,
-    get() {
-      const child = parentChild();
-      const simulateKind = d.simulateKind();
-      const key = `${markOf(path)}|${child ?? ""}|${simulateKind}`;
-      if (cache?.key !== key) cache = { key, eff: build(child, simulateKind) };
-      return structuredClone(cache.eff);
-    }
-  };
-}
-function setOption(paths, owner, name, value) {
-  const path = configPath(paths);
-  return withLock(join5(paths.data, "config.lock"), owner, () => {
-    const read = readJson(path);
-    const raw = read === void 0 ? {} : read;
-    if (!isObject4(raw)) throw new Error("it is not a JSON object");
-    const next = { ...raw };
-    const old = next[name];
-    if (value === void 0) delete next[name];
-    else next[name] = value;
-    writeJson(path, next);
-    return { old };
-  });
 }
 
 // codex/src/commands.ts
@@ -4034,6 +4416,8 @@ function codexWarnings(state, s, originator) {
   const has = (id) => warned.includes(id);
   if (has("CX6") || has("CX7")) out.push(codexText.noDaemon(s.cfg.autoResume));
   if (has("CX8")) out.push(codexText.approvalNever);
+  if (has("CX9")) out.push(codexText.unsafe);
+  if (has("CX58")) out.push(codexText.nodeExposed);
   if (has("CX42")) out.push(codexText.optInDaemon);
   if (has("CX43") && originator !== void 0) out.push(codexText.originator(originator));
   if (!s.blind && !s.present.includes("five_hour") && s.present.includes("seven_day")) {
@@ -4042,6 +4426,11 @@ function codexWarnings(state, s, originator) {
   }
   const balance = s.credits?.balance;
   if (s.creditsUsable && typeof balance === "string" && s.kinds.some((k) => (pctOf(k.basis) ?? 0) >= 100)) out.push(codexText.credits(balance));
+  const realAtLimit = (k) => {
+    const r = s.bases[k].real;
+    return atLimit(r) && r.kind !== "none" && (r.resetsAtMs ?? 0) > s.now;
+  };
+  if (!s.cfg.limitPause && !s.creditsUsable && s.kinds.some((k) => realAtLimit(k.kind))) out.push(codexText.hardStop);
   return out;
 }
 function valueOf(eff, name) {
@@ -4062,6 +4451,8 @@ function valueOf(eff, name) {
       return eff.pausePrompt;
     case "autoResume":
       return eff.autoResume;
+    case "limitPause":
+      return eff.limitPause;
     case "headless":
       return eff.headless;
     case "scope":
@@ -4072,11 +4463,14 @@ function envWins(eff, name) {
   if (name === "scope") return eff.from.enabled === "SPARE10";
   return eff.from[name] === "env";
 }
+var spanUnread = (eff, name) => (name === "lastMinutes" || name === "weeklyLastHours") && eff.from[name] === "unread";
 function createCommands(d) {
   const attendedOf = (sx) => d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
-  const heldThreads = (sx) => {
+  const heldThreads = (sx, calls = false) => {
     try {
-      return threadIds(sx.store).filter((tid) => readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true);
+      return threadIds(sx.store).filter(
+        (tid) => readThread(sx.store, tid)?.held.some((e) => (!calls || e.site === "tool" || e.site === "step") && d.pidAlive(e.brokerPid)) === true
+      );
     } catch {
       return [];
     }
@@ -4086,18 +4480,28 @@ function createCommands(d) {
     for (const tid of tids) if (await d.daemon.hosted(tid).catch(() => false)) return true;
     return false;
   };
+  const endable = (sx, r, s) => r !== void 0 && r.sessionId === sx.sid && !heldPast(r, commandHolders(s.kinds));
+  const endedHeld = (sx, state, p, s) => {
+    if (p.phase === "stopped" || p.question !== void 0 || !p.attended || !p.cfg.enabled) return false;
+    const r = parseStopped(state.stopped);
+    if (!endable(sx, r, s)) return false;
+    if (r.kinds !== void 0 && r.auto === true && p.cfg.autoResume && p.now >= r.windowEnd) return false;
+    return heldLive(sx);
+  };
+  const endHeldStop = (sx, s) => {
+    const raw = sx.store.read().stopped;
+    if (raw === void 0 || !endable(sx, parseStopped(raw), s) || !heldLive(sx)) return false;
+    return sx.store.locked((tx) => {
+      if (tx.state.stopped !== raw) return false;
+      clearStopped(tx.state);
+      return true;
+    });
+  };
   const absentOf = (s) => watchedKinds(s.cfg).filter((k) => !s.present.includes(k));
   const seen = async (sx) => {
     const s = await d.sense.sense(sx);
     const state = sx.store.read();
-    let parent;
-    if (!s.attended && sx.parent !== void 0) {
-      try {
-        parent = sx.parent.read();
-      } catch {
-        parent = void 0;
-      }
-    }
+    const parent = parentOf(sx, s.attended, d.log);
     const lists = (k) => consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid }).list.map(
       (e) => e.c
     );
@@ -4118,10 +4522,20 @@ function createCommands(d) {
       question,
       told: toldOf(state),
       sessionId: sx.sid,
-      present: s.present
+      present: s.present,
       // 4.15: the phase reads the bases of the kinds the host reports, so a weekly-only plan is armed
+      jitter: RESET_JITTER_MS
+      // 3.6: a reset that moves a little keeps the told loops of its window
     });
     return { p, s, state };
+  };
+  const inputOf = (sx, p, s, i) => {
+    const absent2 = absentOf(s);
+    return {
+      ...statusInput(p, i),
+      ...absent2.length === 0 ? {} : { absent: absent2 },
+      ...p.stop !== void 0 && heldLive(sx) ? { heldInPlace: true } : {}
+    };
   };
   const statusText = async (sx0, o) => {
     await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS);
@@ -4131,16 +4545,16 @@ function createCommands(d) {
     const now = p.now;
     const hosted = sx0 === void 0 ? false : await d.daemon.hosted(sx.sid).catch(() => false);
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)];
+    if (sx0 !== void 0 && endedHeld(sx, state, p, s)) warnings.push(codexText.heldStopEnded);
     for (const k of p.kinds) {
       const c = consentPastWindow(k, state[consentField(k.kind)], now);
       if (c !== void 0) warnings.push(codexText.consentBeyond(k.kind, c.until, now));
     }
     const st = p.stop;
     const tickerStale = sx0 !== void 0 && st?.work === true && st.auto === true && cfg.autoResume && !hosted && !heldLive(sx);
-    const input = statusInput(p, { childPolicy: d.env.SPARE10_HEADLESS ?? state.child ?? cfg.headless, warnings, tickerStale });
     const live = s.view.live;
     const liveError = s.view.liveError;
-    const liveRow = live !== void 0 ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === void 0 ? {} : { error: liveError.error });
+    const liveRow = live !== void 0 ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === void 0 ? {} : { error: hideHome(liveError.error, d.paths.home) });
     let daemonRow;
     if (sx0 !== void 0) daemonRow = codexText.daemonRow(hosted, cfg.autoResume);
     else {
@@ -4165,11 +4579,8 @@ function createCommands(d) {
       }
     }
     rows.push(["daemon", daemonRow], ["live read", liveRow], ["cli", shownPath(d.paths.launcher, d.paths.home)]);
-    const absent2 = absentOf(s);
     return statusReport({
-      ...input,
-      ...absent2.length === 0 ? {} : { absent: absent2 },
-      ...st !== void 0 && heldLive(sx) ? { heldInPlace: true } : {},
+      ...inputOf(sx, p, s, { childPolicy: d.env.SPARE10_HEADLESS ?? state.child ?? cfg.headless, warnings, tickerStale }),
       extraRows: rows,
       extraHelp: [codexText.helpSet, codexText.helpAnytime]
     });
@@ -4180,21 +4591,28 @@ function createCommands(d) {
     if (!cfg.enabled || !attendedOf(sx)) return resumeReply("off");
     const sNow = await d.sense.sense(sx).catch(() => void 0);
     const now = sNow?.now ?? d.clock.now();
+    const openNow = d.questions.openQuestion(sx);
+    const atLimitNow = resumeAtLimit(sNow, openNow);
+    if (atLimitNow !== void 0) {
+      if (atLimitNow.choose && openNow !== void 0) d.questions.choose(sx, openNow.key, "command");
+      return atLimitNow.reply;
+    }
     const overdue = await takeOverdueStop(sx, { cfg, now, attended: true, ...takeoverSense(sNow) });
     if (overdue !== void 0) return resumeReply("overdue", void 0, overdue.reset, overdue.open);
     const open = d.questions.openQuestion(sx);
     if (open !== void 0) {
       const r = await d.questions.settle(sx, open.key, "resume", "command", sNow === void 0 ? {} : { raiseAt: sNow });
-      const q = r.q ?? open;
-      return resumeReply("asking", q.facts, void 0, void 0, q.mode);
+      return resumeAskingReply(r.q ?? open, now);
     }
     const s = sNow ?? await d.sense.sense(sx);
+    const late = sNow === void 0 ? resumeAtLimit(s, void 0) : void 0;
+    if (late !== void 0) return late.reply;
     const mode = modeOf(cfg);
     const absent2 = absentOf(s);
     const early = resumeReadReply(s, absent2);
-    if (early !== void 0) return early;
+    if (early !== void 0) return endHeldStop(sx, s) ? codexText.heldStopOver : early;
     const c = resumeCase(s, d.sense.split(sx, s), mode);
-    if ("reply" in c) return c.reply;
+    if ("reply" in c) return endHeldStop(sx, s) ? codexText.heldStopOver : c.reply;
     const wasStopped = stoppedNow(sx, s.now, c.gating, commandHolders(s.kinds)) !== void 0;
     sx.store.locked((tx) => {
       for (const w of c.write) writeConsent(tx.state, w.kind, w.c, s.now, w.test);
@@ -4228,7 +4646,11 @@ function createCommands(d) {
     const carried = overdue?.record.work === true;
     const open = d.questions.openQuestion(sx);
     if (open !== void 0) {
+      const calls = heldThreads(sx, true);
       const late2 = await d.questions.settle(sx, open.key, "stop", "command");
+      if (late2.record?.auto === true && late2.ended === void 0 && calls.length > 0 && !await anyHosted(calls)) {
+        return codexText.stopAskingWaits(late2.record.work === true ? late2.until : void 0);
+      }
       return stopAskingReply(late2) ?? stopAskingIdle(late2.q ?? open, cfg.autoResume, now);
     }
     const s = sNow ?? await d.sense.sense(sx);
@@ -4283,7 +4705,7 @@ function createCommands(d) {
         clearStopped(tx.state);
       }
     });
-    return simulateText({ spec, reading, inPlace, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now });
+    return simulateText({ spec, reading, inPlace, replaces, cfg, spans: cfg, live, mem: d.sense.memOf(sx.sid, spec.kind), now, paid: s?.creditsUsable === true });
   };
   const setCommand = (words, rest) => {
     const path = configPath(d.paths);
@@ -4293,7 +4715,7 @@ function createCommands(d) {
       const raw = "raw" in read && typeof read.raw === "object" && read.raw !== null && !Array.isArray(read.raw) ? read.raw : {};
       const rows = OPTIONS.map((o) => {
         const inFile = Object.prototype.hasOwnProperty.call(raw, o.name) && o.parse(raw[o.name]) !== void 0;
-        const source = envWins(eff, o.name) ? `${o.env} wins` : inFile ? "config.json" : "default";
+        const source = envWins(eff, o.name) ? `${o.env} wins` : spanUnread(eff, o.name) ? "config.json unread" : inFile ? "config.json" : "default";
         return [o.name, optionText(o.name, valueOf(eff, o.name)), source];
       });
       return codexText.setList(shownPath(path, d.paths.home), rows);
@@ -4305,25 +4727,28 @@ function createCommands(d) {
     let value;
     if (!toDefault) {
       const v = parseSetValue(name, rest);
-      if (!v.ok) return codexText.setBad(name, option.range);
+      if (!v.ok) return name === "pausePrompt" ? codexText.setBlankPause : codexText.setBad(name, option.range);
       value = v.value;
     }
     let old;
+    let repaired = "";
     try {
-      old = setOption(d.paths, d.owner, name, value).old;
+      const r = setOption(d.paths, d.owner, name, value);
+      old = r.old;
+      if (r.repaired === true) repaired = codexText.setRepaired(shownPath(path, d.paths.home));
     } catch (e) {
-      return codexText.setFailed(shownPath(path, d.paths.home), errText3(e));
+      return codexText.setFailed(shownPath(path, d.paths.home), hideHome(errText3(e), d.paths.home), e instanceof SyntaxError || e instanceof ConfigUnreadError);
     }
     const wins = envWins(eff, name) && d.env[option.env] !== void 0 ? codexText.setEnvWins(option.env) : "";
-    if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}`;
+    if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}${repaired}`;
     const was = old === void 0 ? void 0 : option.parse(old);
-    const oldText = was === void 0 ? defaultText(name) : optionText(name, was);
-    return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}`;
+    const oldText = was !== void 0 ? optionText(name, was) : spanUnread(eff, name) ? optionText(name, valueOf(eff, name)) : defaultText(name);
+    return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}${repaired}`;
   };
   const exec = async (sx, cmd, o) => {
     switch (cmd.verb) {
       case "status":
-        return statusText(sx, { cli: o.cli, full: true });
+        return statusText(sx, { cli: o.cli });
       case "help":
         return codexText.help(d.paths.bin, d.paths.home);
       case "resume":
@@ -4337,7 +4762,7 @@ function createCommands(d) {
       case "unknownOption":
         return codexText.setUnknown(cmd.word);
       case "unknown":
-        return unknownVerb(cmd.word);
+        return codexText.unknown(cmd.word);
     }
   };
   return {
@@ -4345,14 +4770,18 @@ function createCommands(d) {
       try {
         return await exec(sx, cmd, o);
       } catch (e) {
-        return commandFailed(errText3(e));
+        return commandFailed(hideHome(errText3(e), d.paths.home));
       }
     },
     exec,
     statusText,
-    async phaseLine(sx) {
-      const report = await statusText(sx, { cli: true, full: false });
-      return (report.split("\n")[2] ?? "").replace(/^ {2}/, "");
+    async phaseLine(sx0) {
+      await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS);
+      const sx = sx0 ?? scratchCtx();
+      const { p, s, state } = await seen(sx);
+      const report = statusReport(inputOf(sx, p, s, { childPolicy: "", warnings: [], tickerStale: false }));
+      const line = (report.split("\n")[2] ?? "").replace(/^ {2}/, "");
+      return sx0 !== void 0 && endedHeld(sx, state, p, s) ? `${line}${codexText.heldStopEndedTail}` : line;
     },
     async phase(sx) {
       return (await seen(sx)).p.phase;
@@ -4435,9 +4864,17 @@ function guardTestPath(env, what, p) {
   }
 }
 var homeOfEnv = (raw, env, pluginRoot) => isAbsolute(raw) ? resolve(raw) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? resolve(raw);
-function findPaths(env, selfFile) {
+function homeOf(env, homeDir) {
+  if (set(env.HOME)) return resolve(env.HOME);
+  try {
+    return resolve(homeDir());
+  } catch {
+    return void 0;
+  }
+}
+function findPaths(env, selfFile, homeDir = homedir) {
   const pluginRoot = pluginRootOf(selfFile);
-  const home = resolve(set(env.HOME) ? env.HOME : homedir());
+  const home = homeOf(env, homeDir);
   let codexHome;
   let data;
   if (set(env.SPARE10_CODEX_DATA)) {
@@ -4445,7 +4882,7 @@ function findPaths(env, selfFile) {
     codexHome = homeOfEnv(env.CODEX_HOME, env, pluginRoot);
     data = resolve(env.SPARE10_CODEX_DATA);
   } else {
-    codexHome = set(env.CODEX_HOME) ? homeOfEnv(env.CODEX_HOME, env, pluginRoot) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join7(home, ".codex");
+    codexHome = set(env.CODEX_HOME) ? homeOfEnv(env.CODEX_HOME, env, pluginRoot) : homeFromPath(env.PATH) ?? homeFromPluginRoot(pluginRoot) ?? join7(home ?? homeDir(), ".codex");
     data = join7(codexHome, "plugins", "data", DATA_NAME);
   }
   const socket = join7(codexHome, "app-server-control", "app-server-control.sock");
@@ -4455,10 +4892,13 @@ function findPaths(env, selfFile) {
   const bin = join7(data, "bin");
   return { codexHome, data, pluginRoot, socket, launcher: join7(bin, "spare10"), bin, home };
 }
+var PS = ["/bin/ps", "/usr/bin/ps", "/run/current-system/sw/bin/ps"];
 function parentArgs(ppid) {
   if (!Number.isSafeInteger(ppid) || ppid <= 0) return "";
+  const ps = PS.find((f) => existsSync2(f));
+  if (ps === void 0) return "";
   try {
-    return execFileSync("ps", ["-ww", "-o", "args=", "-p", String(ppid)], {
+    return execFileSync(ps, ["-ww", "-o", "args=", "-p", String(ppid)], {
       encoding: "utf8",
       timeout: 2e3,
       stdio: ["ignore", "pipe", "ignore"]
@@ -4488,11 +4928,17 @@ var OP = { continuation: 0, text: 1, binary: 2, close: 8, ping: 9, pong: 10 };
 var DaemonError = class extends Error {
   kind;
   code;
-  constructor(kind, message, code) {
+  /**
+   * A connect that found no daemon: the socket file went away, or nothing listens on it (a daemon that
+   * crashed or got SIGKILL leaves its socket file).
+   */
+  absent;
+  constructor(kind, message, code, absent2 = false) {
     super(message);
     this.name = "DaemonError";
     this.kind = kind;
     this.code = code;
+    this.absent = absent2;
   }
 };
 var isObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -4677,7 +5123,10 @@ function upgrade(socketPath, clock, o) {
       fail(new DaemonError("connect", `the daemon did not answer the handshake within ${o.connectMs} ms`));
       req.destroy();
     });
-    req.on("error", (e) => fail(new DaemonError("connect", `the daemon socket failed: ${e.message}`)));
+    req.on("error", (e) => {
+      const none = e.code === "ECONNREFUSED" || e.code === "ENOENT";
+      fail(new DaemonError("connect", `the daemon socket failed: ${e.message}`, void 0, none));
+    });
     req.on("response", (res) => {
       res.resume();
       fail(new DaemonError("protocol", `the daemon answered the handshake with status ${res.statusCode ?? 0}`));
@@ -4702,8 +5151,8 @@ function upgrade(socketPath, clock, o) {
 }
 async function withConnection(socketAlias, version, clock, timeoutMs, o, fn) {
   guardTestPath({}, "daemon socket", socketAlias);
-  const at = socketAt(socketAlias, o.uid);
-  if ("missing" in at) throw new DaemonError("connect", `no daemon socket: ${at.missing}`);
+  const at = socketAt(socketAlias, o.uid, o.stat);
+  if ("missing" in at) throw new DaemonError("connect", `no daemon socket: ${at.missing}`, void 0, true);
   if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
   const { socket, head } = await upgrade(at.real, clock, o);
   const reader = new FrameReader(o.maxMessage);
@@ -4818,10 +5267,11 @@ var NOT_MATERIALIZED = /is not materialized yet/;
 function udsDaemon(paths, version, clock, o = {}) {
   guardTestPath({}, "daemon socket", paths.socket);
   const uid = "uid" in o ? o.uid : process.getuid?.();
-  const at = socketAt(paths.socket, uid);
+  const stat = o.stat ?? statSync3;
+  const at = socketAt(paths.socket, uid, stat);
   if ("missing" in at) return void 0;
   if ("unsafe" in at) throw new DaemonError("connect", at.unsafe);
-  const opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid };
+  const opts = { connectMs: o.connectMs ?? DAEMON_CONNECT_MS, maxMessage: o.maxMessage ?? DAEMON_MAX_MESSAGE, uid, stat };
   const op = (timeoutMs, fn) => withConnection(paths.socket, version, clock, timeoutMs, opts, fn);
   return {
     rateLimits: (timeoutMs = A_READ_MS) => op(timeoutMs, (c) => c.request("account/rateLimits/read", { excludeResetCreditDetails: true })),
@@ -4902,7 +5352,7 @@ function daemonLink(make, clock, o = {}) {
       },
       (e) => {
         o.log?.debug(codexDebug.readFailed("the loaded threads", errText4(e)));
-        return void 0;
+        return e instanceof DaemonError && e.absent ? /* @__PURE__ */ new Set() : void 0;
       }
     ).finally(() => {
       reading = void 0;
@@ -5050,10 +5500,17 @@ function createGate(d) {
     const now = d.clock.now();
     sx.store.locked((tx) => {
       const st = tx.state;
-      st.hostPid = d.hostPid;
-      st.hostKind = d.hostKind;
-      st.transcript = sx.transcript;
-      st.attended = att.attended;
+      const live = (pid) => pid !== void 0 && d.pidAlive(pid);
+      const hostLive = st.rootBrokerPid !== d.pid && live(st.rootBrokerPid) && live(st.hostPid);
+      const other = st.attended === true && !att.attended && hostLive;
+      if (!other) {
+        st.hostPid = d.hostPid;
+        st.hostKind = d.hostKind;
+        st.rootBrokerPid = d.pid;
+        st.transcript = sx.transcript;
+        st.attended = att.attended;
+        st.brokerEnv = brokerEnvOf(d.env);
+      }
       if (guarded) {
         const child = childHeadless(cfg.headless, d.env.SPARE10_HEADLESS !== void 0);
         if (child === void 0) delete st.child;
@@ -5071,19 +5528,24 @@ function createGate(d) {
       await d.sense.sense(sx).catch((e) => d.log.debug(codexDebug.readFailed("the quota at the start", errText5(e))));
     }
   };
-  const noteSensed = (sx, s) => {
-    if (!sx.root) return;
-    d.onSensed?.(s);
-    if (s.blind || s.present.includes("five_hour") || !s.present.includes("seven_day")) return;
-    const id = s.cfg.weeklyReserve <= 0 ? "CX13" : s.cfg.weeklyLastHours > 0 ? "CX40" : void 0;
-    if (id === void 0) return;
+  const warnSensed = (sx, id, text3, now) => {
     try {
       if ((sx.store.read().warned ?? []).includes(id)) return;
-      const t = id === "CX13" ? codexText.weeklyOnlyOff : codexText.weeklyOnlyOpen(s.cfg.weeklyLastHours);
-      sx.store.locked((tx) => warnOnce(tx.state, id, t, s.now));
+      sx.store.locked((tx) => warnOnce(tx.state, id, text3(), now));
     } catch (e) {
       d.log.debug(codexDebug.writeFailed(`the warning ${id}`, errText5(e)));
     }
+  };
+  const places = nodePlaces(d.env);
+  const noteSensed = (sx, s) => {
+    if (!sx.root) return;
+    d.onSensed?.(s);
+    if (s.attended && s.cfg.enabled && unsafeMode(s.view.turnContext, d.paths.data)) warnSensed(sx, "CX9", () => codexText.unsafe, s.now);
+    if (s.attended && s.cfg.enabled && nodeExposed(s.view.turnContext, places)) warnSensed(sx, "CX58", () => codexText.nodeExposed, s.now);
+    if (s.blind || s.present.includes("five_hour") || !s.present.includes("seven_day")) return;
+    const id = s.cfg.weeklyReserve <= 0 ? "CX13" : s.cfg.weeklyLastHours > 0 ? "CX40" : void 0;
+    if (id === void 0) return;
+    warnSensed(sx, id, () => id === "CX13" ? codexText.weeklyOnlyOff : codexText.weeklyOnlyOpen(s.cfg.weeklyLastHours), s.now);
   };
   const loopKey = (sx) => sx.root ? `${sx.sid}:main` : `${sx.sid}:${sx.thread}`;
   const blockOf = (s, a, sid) => ({
@@ -5154,15 +5616,14 @@ function createGate(d) {
       return r;
     }
   };
-  const interruptedSince2 = (sx, stopAt) => {
-    if (stopAt === void 0) return false;
+  const withInterrupted = (sx, stopAt, note) => {
+    if (stopAt === void 0) return note;
     try {
-      return Object.values(sx.store.read().interrupts ?? {}).some((at) => at >= stopAt);
+      return withInterruptedNote(sx.store.read().interrupts, stopAt, note);
     } catch {
-      return false;
+      return note;
     }
   };
-  const withInterrupted = (sx, stopAt, note) => interruptedSince2(sx, stopAt) ? `${codexText.interruptedNote} ${note}` : note;
   const factsOfOpen = (sx, key) => {
     const q = d.questions.openQuestion(sx);
     return q?.key === key ? q.facts : void 0;
@@ -5286,7 +5747,6 @@ function createGate(d) {
     if (cmd !== void 0) return onCommand(sx, cmd, steer);
     if (sx.root && takeContinuation(sx, prompt)) return { r: await rounds(sx, input, call, "step", { block: true }) };
     if (!sx.root) return { r: await rounds(sx, input, call, "step", { block: true }) };
-    call.prompt = prompt;
     return personRounds(sx, input, call);
   };
   const onStop = async (sx, input) => {
@@ -5295,30 +5755,25 @@ function createGate(d) {
       const s = await d.sense.sense(sx);
       noteSensed(sx, s);
       if (!s.tripped) return { kind: "pass" };
-      const v = (await d.sense.act(sx, s, { site: "step" })).verdict;
-      if (v.kind === "refuse") return { kind: "end", text: codexText.turnEnds };
-      if (v.kind === "hold") return s.attended ? { kind: "end", text: codexText.turnEndsHold } : { kind: "end" };
-      return { kind: "pass" };
+      const a = await d.sense.act(sx, s, { site: "step" });
+      const v = a.verdict;
+      const limit = a.gating.some((k) => k.limit);
+      if (v.kind === "refuse") return { kind: "end", text: turnEndText("refuse", limit) };
+      if (v.kind !== "hold") return { kind: "pass" };
+      if (!s.attended) return { kind: "end" };
+      const q = limit ? d.questions.openQuestion(sx) : void 0;
+      const held = q?.limit === true && q.chosen === true ? atText(q.holdEnd, q.kinds, void 0, s.now) : void 0;
+      return { kind: "end", text: turnEndText("hold", limit, held) };
     } catch (e) {
       d.log.debug(codexDebug.readFailed("the quota at the end of the turn", errText5(e)));
       return { kind: "pass" };
     }
   };
-  const onInterrupt = (sx, input) => {
+  const onInterrupt = (input) => {
     const turn = input.turn;
-    if (turn === void 0) return true;
+    if (turn === void 0) return;
     const n = d.dropTurn(turn);
     if (n > 0) d.log.debug(codexDebug.dropped(n));
-    const now = d.clock.now();
-    try {
-      sx.store.locked((tx) => {
-        tx.state.lastInterrupt = { turnId: turn, at: now, bySpare10: tx.state.interrupts?.[turn] !== void 0 };
-      });
-      return true;
-    } catch (e) {
-      d.log.debug(codexDebug.writeFailed("the interrupt", errText5(e)));
-      return false;
-    }
   };
   const dispatch = async (sx, input, call) => {
     if (sx.root && !started.has(sx.sid) && input.site !== "interrupt") {
@@ -5349,11 +5804,10 @@ function createGate(d) {
     }
     let answer = PASS2;
     let sx;
-    let notices = true;
     try {
       sx = bind(input, meta);
       call.thread = sx.thread;
-      if (input.site === "interrupt") notices = onInterrupt(sx, input);
+      if (input.site === "interrupt") onInterrupt(input);
       else answer = await dispatch(sx, input, call);
     } catch (e) {
       d.log.debug(codexDebug.gateError(e instanceof Error ? e.stack ?? e.message : String(e)));
@@ -5372,7 +5826,7 @@ function createGate(d) {
           d.log.debug(codexDebug.writeFailed("the held entry", errText5(e)));
         }
       }
-      if (ctx.root && notices && !call.dropped.aborted) {
+      if (ctx.root && !call.dropped.aborted) {
         try {
           lines.push(...ctx.store.takeNotices(d.clock.now()).map(withPrefix));
         } catch (e) {
@@ -5386,21 +5840,54 @@ function createGate(d) {
 }
 
 // codex/src/log.ts
-import { appendFileSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { appendFileSync, mkdirSync as mkdirSync2, readdirSync as readdirSync3, statSync as statSync4, unlinkSync as unlinkSync3 } from "node:fs";
 import { join as join9 } from "node:path";
 var noLog = { debug() {
 } };
 var debugOn = (env) => env.SPARE10_CODEX_DEBUG === "1";
-var logFileOf = (dataDir, at) => join9(dataDir, "log", `broker-${new Date(at).toISOString().slice(0, 10)}.log`);
+var LOG_KEEP_DAYS = 7;
+var LOG_DAY_MAX_BYTES = 50 * 1024 * 1024;
+var DAY_MS2 = 864e5;
+var dayOf = (at) => new Date(at).toISOString().slice(0, 10);
+var DAY_FILE = /^broker-(\d{4}-\d{2}-\d{2})\.log$/;
+var logFileOf = (dataDir, at) => join9(dataDir, "log", `broker-${dayOf(at)}.log`);
+function pruneLogs(dataDir, at) {
+  const dir = join9(dataDir, "log");
+  let oldest;
+  let names;
+  try {
+    oldest = dayOf(at - (LOG_KEEP_DAYS - 1) * DAY_MS2);
+    names = readdirSync3(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const day = DAY_FILE.exec(name)?.[1];
+    if (day === void 0 || day >= oldest) continue;
+    try {
+      unlinkSync3(join9(dir, name));
+    } catch {
+    }
+  }
+}
 function fileLog(dataDir, on, clock, o = {}) {
-  if (!on) return noLog;
+  if (!on) {
+    pruneLogs(dataDir, clock.now());
+    return noLog;
+  }
   const tag = o.tag === void 0 ? "" : ` [${o.tag}]`;
+  let pruned = "";
   return {
     debug(line) {
       try {
         const at = clock.now();
         const file = logFileOf(dataDir, at);
         mkdirSync2(join9(dataDir, "log"), { recursive: true, mode: 448 });
+        if (pruned !== dayOf(at)) {
+          pruned = dayOf(at);
+          pruneLogs(dataDir, at);
+        }
+        if ((statSync4(file, { throwIfNoEntry: false })?.size ?? 0) >= LOG_DAY_MAX_BYTES) return;
         appendFileSync(file, `${new Date(at).toISOString()}${tag} ${line.replace(/\r?\n/g, "\\n")}
 `, { mode: 384 });
       } catch {
@@ -5748,6 +6235,20 @@ function createQuestions(d) {
     if (q.leader !== null) return !alive(q.leader.pid) && !waited;
     return !(now - q.createdAt < BEAT_STALE_MS || waited);
   };
+  const lastAnswer = (tx) => {
+    try {
+      return tx.answer();
+    } catch {
+      return void 0;
+    }
+  };
+  const lateAnswer = (tx, s, a) => {
+    const ans = lastAnswer(tx);
+    if (ans === void 0 || typeof ans.key !== "string" || typeof ans.at !== "number" || !Array.isArray(ans.answered)) return void 0;
+    if (ans.outcome !== "resume" && ans.outcome !== "stop") return void 0;
+    if (!(s.now < ans.at && ans.at <= d.clock.now())) return void 0;
+    return joinableAt(ans.outcome, ans.answered, namedKinds(s, a).map(viewedOf), RESET_JITTER_MS) ? ans.key : void 0;
+  };
   const ensureQuestion = (sx, call, opener, s, a) => {
     const now = d.clock.now();
     return sx.store.locked((tx) => {
@@ -5760,15 +6261,21 @@ function createQuestions(d) {
       if (q !== void 0) {
         const ans = tx.answer();
         const outcome = ans?.key === q.key ? ans.outcome : void 0;
-        if (joinableAt(outcome, answeredOf(q), namedKinds(s, a).map(viewedOf))) {
+        if (outcome === void 0 && supersedes(q, namedKinds(s, a))) {
+          tx.setAnswer({ key: q.key, outcome: "again", via: "limit", at: s.now, answered: [] });
+          tx.setQuestion(void 0);
+          noticeIn(tx.state, notice.limitReached, s.now);
+        } else if (joinableAt(outcome, answeredOf(q), namedKinds(s, a).map(viewedOf), RESET_JITTER_MS)) {
           if (opener === "loop") tx.setQuestion({ ...q, loops: q.loops + 1 });
           key = q.key;
         }
+      } else {
+        key = lateAnswer(tx, s, a);
       }
       if (key === void 0) {
         const core = questionOf(opener, s, a, s.now);
         key = `${sx.sid}:${now}:${randomBytes4(4).toString("hex")}`;
-        const balance = s.creditsUsable === true && typeof s.credits?.balance === "string" ? s.credits.balance : void 0;
+        const balance = core.limit !== true && s.creditsUsable === true && typeof s.credits?.balance === "string" ? s.credits.balance : void 0;
         const rec = { ...core, key, leader: null, createdAt: now, ...balance === void 0 ? {} : { credits: balance } };
         tx.setQuestion(rec);
       }
@@ -5778,7 +6285,7 @@ function createQuestions(d) {
   };
   const takeLead = (sx, call, key) => sx.store.locked((tx) => {
     const q = tx.question();
-    if (q === void 0 || q.key !== key || q.silent) return false;
+    if (q === void 0 || q.key !== key || quietOf2(q)) return false;
     if (q.leader !== null && alive(q.leader.pid)) return false;
     const leader = {
       brokerId: d.owner,
@@ -5802,7 +6309,22 @@ function createQuestions(d) {
   };
   const lost = async (sx, call, key) => {
     const r = sx.store.locked((tx) => lostIn(tx, sx, call, key));
-    if (r === "limit") await settle(sx, key, "stop", "dialog ended without an answer");
+    if (r === "limit") await noAnswer(sx, key);
+  };
+  const noAnswer = async (sx, key) => {
+    const q = readQuestion(sx);
+    if (q !== void 0 && q !== "unknown" && q.key === key && q.limit === true) chooseContinue(sx, key, "dialog ended without an answer");
+    else await settle(sx, key, "stop", "dialog ended without an answer");
+  };
+  const chooseContinue = (sx, key, via) => {
+    const now = d.clock.now();
+    const q = update(sx, key, (cur, tx) => {
+      if (cur.limit !== true || cur.chosen === true) return void 0;
+      const line = via === "command" ? void 0 : continuesLine(cur, now);
+      if (line !== void 0) noticeIn(tx.state, line, now);
+      return { ...cur, chosen: true, nextCheck: 0, leader: null };
+    });
+    return q !== void 0;
   };
   const turnWentAway = async (sx, call) => {
     const step = 100;
@@ -5817,9 +6339,31 @@ function createQuestions(d) {
     const a = readAnswer(sx);
     return a?.key !== key && q !== void 0 && q !== "unknown" && q.key === key && leaderIs(q.leader, d.owner, d.pid, sx, call);
   };
+  const raiseLimit = async (sx, call, q) => {
+    const key = q.key;
+    if (!d.mcp.canElicit()) {
+      chooseContinue(sx, key, "could not ask");
+      return;
+    }
+    let result;
+    let failed = false;
+    try {
+      result = await d.mcp.elicit(elicitParams(limitQuestionText(q.facts, q.opener, q.auto), void 0, true));
+    } catch (e) {
+      failed = true;
+      if (d.mcp.closed?.() === true) return;
+      d.log.debug(codexDebug.readFailed("the answer of the form", errText6(e)));
+    }
+    if (!stillLeads(sx, call, key)) return;
+    const answer = limitAnswerOf(result, failed);
+    if (answer === "stop") await settle(sx, key, "stop", "dialog");
+    else if (answer === "cancel" && await turnWentAway(sx, call)) await lost(sx, call, key);
+    else chooseContinue(sx, key, "dialog");
+  };
   const raise = async (sx, call, key) => {
     const q = readQuestion(sx);
-    if (q === void 0 || q === "unknown" || q.key !== key) return;
+    if (q === void 0 || q === "unknown" || q.key !== key || quietOf2(q)) return;
+    if (q.limit === true) return raiseLimit(sx, call, q);
     if (!d.mcp.canElicit()) {
       await settle(sx, key, "stop", "could not ask", { noDialog: true });
       return;
@@ -5841,8 +6385,8 @@ function createQuestions(d) {
     else await settle(sx, key, "stop", "dialog");
   };
   const decidedElsewhere = (sx, q, now) => {
-    let covered = q.kinds.length > 0;
-    for (const kind of q.kinds) {
+    let covered = q.kinds.length > 0 && q.limit !== true;
+    for (const kind of covered ? q.kinds : []) {
       const end = q.ends[kind];
       const list = end === void 0 ? [] : consentsOf(sx, { kind, attended: !q.silent, testBasis: end.test, realEnd: end.test ? null : end.end }, d.log);
       if (!answersKind(end, list, now)) {
@@ -5878,7 +6422,7 @@ function createQuestions(d) {
       if (dueWait(q0, now)) return false;
       const q = update(sx, key, (cur) => dueWait(cur, now) ? void 0 : { ...cur, nextCheck: now + CHECK_MS });
       if (q === void 0) return false;
-      const step = dueStep(q, now, q.silent || d.settings.get().autoResume);
+      const step = dueStep(q, now, quietOf2(q) || d.settings.get().autoResume);
       if (step === "note") {
         update(sx, key, (cur, tx) => {
           if (cur.noted) return void 0;
@@ -5942,7 +6486,7 @@ function createQuestions(d) {
     const r = sx.store.locked((tx) => {
       const q = tx.question();
       if (q === void 0 || q.key !== key || tx.answer()?.key === key) return void 0;
-      if (o.raiseAt !== void 0) raiseAtFloor(q, o.raiseAt);
+      if (o.raiseAt !== void 0) tierAtResume(q, o.raiseAt);
       tx.setAnswer({ key, outcome, via, at: now, answered: answeredOf(q), ...o.noDialog === true ? { noDialog: true } : {} });
       tx.setQuestion(void 0);
       if (via === "elsewhere") return { q };
@@ -5956,7 +6500,8 @@ function createQuestions(d) {
         return { q };
       }
       if (q.silent || !(q.mode === "hold" || via === "command")) return { q };
-      const plan = stopPlan(q, now, auto ?? q.auto, sNow);
+      const stopAuto = stopAutoOf(q, via, auto ?? q.auto, sNow);
+      const plan = stopPlan(q, now, stopAuto, sNow, stopsAtLimit(q, via, sNow));
       if (plan.kind === "open") {
         const text3 = stopOpenNotice(q, plan.ended, via);
         if (text3 !== void 0) noticeIn(tx.state, text3, now, "stop");
@@ -5966,7 +6511,7 @@ function createQuestions(d) {
       if (o.noDialog === true) tx.state.stopMeta = { noDialog: true };
       else delete tx.state.stopMeta;
       stopWritten = true;
-      const n = stopNotice(q, plan, written, via, now, auto ?? q.auto);
+      const n = stopNotice(q, plan, written, via, now, stopAuto);
       if (n.text !== void 0) noticeIn(tx.state, n.text, now, "stop");
       return { q, ...n.late };
     });
@@ -5993,7 +6538,7 @@ function createQuestions(d) {
     }
     if (r !== "limit") return;
     try {
-      await settle(sx, key, "stop", "dialog ended without an answer");
+      await noAnswer(sx, key);
     } catch (e) {
       d.log.debug(codexDebug.writeFailed("the answer", errText6(e)));
     }
@@ -6020,13 +6565,13 @@ function createQuestions(d) {
             const after = readAnswer(sx);
             return after?.key === key ? after.outcome : "stop";
           }
-          if (!q.silent && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
-            void raise(sx, call, key).catch((e) => d.log.debug(codexDebug.gateError(errText6(e))));
-          }
           const elsewhere = decidedElsewhere(sx, q, now);
           if (elsewhere !== void 0) {
             await settle(sx, key, elsewhere, "elsewhere").catch((e) => d.log.debug(codexDebug.writeFailed("the answer", errText6(e))));
             return elsewhere;
+          }
+          if (!quietOf2(q) && !call.dropped.aborted && (q.leader === null || !alive(q.leader.pid)) && takeLead(sx, call, key)) {
+            void raise(sx, call, key).catch((e) => d.log.debug(codexDebug.gateError(errText6(e))));
           }
           if (await dueCheck(sx, key, q)) continue;
         }
@@ -6046,6 +6591,7 @@ function createQuestions(d) {
     ensureQuestion,
     waitQuestion,
     settle,
+    choose: chooseContinue,
     answeredOf(sx, key) {
       const a = readAnswer(sx);
       return a?.key === key ? a.answered : [];
@@ -6064,8 +6610,8 @@ function createQuestions(d) {
 function nextWait(q, call, now) {
   const times = [call.since + HOLD_LIMIT_MS];
   if (q !== void 0) times.push(q.due, q.nextCheck, ...q.noted ? [] : [q.noteAt]);
-  const ahead = times.map((t) => t - now).filter((ms) => ms > 0);
-  return Math.min(TICK_MS, ...ahead);
+  const ahead2 = times.map((t) => t - now).filter((ms) => ms > 0);
+  return Math.min(TICK_MS, ...ahead2);
 }
 
 // codex/src/refuse.ts
@@ -6105,7 +6651,8 @@ function createRefusal(d) {
     const raw = sx.store.read().stopped;
     const r = parseStopped(raw);
     if (raw === void 0 || r?.kinds === void 0 || r.auto !== true || r.sessionId !== sx.sid) return false;
-    if (d.clock.now() < stopDue(r) || !d.settings.get().autoResume) return false;
+    const cfg = d.settings.get();
+    if (d.clock.now() < stopDue(r) || !cfg.autoResume || !cfg.enabled) return false;
     await d.quota.live(LIVE_RELEASE_MAX_AGE_MS);
     const s = await d.sense.sense(sx);
     if (noReading(s)) return false;
@@ -6181,7 +6728,7 @@ function createRefusal(d) {
         const mine = last.s.attended && rec !== void 0 && rec.sessionId === sx.sid;
         const stands = mine && rec !== void 0 && rec.windowEnd > start2;
         const due = mine && rec?.kinds !== void 0 && rec.auto === true && d.settings.get().autoResume ? stopDue(rec) : void 0;
-        if ((v === "pass" || v === "tell") && !stands) {
+        if ((v === "pass" || v === "tell") && (!stands || !last.s.cfg.enabled)) {
           try {
             sx.store.locked((tx) => dropStopNotices(tx.state));
           } catch (e) {
@@ -6197,8 +6744,8 @@ function createRefusal(d) {
           beat(sx.store, sx.thread, t, d.log);
           lastBeat = t;
         }
-        const ahead = [TICK_MS, call.since + HOLD_LIMIT_MS - t, ...due !== void 0 && due > t ? [due - t] : []];
-        await w.next(Math.max(1, Math.min(...ahead)));
+        const ahead2 = [TICK_MS, call.since + HOLD_LIMIT_MS - t, ...due !== void 0 && due > t ? [due - t] : []];
+        await w.next(Math.max(1, Math.min(...ahead2)));
       }
     } finally {
       w.close();
@@ -6214,7 +6761,7 @@ function createRefusal(d) {
     releaseInPlace,
     async refusal(sx, call, site, text3, s, a) {
       if (site === "prompt") return { kind: "block", text: refusalText(text3, s, a, sx.sid) };
-      if (site === "stop" || site === "compact") return { kind: "end", text: codexText.turnEnds };
+      if (site === "stop" || site === "compact") return { kind: "end", text: turnEndText("refuse", a.gating.some((k) => k.limit)) };
       if (site !== "tool" && site !== "step" && site !== "start") return { kind: "pass" };
       const denyText = refusalText(s.attended ? "stop" : "headless", s, a, sx.sid);
       if (site === "start") {
@@ -6245,12 +6792,12 @@ function createRefusal(d) {
 }
 
 // codex/src/rollout.ts
-import { statSync as statSync4 } from "node:fs";
+import { statSync as statSync5 } from "node:fs";
 var TURN_ENDS_KEPT = 64;
 var FRESH_KEPT = 64;
 var statOf = (file) => {
   try {
-    const st = statSync4(file);
+    const st = statSync5(file);
     return { ino: Number(st.ino), size: Number(st.size) };
   } catch (e) {
     const code = e.code;
@@ -6302,7 +6849,7 @@ function keepEnd(c, end) {
   }
 }
 function noteCount(c, tc, forward) {
-  const wins = (prev) => prev === void 0 || tc.at > prev.at || forward && tc.at === prev.at;
+  const wins = (prev) => prev === void 0 || forward;
   if (wins(c.newest)) c.newest = tc;
   if (!isObservation(tc.snapshot)) return false;
   if (wins(c.newestObs)) c.newestObs = tc;
@@ -6333,6 +6880,11 @@ function parseLine(c, line, fresh) {
     if (c.turnStart === void 0 || !(start2.at < c.turnStart.at)) c.turnStart = start2;
     return;
   }
+  const ctx = turnContextOf(line);
+  if (ctx !== void 0) {
+    c.turnContext = ctx;
+    return;
+  }
   if (c.meta === void 0) {
     const m = metaOf(line);
     if (m !== void 0) c.meta = m;
@@ -6349,7 +6901,8 @@ function scan(io, path, c, fresh) {
     if (part2 === void 0) break;
     if (offset === void 0 && part2.lines.length > 0) offset = part2.end;
     let found = c.newestObs !== void 0;
-    for (let i = part2.lines.length - 1; i >= 0 && !found; i -= 1) {
+    let i = part2.lines.length - 1;
+    for (; i >= 0 && !found; i -= 1) {
       const line2 = part2.lines[i] ?? "";
       const tc = codexCountOf(line2);
       if (tc !== void 0) {
@@ -6365,8 +6918,19 @@ function scan(io, path, c, fresh) {
       }
       if (c.turnStart === void 0) {
         const start2 = turnStartOf(line2);
-        if (start2 !== void 0) c.turnStart = start2;
+        if (start2 !== void 0) {
+          c.turnStart = start2;
+          continue;
+        }
       }
+      if (c.turnContext === void 0) {
+        const ctx = turnContextOf(line2);
+        if (ctx !== void 0) c.turnContext = ctx;
+      }
+    }
+    for (; i >= 0 && c.turnContext === void 0; i -= 1) {
+      const ctx = turnContextOf(part2.lines[i] ?? "");
+      if (ctx !== void 0) c.turnContext = ctx;
     }
     const scanned = part2.size - part2.start;
     lastStart = part2.start;
@@ -6389,7 +6953,8 @@ var readOf = (c, fresh) => ({
   fresh: fresh.slice(-FRESH_KEPT),
   ...c.meta === void 0 ? {} : { meta: c.meta },
   ...c.turnStart === void 0 ? {} : { turnStart: c.turnStart },
-  turnEnds: c.turnEnds
+  turnEnds: c.turnEnds,
+  ...c.turnContext === void 0 ? {} : { turnContext: c.turnContext }
 });
 function createRollouts(d = {}) {
   const io = d.io ?? nodeRolloutIo;
@@ -6446,13 +7011,21 @@ async function interruptTurn(daemon, thread, turn) {
     }
   }
 }
+var MARKS_KEPT = 64;
+function keptMarks(marks, now) {
+  const all = Object.entries(marks);
+  if (all.length <= MARKS_KEPT && all.every(([, v]) => Number.isFinite(v))) return marks;
+  const newest = all.filter(([, v]) => Number.isFinite(v)).sort((a, b) => b[1] - a[1]).filter(([, v], n) => n < MARKS_KEPT || Math.abs(now - v) < INTERRUPT_MARK_MS);
+  const keep = new Set(newest.map(([k]) => k));
+  return Object.fromEntries(all.filter(([k]) => keep.has(k)));
+}
 function markInterrupt(sx, turn, at, log) {
   try {
     return sx.store.locked((tx) => {
       const i = tx.state.interrupts ?? {};
       const prev = i[turn];
       if (prev !== void 0 && Math.abs(at - prev) < INTERRUPT_MARK_MS) return { kind: "taken" };
-      tx.state.interrupts = { ...i, [turn]: at };
+      tx.state.interrupts = keptMarks({ ...i, [turn]: at }, at);
       return prev === void 0 ? { kind: "mine" } : { kind: "mine", lost: prev };
     });
   } catch (e) {
@@ -6585,12 +7158,19 @@ function createSweep(d) {
 
 // codex/src/ticker.ts
 var errText9 = (e) => e instanceof Error ? e.message : String(e);
-var interruptedSince = (interrupts, at) => Object.values(interrupts ?? {}).some((t) => t >= at);
 function createTicker(d) {
   const alive = d.pidAlive ?? (() => true);
   const heldPrompt = (sx, turn) => {
     try {
       return readThread(sx.store, sx.sid)?.held.some((e) => e.site === "prompt" && e.turn === turn && alive(e.brokerPid)) === true;
+    } catch {
+      return false;
+    }
+  };
+  const newerTurn = async (sx, before) => {
+    try {
+      const t = await d.daemon.get()?.newestTurn(sx.sid);
+      return t !== void 0 && t.id !== before?.id;
     } catch {
       return false;
     }
@@ -6604,10 +7184,10 @@ function createTicker(d) {
     const r = parseStopped(raw);
     if (raw === void 0 || r === void 0 || r.sessionId !== sx.sid) return;
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
-    if (attended && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx);
+    const cfg = d.settings.get();
+    if (attended && cfg.enabled && d.clock.now() < r.windowEnd) await d.sweep.sweep(sx);
     const now = d.clock.now();
     if (r.kinds === void 0 || r.auto !== true || now < stopDue(r)) return;
-    const cfg = d.settings.get();
     if (stopAction({ record: r, now, sessionId: sx.sid, autoResume: cfg.autoResume, enabled: cfg.enabled, attended }) !== "check") return;
     if (!await d.daemon.hosted(sx.sid)) return;
     await d.quota.live(LIVE_RELEASE_MAX_AGE_MS);
@@ -6627,11 +7207,13 @@ function createTicker(d) {
       return;
     }
     const ended = endedFor(namedStop(r), s, [], r.skip === true);
+    let before;
     if (r.work === true) {
       const daemon = d.daemon.get();
       if (daemon === void 0) return;
       const status = await daemon.status(sx.sid);
       const newest = await daemon.newestTurn(sx.sid);
+      before = newest;
       if (newest !== void 0 && heldPrompt(sx, newest.id)) return;
       if (newest !== void 0 && newest.startedAt !== null && newest.startedAt * 1e3 > r.at) {
         const cleared = sx.store.locked((tx) => {
@@ -6653,7 +7235,7 @@ function createTicker(d) {
         return void 0;
       }
       const prompt = resumePrompt(ended.reset, ended.open);
-      const t = interruptedSince(tx.state.interrupts, r.at) ? `${codexText.interruptedNote} ${prompt}` : prompt;
+      const t = withInterruptedNote(tx.state.interrupts, r.at, prompt);
       tx.state.continuation = { text: t, expiresAt: at + CONTINUATION_TTL_MS, notice: notice.resetResumes(ended.reset, ended.open) };
       return t;
     });
@@ -6665,9 +7247,10 @@ function createTicker(d) {
     } catch (e) {
       const reason = errText9(e);
       d.log.debug(codexDebug.startFailed(reason));
+      if (e instanceof DaemonError && e.kind === "timeout" && await newerTurn(sx, before)) return;
       sx.store.locked((tx) => {
         if (tx.state.continuation?.text === text3) delete tx.state.continuation;
-        noticeIn(tx.state, notice.resumeFailed(reason), d.clock.now());
+        noticeIn(tx.state, notice.resumeFailed(hideHome(reason, d.home)), d.clock.now());
       });
     }
   };
@@ -6698,12 +7281,12 @@ function createTicker(d) {
 }
 
 // codex/src/wake.ts
-import { statSync as statSync5, watch } from "node:fs";
+import { statSync as statSync6, watch } from "node:fs";
 import { join as join11, resolve as resolve2 } from "node:path";
 var WAKE_FILES = ["state.json", "question.json", "answer.json"];
 function markOf2(file) {
   try {
-    const st = statSync5(file);
+    const st = statSync6(file);
     return `${st.ino}:${st.size}:${st.mtimeMs}`;
   } catch {
     return "-";
@@ -6856,7 +7439,7 @@ function createBroker(d) {
     const hostKind = hostKindOf(d.parentArgs(d.ppid));
     try {
       ensureDir(paths.data);
-      writeLauncher(paths, d.nodePath ?? process.execPath);
+      writeLauncher(paths, d.env.SPARE10_NODE_FROM === "path" ? "node" : d.nodePath ?? process.execPath);
     } catch (e) {
       log.debug(codexDebug.writeFailed(paths.launcher, errText10(e)));
     }
@@ -6880,7 +7463,7 @@ function createBroker(d) {
     const questions = createQuestions({ clock, wake, log, owner, pid: d.pid, sense, settings, quota, rollouts, mcp, sweep, pidAlive: d.pidAlive });
     const refusal = createRefusal({ clock, wake, log, pid: d.pid, sense, settings, quota, daemon: link, rollouts, interrupts });
     const commands = createCommands({ paths, clock, log, owner, env: d.env, settings, quota, sense, questions, sweep, daemon: link, attendance, pidAlive: d.pidAlive });
-    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive });
+    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive, home: paths.home });
     const gate = createGate({
       paths,
       clock,

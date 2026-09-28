@@ -61,7 +61,7 @@ export type BrokerDeps = {
   pidAlive(pid: number): boolean
   /** The debug log. Default: the file log, only with SPARE10_CODEX_DEBUG=1. */
   log?: Log
-  /** The Node.js that the CLI launcher runs. Default: process.execPath. */
+  /** The Node.js that the CLI launcher runs. Default: process.execPath. With a Node.js from PATH, the launcher runs `node`. */
   nodePath?: string
   /** The Node.js version. Default: process.versions.node. */
   nodeVersion?: string
@@ -159,11 +159,14 @@ export function createBroker(d: BrokerDeps): Broker {
     const hostKind = hostKindOf(d.parentArgs(d.ppid))
     try {
       ensureDir(paths.data)
-      writeLauncher(paths, d.nodePath ?? process.execPath)
+      // A Node.js from PATH can sit in a folder that the agent writes, such as the .venv/bin of a project. So the
+      // shared launcher never keeps its path: it runs the node of the shell that calls it (CX58).
+      writeLauncher(paths, d.env.SPARE10_NODE_FROM === 'path' ? 'node' : (d.nodePath ?? process.execPath))
     } catch (e) {
       log.debug(codexDebug.writeFailed(paths.launcher, errText(e)))
     }
-    // At most once a day for each data dir: the session folders that nothing needs any more go.
+    // At most once a day for each data dir, or 10 min after a prune that stopped at its cap: the session
+    // folders that nothing needs any more go.
     const pruned = pruneSessions(paths, owner, clock.now(), d.pidAlive)
     if (pruned.length > 0) log.debug(codexDebug.pruned(pruned.length))
     const rollouts = createRollouts()
@@ -186,7 +189,7 @@ export function createBroker(d: BrokerDeps): Broker {
     const questions = createQuestions({ clock, wake, log, owner, pid: d.pid, sense, settings, quota, rollouts, mcp, sweep, pidAlive: d.pidAlive })
     const refusal = createRefusal({ clock, wake, log, pid: d.pid, sense, settings, quota, daemon: link, rollouts, interrupts })
     const commands = createCommands({ paths, clock, log, owner, env: d.env, settings, quota, sense, questions, sweep, daemon: link, attendance, pidAlive: d.pidAlive })
-    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive })
+    const ticker = createTicker({ clock, log, settings, quota, sense, attendance, daemon: link, sweep, pidAlive: d.pidAlive, home: paths.home })
     const gate = createGate({
       paths,
       clock,

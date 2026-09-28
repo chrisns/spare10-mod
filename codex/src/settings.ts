@@ -1,15 +1,15 @@
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, configOptions, shownPath } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, configOptions, hideHome, shownPath } from '../../hooks/core/codex.ts'
 import type { HostKind, OptionName } from '../../hooks/core/codex.ts'
 import { DEFAULTS, fromOptions, withEnv } from '../../hooks/core/config.ts'
 import type { Effective, EnvReads } from '../../hooks/core/config.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
-import { readJson, withLock, writeJson } from './files.ts'
+import { readJson, readOwnJson, withLock, writeJson } from './files.ts'
 import type { Log } from './log.ts'
 import type { Env, Paths } from './paths.ts'
 
-// The settings of a broker and of the CLI (Codex design 5.1, 5.2). The ten Claude options live in
+// The settings of a broker and of the CLI (Codex design 5.1, 5.2). The eleven Claude options live in
 // <data dir>/config.json, which `spare10 set` writes under config.lock. Precedence, highest first (A15): a
 // SPARE10_* variable of the broker env, then config.json, then the default. The core parsers and withEnv
 // do all the work: this file only reads the file and the env.
@@ -24,12 +24,13 @@ export const ENV_NAMES: ReadonlyArray<readonly [keyof EnvReads, string]> = [
   ['weeklyResumeFloor', 'SPARE10_WEEKLY_RESUME_FLOOR'],
   ['pausePrompt', 'SPARE10_PAUSE_PROMPT'],
   ['autoResume', 'SPARE10_AUTO_RESUME'],
+  ['limitPause', 'SPARE10_LIMIT_PAUSE'],
   ['headless', 'SPARE10_HEADLESS'],
   ['onOff', 'SPARE10'],
   ['simulate', 'SPARE10_SIMULATE'],
 ]
 
-/** The EnvReads of the eleven names in `env`. A set but empty value counts, as on Claude. */
+/** The EnvReads of the twelve names in `env`. A set but empty value counts, as on Claude. */
 export function envReadsOf(env: Env): EnvReads {
   const out: EnvReads = {}
   for (const [field, name] of ENV_NAMES) {
@@ -116,7 +117,7 @@ export function createSettings(d: SettingsDeps): SettingsSource {
     }
     // 5.2: config.json does not read, does not parse, or is not an object. The defaults and the env, and
     // each span that no variable sets becomes 0, so each reserve holds until the reset (CX12).
-    const cx12 = 'error' in read ? codexText.configUnread(shown, read.error) : configOptions(shown, read.raw).warnings[0]
+    const cx12 = 'error' in read ? codexText.configUnread(shown, hideHome(read.error, d.paths.home)) : configOptions(shown, read.raw).warnings[0]
     const eff = withEnv(DEFAULTS, env, { simulateKind })
     if (eff.from.lastMinutes !== 'env') {
       eff.lastMinutes = 0
@@ -142,28 +143,35 @@ export function createSettings(d: SettingsDeps): SettingsSource {
   }
 }
 
+/** setOption finds a config.json that parses but is not a JSON object (CX32). */
+export class ConfigUnreadError extends Error {}
+
 /**
  * `spare10 set <option> <value>` and `spare10 set <option> default` (5.1): writes one key of config.json
- * under config.lock, by rename. `value` undefined removes the key. A config.json that does not parse is
- * not overwritten: the call throws, and the command says that nothing changed (CX32). The result is the
- * old value of the key (undefined when it had none).
+ * under config.lock, by rename. `value` undefined removes the key. A torn config.json (files.ts isTorn: an
+ * OS crash after a write) counts as empty, so this write repairs it, and `repaired` says so (CX54): the
+ * other keys of the torn file are lost. Other bad JSON, or a value that is not an object, is not
+ * overwritten: the call throws, and the command says that nothing changed (CX32). `old` is the old value
+ * of the key (undefined when it had none).
  */
 export function setOption(
   paths: Pick<Paths, 'data'>,
   owner: string,
   name: OptionName,
   value: string | number | boolean | undefined,
-): { old: unknown } {
+): { old: unknown; repaired?: true } {
   const path = configPath(paths)
   return withLock(join(paths.data, 'config.lock'), owner, () => {
-    const read = readJson<unknown>(path)
+    const read = readOwnJson<unknown>(path)
+    // readOwnJson reads a torn file as absent, so a file that is there and reads as absent is torn.
+    const repaired = read === undefined && existsSync(path)
     const raw = read === undefined ? {} : read
-    if (!isObject(raw)) throw new Error('it is not a JSON object')
+    if (!isObject(raw)) throw new ConfigUnreadError('it is not a JSON object')
     const next = { ...raw }
     const old = next[name]
     if (value === undefined) delete next[name]
     else next[name] = value
     writeJson(path, next)
-    return { old }
+    return { old, ...(repaired ? { repaired: true as const } : {}) }
   })
 }

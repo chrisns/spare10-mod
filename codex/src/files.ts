@@ -67,7 +67,11 @@ export const isTorn = (text: string): boolean => text.trim() === '' || text.incl
 /**
  * readJson for a file that only spare10 writes (the session files, 3.7): a torn file (isTorn) is absent too.
  * So the next write replaces it, and a lost stop or consent only makes spare10 ask again. Other bad JSON
- * still throws.
+ * still throws. config.json is not such a file, because a person can edit it. The broker's readConfig
+ * (settings.ts) reads it with readJson, not with readOwnJson. So a torn config.json does not parse: CX12
+ * shows and tells how to repair it, and each span that no variable sets is 0, so each reserve holds until
+ * its reset. Only setOption reads config.json with readOwnJson: `spare10 set` counts a torn file as empty,
+ * writes a new one with only its own key, and reports the repair (CX54).
  */
 export function readOwnJson<T>(file: string): T | undefined {
   const text = readText(file)
@@ -205,18 +209,43 @@ function isStale(s: Seen, now: number, staleMs: number, alive: (pid: number) => 
 
 /**
  * Removes the stale lock that `s` saw, only when the file is still that one: the same device, inode, mtime
- * and content. So two waiters that both find one stale lock never remove the fresh lock of a third, also
- * when the file system gives the new lock the inode of the old one.
+ * and content. The check and the unlink are two steps. So only one waiter at a time takes them, while it
+ * holds the file `<lock>.break` (an exclusive create). Else two waiters can check the same stale lock, the
+ * first can replace it with its own lock, and the second then removes that new lock: two holders. A
+ * `.break` older than LOCK_STALE_MS stays from a breaker that died in this short step, and goes. The result
+ * is false while another waiter breaks the lock: the caller waits, then tries again.
  */
-function breakStale(lockFile: string, s: Seen): void {
+function breakStale(lockFile: string, s: Seen): boolean {
+  const guard = `${lockFile}.break`
+  let fd: number
   try {
+    fd = openSync(guard, 'wx', 0o600)
+  } catch (e) {
+    if (absent(e)) return true // the folder went: the next create makes it again
+    if (codeOf(e) !== 'EEXIST') throw e
+    try {
+      if (Math.abs(Date.now() - lstatSync(guard).mtimeMs) > LOCK_STALE_MS) unlinkSync(guard)
+    } catch (e2) {
+      if (!absent(e2)) throw e2
+    }
+    return false
+  }
+  try {
+    closeSync(fd)
     const st = lstatSync(lockFile)
-    if (Number(st.dev) !== s.dev || Number(st.ino) !== s.ino || st.mtimeMs !== s.mtimeMs) return
-    if (readFileSync(lockFile, 'utf8') !== s.text) return
+    if (Number(st.dev) !== s.dev || Number(st.ino) !== s.ino || st.mtimeMs !== s.mtimeMs) return true
+    if (readFileSync(lockFile, 'utf8') !== s.text) return true
     unlinkSync(lockFile)
   } catch (e) {
     if (!absent(e)) throw e
+  } finally {
+    try {
+      unlinkSync(guard)
+    } catch {
+      // Another waiter found it stale.
+    }
   }
+  return true
 }
 
 /** The exclusive create of a lock file: its fd, or undefined when it exists. A missing folder is made. */
@@ -274,10 +303,8 @@ export function withLock<T>(lockFile: string, owner: string, fn: () => T, o: Loc
     const seen = seeLock(lockFile)
     if (seen === undefined) continue // released between the create and the read
     last = seen.holder
-    if (isStale(seen, Date.now(), staleMs, alive)) {
-      breakStale(lockFile, seen)
-      continue
-    }
+    // A lock that another waiter breaks now is busy for a short time: this waiter sleeps.
+    if (isStale(seen, Date.now(), staleMs, alive) && breakStale(lockFile, seen)) continue
     sleepSync(LOCK_SLEEP_MIN_MS + Math.random() * (LOCK_SLEEP_MAX_MS - LOCK_SLEEP_MIN_MS))
   }
   let result: T
@@ -293,7 +320,8 @@ export function withLock<T>(lockFile: string, owner: string, fn: () => T, o: Loc
 /**
  * One try at a lock that its taker holds across async work, such as `live.lock` around a daemon read (3.6).
  * It never waits: the result is the holder text (the token for `unlock`) when it took the lock, else
- * undefined. A stale lock is removed and the create is tried again, a few times at most.
+ * undefined. A stale lock is removed and the create is tried again, a few times at most. A stale lock that
+ * another taker breaks now is busy.
  */
 export function tryLock(lockFile: string, owner: string, o: LockOptions = {}): string | undefined {
   const staleMs = o.staleMs ?? LOCK_STALE_MS
@@ -314,8 +342,7 @@ export function tryLock(lockFile: string, owner: string, o: LockOptions = {}): s
     }
     const seen = seeLock(lockFile)
     if (seen === undefined) continue // released between the create and the read
-    if (!isStale(seen, Date.now(), staleMs, alive)) return undefined
-    breakStale(lockFile, seen)
+    if (!isStale(seen, Date.now(), staleMs, alive) || !breakStale(lockFile, seen)) return undefined
   }
   return undefined
 }

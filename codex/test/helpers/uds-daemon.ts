@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import { createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -86,7 +86,10 @@ export type FakeDaemon = {
   closedConns(n: number): Promise<void>
   /** Resolves when a request of `method` has arrived. */
   arrived(method: string): Promise<void>
+  /** Stops the server. Its socket file goes, as when a daemon exits. */
   close(): Promise<void>
+  /** Stops as a daemon that crashed or got SIGKILL: the socket file stays, and nothing listens on it. */
+  crash(): Promise<void>
 }
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
@@ -306,6 +309,13 @@ export async function fakeDaemon(t: TestContext, o: FakeOptions & { codexHome?: 
     for (const s of sockets) s.destroy()
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
+  const crash = async (): Promise<void> => {
+    // A second name keeps the socket file when the close removes the first one.
+    const keep = `${real}.keep`
+    linkSync(real, keep)
+    await close()
+    renameSync(keep, real)
+  }
   t.after(async () => {
     await close()
     rmSync(sockDir, { recursive: true, force: true })
@@ -322,5 +332,6 @@ export async function fakeDaemon(t: TestContext, o: FakeOptions & { codexHome?: 
     closedConns: (n) => until(() => conns.filter((c) => c.closed).length >= n),
     arrived: (method) => until(() => calls.some((c) => c.method === method)),
     close,
+    crash,
   }
 }

@@ -1,6 +1,21 @@
 import { closeSync, openSync } from 'node:fs'
 import { join } from 'node:path'
-import { codexDebug, codexText, genericRefusal, isGateSite, offQuota, parseCommand, render, rootOnly, withPrefix } from '../../hooks/core/codex.ts'
+import {
+  codexDebug,
+  codexText,
+  genericRefusal,
+  isGateSite,
+  nodeExposed,
+  nodePlaces,
+  offQuota,
+  parseCommand,
+  render,
+  rootOnly,
+  turnEndText,
+  unsafeMode,
+  withInterruptedNote,
+  withPrefix,
+} from '../../hooks/core/codex.ts'
 import type { Command, GateResult, GateSite, HostKind, LiveRead } from '../../hooks/core/codex.ts'
 import { childHeadless } from '../../hooks/core/config.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
@@ -8,7 +23,7 @@ import type { Answered } from '../../hooks/core/decide.ts'
 import { factsFrom, modeOf, namedKinds, notStartedFor, refusalText, tellText } from '../../hooks/core/flow.ts'
 import type { Acted, Sensed } from '../../hooks/core/flow.ts'
 import type { Facts } from '../../hooks/core/text.ts'
-import { notPerson, resetContext, resumeContext } from '../../hooks/core/text.ts'
+import { atText, notPerson, resetContext, resumeContext } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
 import { nestedParent, noteOriginator } from './attend.ts'
 import type { Commands } from './commands.ts'
@@ -24,7 +39,7 @@ import type { Refusal } from './refuse.ts'
 import type { CodexSensed, SenseApi, SessionCtx } from './sense.ts'
 import type { SettingsSource } from './settings.ts'
 import { markWork, noticeIn, takeOverdueStop } from './stop.ts'
-import { warnOnce } from './store.ts'
+import { brokerEnvOf, warnOnce } from './store.ts'
 import type { SessionState, SessionStore } from './store.ts'
 import type { Ticker } from './ticker.ts'
 
@@ -244,15 +259,26 @@ export function createGate(d: GateDeps): Gate {
     const cfg = d.settings.get()
     const att = d.attendance.attended({ transcript: sx.transcript }, input.mode)
     const guarded = att.attended && cfg.enabled
-    // A failed read is unknown: it records no lasting CX6 or CX7. The report reads the daemon again each time.
+    // 2.5: whether the daemon hosts this thread. No daemon socket, or a stale socket that no daemon listens
+    // on (a crashed daemon left it), counts as no daemon: `known` is false, and CX6 or CX7 shows once. A
+    // failed read (a timeout or a bad reply) is unknown (undefined): it records no lasting CX6 or CX7.
     const hosted = guarded ? await d.daemon.known(sx.thread).catch(() => undefined) : false
     const now = d.clock.now()
     sx.store.locked((tx) => {
       const st = tx.state
-      st.hostPid = d.hostPid
-      st.hostKind = d.hostKind
-      st.transcript = sx.transcript
-      st.attended = att.attended
+      // 3.7: an unattended newcomer (a `codex exec resume` of a live session) keeps off the fields of a live
+      // attended host. A host is live while its root broker lives: a Codex daemon runs on after its sessions end.
+      const live = (pid: number | undefined): boolean => pid !== undefined && d.pidAlive(pid)
+      const hostLive = st.rootBrokerPid !== d.pid && live(st.rootBrokerPid) && live(st.hostPid)
+      const other = st.attended === true && !att.attended && hostLive
+      if (!other) {
+        st.hostPid = d.hostPid
+        st.hostKind = d.hostKind
+        st.rootBrokerPid = d.pid
+        st.transcript = sx.transcript
+        st.attended = att.attended
+        st.brokerEnv = brokerEnvOf(d.env) // 5.2: the CLI judges the session with these values
+      }
       if (guarded) {
         const child = childHeadless(cfg.headless, d.env.SPARE10_HEADLESS !== undefined)
         if (child === undefined) delete st.child
@@ -272,20 +298,34 @@ export function createGate(d: GateDeps): Gate {
     }
   }
 
-  /** CX13 and CX40 (2.5): once the kinds are known, a root sense that finds only a weekly window warns once. */
-  const noteSensed = (sx: SessionCtx, s: CodexSensed): void => {
-    if (!sx.root) return
-    d.onSensed?.(s)
-    if (s.blind || s.present.includes('five_hour') || !s.present.includes('seven_day')) return
-    const id = s.cfg.weeklyReserve <= 0 ? 'CX13' : s.cfg.weeklyLastHours > 0 ? 'CX40' : undefined
-    if (id === undefined) return
+  /** A warning of a root sense (2.5), once per session. It reads first, and locks only to show it. Best effort: a failure only logs. */
+  const warnSensed = (sx: SessionCtx, id: string, text: () => string, now: number): void => {
     try {
       if ((sx.store.read().warned ?? []).includes(id)) return
-      const t = id === 'CX13' ? codexText.weeklyOnlyOff : codexText.weeklyOnlyOpen(s.cfg.weeklyLastHours)
-      sx.store.locked((tx) => warnOnce(tx.state, id, t, s.now))
+      sx.store.locked((tx) => warnOnce(tx.state, id, text(), now))
     } catch (e) {
       d.log.debug(codexDebug.writeFailed(`the warning ${id}`, errText(e)))
     }
+  }
+
+  /** CX58: the folders where broker.sh looked for the Node.js of this broker. */
+  const places = nodePlaces(d.env)
+
+  /**
+   * The warnings of a root sense (2.5), once per session. CX9: the turn_context of the rollout shows a mode in
+   * which the agent can act for the person (no sandbox, auto review, or a data dir it can write). CX58: the
+   * agent can write a folder where broker.sh looks for Node.js. CX13 and CX40: once the kinds are known, only
+   * a weekly window.
+   */
+  const noteSensed = (sx: SessionCtx, s: CodexSensed): void => {
+    if (!sx.root) return
+    d.onSensed?.(s)
+    if (s.attended && s.cfg.enabled && unsafeMode(s.view.turnContext, d.paths.data)) warnSensed(sx, 'CX9', () => codexText.unsafe, s.now)
+    if (s.attended && s.cfg.enabled && nodeExposed(s.view.turnContext, places)) warnSensed(sx, 'CX58', () => codexText.nodeExposed, s.now)
+    if (s.blind || s.present.includes('five_hour') || !s.present.includes('seven_day')) return
+    const id = s.cfg.weeklyReserve <= 0 ? 'CX13' : s.cfg.weeklyLastHours > 0 ? 'CX40' : undefined
+    if (id === undefined) return
+    warnSensed(sx, id, () => (id === 'CX13' ? codexText.weeklyOnlyOff : codexText.weeklyOnlyOpen(s.cfg.weeklyLastHours)), s.now)
   }
 
   /** B51 keys: the main loop of the root thread, or the subagent thread. */
@@ -368,17 +408,15 @@ export function createGate(d: GateDeps): Gate {
     }
   }
 
-  /** CX39 (2.6): spare10 interrupted a turn of the stop that began at `stopAt`. */
-  const interruptedSince = (sx: SessionCtx, stopAt: number | undefined): boolean => {
-    if (stopAt === undefined) return false
+  /** CX39 (2.6): `note` after the CX39 note when spare10 interrupted a turn of the stop that began at `stopAt`. A read that fails is no interrupt. */
+  const withInterrupted = (sx: SessionCtx, stopAt: number | undefined, note: string): string => {
+    if (stopAt === undefined) return note
     try {
-      return Object.values(sx.store.read().interrupts ?? {}).some((at) => at >= stopAt)
+      return withInterruptedNote(sx.store.read().interrupts, stopAt, note)
     } catch {
-      return false
+      return note
     }
   }
-  const withInterrupted = (sx: SessionCtx, stopAt: number | undefined, note: string): string =>
-    interruptedSince(sx, stopAt) ? `${codexText.interruptedNote} ${note}` : note
 
   /** The facts of the open question of `key`, read right after the open or join (for the B9 note). */
   const factsOfOpen = (sx: SessionCtx, key: string): Facts[] | undefined => {
@@ -521,7 +559,6 @@ export function createGate(d: GateDeps): Gate {
     if (cmd !== undefined) return onCommand(sx, cmd, steer)
     if (sx.root && takeContinuation(sx, prompt)) return { r: await rounds(sx, input, call, 'step', { block: true }) }
     if (!sx.root) return { r: await rounds(sx, input, call, 'step', { block: true }) } // a subagent message: never asked
-    call.prompt = prompt // CX18 finds a held prompt of a broker that died
     return personRounds(sx, input, call)
   }
 
@@ -532,10 +569,16 @@ export function createGate(d: GateDeps): Gate {
       const s = await d.sense.sense(sx)
       noteSensed(sx, s)
       if (!s.tripped) return { kind: 'pass' }
-      const v = (await d.sense.act(sx, s, { site: 'step' })).verdict
-      if (v.kind === 'refuse') return { kind: 'end', text: codexText.turnEnds }
-      if (v.kind === 'hold') return s.attended ? { kind: 'end', text: codexText.turnEndsHold } : { kind: 'end' }
-      return { kind: 'pass' }
+      const a = await d.sense.act(sx, s, { site: 'step' })
+      const v = a.verdict
+      const limit = a.gating.some((k) => k.limit)
+      if (v.kind === 'refuse') return { kind: 'end', text: turnEndText('refuse', limit) } // CX3, or CX56 at the quota limit
+      if (v.kind !== 'hold') return { kind: 'pass' }
+      if (!s.attended) return { kind: 'end' }
+      // CX41, or CX55 at the quota limit. CX57 after Continue at the reset: the next prompt joins the held work.
+      const q = limit ? d.questions.openQuestion(sx) : undefined
+      const held = q?.limit === true && q.chosen === true ? atText(q.holdEnd, q.kinds, undefined, s.now) : undefined
+      return { kind: 'end', text: turnEndText('hold', limit, held) }
     } catch (e) {
       d.log.debug(codexDebug.readFailed('the quota at the end of the turn', errText(e)))
       return { kind: 'pass' } // a sense failure passes
@@ -543,24 +586,14 @@ export function createGate(d: GateDeps): Gate {
   }
 
   /**
-   * 4.12 item 1, the Interrupt gate: no sense and no network. It drops the held calls of the turn in this
-   * broker, and records the interrupt with a short lock wait. False: the lock was busy, so the answer is "".
+   * 4.12 item 1, the Interrupt gate: no sense, no network and no write. It drops the held calls of the turn
+   * in this broker. Its answer takes the queued lines with a short lock wait (INTERRUPT_LOCK_MS).
    */
-  const onInterrupt = (sx: SessionCtx, input: GateInput): boolean => {
+  const onInterrupt = (input: GateInput): void => {
     const turn = input.turn
-    if (turn === undefined) return true
+    if (turn === undefined) return
     const n = d.dropTurn(turn)
     if (n > 0) d.log.debug(codexDebug.dropped(n))
-    const now = d.clock.now()
-    try {
-      sx.store.locked((tx) => {
-        tx.state.lastInterrupt = { turnId: turn, at: now, bySpare10: tx.state.interrupts?.[turn] !== undefined }
-      })
-      return true
-    } catch (e) {
-      d.log.debug(codexDebug.writeFailed('the interrupt', errText(e)))
-      return false
-    }
   }
 
   const dispatch = async (sx: SessionCtx, input: GateInput, call: GateCall): Promise<Answer> => {
@@ -593,11 +626,10 @@ export function createGate(d: GateDeps): Gate {
     }
     let answer: Answer = PASS
     let sx: SessionCtx | undefined
-    let notices = true
     try {
       sx = bind(input, meta)
       call.thread = sx.thread
-      if (input.site === 'interrupt') notices = onInterrupt(sx, input)
+      if (input.site === 'interrupt') onInterrupt(input)
       else answer = await dispatch(sx, input, call)
     } catch (e) {
       d.log.debug(codexDebug.gateError(e instanceof Error ? (e.stack ?? e.message) : String(e)))
@@ -618,7 +650,7 @@ export function createGate(d: GateDeps): Gate {
         }
       }
       // A call that Codex dropped gets no reader: its lines wait for the next answer (the Interrupt gate).
-      if (ctx.root && notices && !call.dropped.aborted) {
+      if (ctx.root && !call.dropped.aborted) {
         try {
           lines.push(...ctx.store.takeNotices(d.clock.now()).map(withPrefix))
         } catch (e) {

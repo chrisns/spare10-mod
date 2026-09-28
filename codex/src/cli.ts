@@ -1,7 +1,8 @@
-import { realpathSync, unlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { readFileSync, realpathSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { codexText, optionOf, shownPath } from '../../hooks/core/codex.ts'
+import { codexDebug, codexText, hideHome, optionOf, shownPath } from '../../hooks/core/codex.ts'
 import type { Command, HostKind } from '../../hooks/core/codex.ts'
 import { VERSION, commandFailed } from '../../hooks/core/text.ts'
 import { createAttendance } from './attend.ts'
@@ -22,17 +23,22 @@ import { createQuota } from './quota.ts'
 import { createRollouts } from './rollout.ts'
 import { createSense } from './sense.ts'
 import type { SessionCtx } from './sense.ts'
-import { createSettings } from './settings.ts'
-import { listSessions, sessionStore } from './store.ts'
+import { configPath, createSettings } from './settings.ts'
+import { listSessions, sessionStore, withBrokerEnv } from './store.ts'
 import { createSweep } from './sweep.ts'
 import type { Wake } from './wake.ts'
 
 // The CLI (Codex design 2.9, 7.2 cli.ts): `spare10 ...` from the `!` of the Codex prompt, or from another
 // terminal. It runs the same commands as a typed prompt, in its own process, on the same data dir. Its
-// writes wake the brokers through their Wake source. From `!` (CODEX_THREAD_ID is set) Codex gives the
-// output to the model, so the CLI prints one short line and queues the full reply as a transcript line of
-// the session. `resume`, `stop` and `simulate` act only on a named session: they never guess. The agent
-// cannot run it: a sandbox shows in the env, or in a data dir that it cannot write.
+// writes wake the brokers through their Wake source. A named session is judged with the SPARE10_* values
+// of its root broker (5.2). `resume`, `stop` and `simulate` act only on a named session: they never guess.
+// From `!` (CODEX_THREAD_ID is set) Codex gives the output to the model. There `status` prints the phase
+// line only, and `status --full` the report. A command that changes a named session or config.json queues
+// its full reply as a transcript line of that session, from `!` and from a terminal. From `!` it then prints
+// one short line (CX44). A command that changes nothing prints its reply and queues nothing, because no held
+// call wakes to show a queued line. A `set` with no named session queues nothing: a command outside the
+// sandbox can write config.json itself. The agent cannot run the CLI inside its sandbox: a sandbox shows in
+// the env, or in a data dir that it cannot write.
 
 export type CliDeps = {
   env: Env
@@ -116,6 +122,8 @@ function pathsOf(env: Env, a: Args, selfFile: string): Paths {
 /** The CLI. The bundle entry calls it and sets process.exitCode. */
 export async function main(argv: string[], d: CliDeps): Promise<number> {
   const print = (text: string): void => void d.stdout.write(`${text}\n`)
+  // An error text of the system can name a path under the home folder. The model reads the output of `!`.
+  const failed = (e: unknown): string => `spare10: ${commandFailed(hideHome(errText(e), d.env.HOME ?? homedir()))}`
   const a = parseArgs(argv)
   if (a === undefined) {
     print(codexText.cliUsage) // CX37
@@ -132,7 +140,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
   try {
     paths = pathsOf(d.env, a, d.selfFile)
   } catch (e) {
-    print(`spare10: ${commandFailed(errText(e))}`)
+    print(failed(e))
     return 1
   }
   const pid = d.pid ?? process.pid
@@ -150,7 +158,7 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
         print(codexText.cliSandbox(verb))
         return 2
       }
-      print(`spare10: ${commandFailed(errText(e))}`)
+      print(failed(e))
       return 1
     }
     // No launcher write here (3.9): each broker keeps it on its own copy and its own Node.js. A CLI of another
@@ -169,23 +177,28 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
     const state = sid === undefined ? undefined : sessionStore(paths, sid, owner, wake, { clock: d.clock }).read()
     const hostPid = state?.hostPid ?? 0
     const hostKind: HostKind = state?.hostKind ?? 'unknown'
+    // 5.2: a named session is judged with the SPARE10_* values of its root broker, as its gates judge it.
+    const envOf = withBrokerEnv(env, state?.brokerEnv)
     const rollouts = createRollouts()
     const link = daemonLink(() => d.daemon(paths), d.clock, { log })
-    const settings = createSettings({ paths, log, env, parentChild: () => undefined, simulateKind: () => 'five_hour', hostKind })
+    const settings = createSettings({ paths, log, env: envOf, parentChild: () => undefined, simulateKind: () => 'five_hour', hostKind })
     const quota = createQuota({ paths, clock: d.clock, log, owner, daemon: link, rollouts, pidAlive: alive })
     const base = createAttendance({ hostKind, rollouts })
-    // The CLI takes the attendance that the root broker wrote (3.7), else the rollout's.
+    // The CLI takes the rollout's answer once it is final: an exec host, or a rollout with its session_meta
+    // (3.10). Else it takes the attendance that the root broker wrote (3.7), which knows the permission mode.
     const attendance: AttendanceSource = {
       attended(c, mode) {
         const got = base.attended(c, mode)
-        return state?.attended === undefined ? got : { ...got, attended: state.attended }
+        const t = c.transcript
+        const final = hostKind === 'exec' || (t !== null && t !== '' && rollouts.cursor(t)?.meta !== undefined)
+        return final || state?.attended === undefined ? got : { ...got, attended: state.attended }
       },
     }
     const sense = createSense({ clock: d.clock, log, settings, quota, attendance })
     const sweep = createSweep({ clock: d.clock, log, daemon: link })
     const mcp = { canElicit: () => false, elicit: () => Promise.reject(new Error('the CLI shows no form')) }
     const questions = createQuestions({ clock: d.clock, wake, log, owner, pid, sense, settings, quota, rollouts, mcp, sweep, pidAlive: alive })
-    const cmds = createCommands({ paths, clock: d.clock, log, owner, env, settings, quota, sense, questions, sweep, daemon: link, attendance, pidAlive: alive })
+    const cmds = createCommands({ paths, clock: d.clock, log, owner, env: envOf, settings, quota, sense, questions, sweep, daemon: link, attendance, pidAlive: alive })
     if (sid === undefined) return { cmds, sx: undefined }
     const sx: SessionCtx = {
       sid,
@@ -226,23 +239,54 @@ export async function main(argv: string[], d: CliDeps): Promise<number> {
       const sid = named ?? listSessions(paths, d.clock.now() - RECENT_MS)[0]?.sid
       const p = partsFor(sid)
       if (fromBang && !a.full) print(`spare10: ${await p.cmds.phaseLine(p.sx)}`)
-      else print(`spare10: ${await p.cmds.statusText(p.sx, { cli: true, full: true })}`)
+      else print(`spare10: ${await p.cmds.statusText(p.sx, { cli: true })}`)
       return 0
     }
     const p = partsFor(named)
     // `set` and `help` need no session: a report of no session writes nothing.
     const sx = p.sx ?? { sid: 'none', thread: 'none', root: true, transcript: null, hostPid: 0, store: scratchStore(paths.data) }
+    const target = changes ? p.sx : undefined
+    /** What a command changes: the consents, the stop, the test reading, the answer of a question and config.json. Undefined when a read fails. */
+    const markOf = (): string | undefined => {
+      if (target === undefined) return undefined
+      try {
+        const st = target.store.read()
+        const file = (path: string): string => {
+          try {
+            return readFileSync(path, 'utf8')
+          } catch (e) {
+            if (codeOf(e) === 'ENOENT') return ''
+            throw e
+          }
+        }
+        return JSON.stringify([st.consent, st.weeklyConsent, st.tombs, st.stopped, st.stopMeta, st.test, file(join(target.store.dir, 'answer.json')), file(configPath(paths))])
+      } catch {
+        return undefined
+      }
+    }
+    const before = markOf()
     const reply = await p.cmds.exec(sx, cmd, { cli: true })
-    if (fromBang && changes && p.sx !== undefined) {
-      // CX44: the model reads this line only. The full reply rides the next root gate (2.4).
-      p.sx.store.queueNotice(reply)
-      print(codexText.cliDone(verb))
-      return 0
+    const after = markOf()
+    // The reply of a change rides the next root gate (2.4), from `!` and from a terminal: a change never hides
+    // from the transcript. A command that changed nothing queues nothing: no held call wakes to show the line,
+    // and a session id that never ran gets no folder.
+    if (target !== undefined && (before === undefined || after === undefined || before !== after)) {
+      let queued = false
+      try {
+        target.store.queueNotice(reply)
+        queued = true
+      } catch (e) {
+        log.debug(codexDebug.writeFailed('the transcript line of the command', errText(e)))
+      }
+      if (fromBang && queued) {
+        print(codexText.cliDone(verb)) // CX44: the model reads this line only
+        return 0
+      }
     }
     print(`spare10: ${reply}`)
     return 0
   } catch (e) {
-    print(`spare10: ${commandFailed(errText(e))}`)
+    print(failed(e))
     return 1
   }
 }
@@ -270,7 +314,7 @@ if (isMain()) {
       process.exitCode = code
     },
     (e: unknown) => {
-      process.stdout.write(`spare10: ${commandFailed(errText(e))}\n`)
+      process.stdout.write(`spare10: ${commandFailed(hideHome(errText(e), process.env.HOME ?? homedir()))}\n`)
       process.exitCode = 1
     },
   )

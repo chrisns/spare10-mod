@@ -68,6 +68,7 @@ codex/dist/cli.mjs               the CLI bundle, for spare10 commands from a she
 codex/types/claude-code.d.ts     the claude-code types that hooks/core imports, for the Codex type check
 codex/test/*.spec.ts             Codex tests (node --test), also the pure tests of hooks/core/codex.ts
 codex/test/scripts.spec.ts       tests of scripts/check.sh, the cleanup of codex/e2e/run.sh and its --only ids
+codex/test/claude-pins.spec.ts   pins of hooks/register.tsx that no kit case can act out, such as an option value
 codex/e2e/                       end-to-end runs with the real Codex and a mock provider, with no model request
 tests/helpers/world.ts           the kit world beneath the plugin
 tests/core/*.test.ts             pure tests
@@ -160,6 +161,9 @@ Run `scripts/check.sh` on the branch of such an update before you merge it.
 The line names the Codex test for the same behaviour, or says why Codex has no such behaviour.
 `codex/test/kit-port.spec.ts` fails when a test in `tests/kit` has no line.
 So when you add a test to `tests/kit`, add its line too.
+A line with `none:<reason>` says that Codex has no form of the behaviour.
+A `! <reason> = <text>` line at the top of the file gives each reason.
+For example, `limitNoun` says that Codex has no `$.spare10.limit()`, because each Codex step reads `config.json`.
 
 No Codex test uses your `~/.codex` or makes a request to a real model.
 `SPARE10_E2E=smoke scripts/check.sh` also runs the short end-to-end set.
