@@ -230,7 +230,7 @@ With the reset start command, the texts have `HH:MM` where these checks show `OP
 
 **Expected:**
 
-- The status report prints. Its first line is `spare10: version 0.3.0`.
+- The status report prints. Its first line is `spare10: version 0.4.0`.
 - No line of the report and no transcript line shows `spare10: spare10:`.
 - The phase detail and every field value start in one column.
 - The report shows the rows `weekly reserve`, `at the reset`, `weekly reading` and `weekly consent`.
@@ -1802,3 +1802,6 @@ Add a new row for each run.
 The pause at the limit adds LC38 to LC45.
 It does not change the texts of LC1 to LC37, because no earlier check reaches 100% used.
 Before the next release, run the release gate with LC38 to LC43 and LC45.
+Version 0.4.0 shipped before these checks ran.
+The kit tests and the Codex specs cover each of their cases.
+Run LC38 to LC43 and LC45 at the next chance, and add a row for each run.

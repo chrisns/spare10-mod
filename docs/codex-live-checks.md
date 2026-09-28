@@ -12,6 +12,9 @@ Only LCX-REAL reads the real account, and it makes no model request.
 **Release gate.**
 LCX1 to LCX8, LCX11, LCX17 and LCX-REAL must pass before the Codex PR leaves draft.
 They must also pass before each release and after each update of Codex.
+They last passed on Codex CLI 0.157.0.
+Version 0.4.0 shipped when Codex CLI 0.158.0 was installed, before a run on it.
+Run the release gate on 0.158.0 at the next chance.
 LCX9, LCX10, LCX12 to LCX16, and LCX18 to LCX20 belong to the P1 features.
 Run each one when its feature ships.
 LCX14 and LCX19 are optional.

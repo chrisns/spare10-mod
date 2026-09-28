@@ -975,7 +975,7 @@ test('refuseModeOf follows the order of 4.4', () => {
 test('withPrefix prefixes each line that has text', () => {
   assert.equal(withPrefix('one'), 'spare10: one')
   assert.equal(withPrefix('one\ntwo'), 'spare10: one\nspare10: two')
-  assert.equal(withPrefix('version 0.3.0\n\n  ● armed'), 'spare10: version 0.3.0\n\nspare10:   ● armed')
+  assert.equal(withPrefix('version 0.4.0\n\n  ● armed'), 'spare10: version 0.4.0\n\nspare10:   ● armed')
   assert.equal(withPrefix(''), '')
 })
 

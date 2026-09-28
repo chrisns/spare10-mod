@@ -1096,7 +1096,7 @@ test('/spare10 shows the floor rows after the open rows, and the floor help line
   expect(lines[weekly]?.startsWith(`  · weekly reading live · ${pf(61, WAT)} (in `)).toBe(true)
   const rest = lines.filter((_l, i) => i !== reading && i !== weekly)
   expect(rest).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
     '  · reserve        10% of the 5-hour window (from /config)',

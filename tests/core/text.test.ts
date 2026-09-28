@@ -182,7 +182,7 @@ test('the options put Stop here first and the header fits 12 characters', () => 
   expect(QUESTION_OPTIONS[1]).toBe(RESUME_LABEL)
   expect(HEADER).toBe('spare10')
   expect(HEADER.length).toBeLessThanOrEqual(12)
-  expect(VERSION).toBe('0.3.0')
+  expect(VERSION).toBe('0.4.0')
   expect(COMMAND_DESCRIPTION).toBe('Show the spare10 quota breaker, or resume or stop at the reserve.')
   expect(ARGUMENT_HINT).toBe('[resume|stop]')
 })
@@ -285,7 +285,7 @@ const FOOT = ['', '/spare10 resume   continue on the reserve until the window re
 
 test('the status report prints every field', () => {
   expect(statusReport(status()).split('\n')).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used.',
     '  · reserve        10% of the 5-hour window (from /config)',
@@ -414,7 +414,7 @@ test('no transcript line, warning or command reply starts with the prefix that t
   expect(texts.length).toBeGreaterThan(40)
   for (const t of texts) {
     expect(t.startsWith('spare10: ')).toBe(false)
-    expect(t.startsWith('spare10 ')).toBe(false) // the report header too: it renders as `spare10: version 0.3.0`
+    expect(t.startsWith('spare10 ')).toBe(false) // the report header too: it renders as `spare10: version 0.4.0`
   }
 })
 
@@ -895,7 +895,7 @@ const status02 = (over: Partial<StatusInput> = {}): StatusInput =>
 test('the status report shows both windows, the reset row, a weekly-off row and the ticker warning', () => {
   expect(statusReport(status02())).toBe(
     [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -1350,7 +1350,7 @@ const SPANS = { lastMinutes: 20, lastMinutesFrom: 'option', weeklyLastHours: 8, 
 test('the status report shows the reserve opens rows with their sources, and leaves weekly opens out when the weekly guard is off', () => {
   expect(statusReport(status02({ spans: SPANS }))).toBe(
     [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -1835,7 +1835,7 @@ test('the resume replies before and past the floor, and while a consent to the f
 test('the status report shows the floor rows: in force in both modes, off, not below the reserve, unattended, and no weekly row when the weekly guard is off', () => {
   expect(statusReport(status02({ spans: SPANS, floors: FLOORS }))).toBe(
     [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from /config)',
@@ -2081,7 +2081,7 @@ test('stepsIn with fiveAbsent names only the weekly trip point, or no window', (
 
 test('the report of a weekly-only plan names the missing 5-hour window (CX17) and the weekly trip point', () => {
   expect(statusReport(WO()).split('\n')).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used of the weekly window.',
     '  · reserve        10% of the 5-hour window (from /config)',
@@ -2125,7 +2125,7 @@ test('heldInPlace: the stopped line says that held work waits, in place of the w
 test('extraRows follow the claude -p or unattended row, and extraHelp follows the help lines', () => {
   const extra = { extraRows: [['daemon', 'yes'], ['cli', '/x/bin/spare10']] as const, extraHelp: ['one more line', 'and another'], warnings: ['a warning'] }
   expect(statusReport(status(extra)).split('\n')).toEqual([
-    'version 0.3.0',
+    'version 0.4.0',
     '',
     '  ● armed          spare10 steps in at 90% used.',
     '  · reserve        10% of the 5-hour window (from /config)',

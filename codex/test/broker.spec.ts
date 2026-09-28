@@ -66,7 +66,7 @@ test('broker: initialize answers before any file work, and the background work s
   })
   t.after(() => broker.stop())
   const init = await host.initialize()
-  assert.deepEqual((init['result'] as Record<string, unknown>)['serverInfo'], { name: 'spare10', version: '0.3.0' })
+  assert.deepEqual((init['result'] as Record<string, unknown>)['serverInfo'], { name: 'spare10', version: '0.4.0' })
   assert.equal(existsSync(data), false, 'no file work before initialized')
   assert.deepEqual((await host.request('tools/list'))['result'], { tools: [] })
   host.initialized()

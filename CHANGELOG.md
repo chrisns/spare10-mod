@@ -6,6 +6,8 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
 ### Added
 
 - **Codex.** spare10 now also runs in the OpenAI Codex CLI 0.157.0. It uses the same repo and marketplace. Install it with `codex plugin marketplace add chrisns/spare10-mod` and `codex plugin add spare10@spare10`. Then trust its hooks in the TUI. It has the same reserves, questions, floor, open reserve, stops and unattended policies.
@@ -210,7 +212,8 @@ These parts of spare10 v0.5.0 are not in spare10-mod, because the mod runs insid
 - the `--refresh` option, bundle pinning and status-line chaining
 - the list of stopped background runs. Use `claude agents` instead.
 
-[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chrisns/spare10-mod/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chrisns/spare10-mod/releases/tag/v0.1.0

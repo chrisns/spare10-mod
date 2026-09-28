@@ -123,7 +123,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
   ['simulateReply at the limit', () => simulateReply('set', { ...LF, test: true }, undefined, undefined, undefined, true), 'test reading set to 100% used, resets 15:00. It can only raise the real reading. This is the quota limit, so spare10 holds all work until the test window ends. Run spare10 simulate off to clear it.'],
   ['report: the at the limit row, from spare10 set', () => statusReport(status({ limitPause: { on: false, from: 'option' } })).split('\n').filter((l) => l.includes('at the limit')).join('\n'), '  · at the limit   off. spare10 does not pause at the limit (from spare10 set)'],
   ['report: armed, the claude -p row and both help lines', () => statusReport(status()), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -137,7 +137,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: every row from its option, and the floor help line', () => statusReport(full()), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -159,7 +159,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the unattended row', () => statusReport(full({ attended: false, phase: 'reserve', headless: 'stop' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ⚠ tripped        unattended run, policy stop.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -180,7 +180,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: spans the env could not read', () => statusReport(full({ spans: { lastMinutes: 0, lastMinutesFrom: 'unread', weeklyLastHours: 0, weeklyLastHoursFrom: 'unread' } })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -202,7 +202,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: weekly off', () => statusReport(status({ weekly: 'off' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -217,7 +217,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the asking phase', () => statusReport(status({ phase: 'asking' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ? asking         a question is open. Held work waits until you answer. If no form shows, run !spare10 resume or !spare10 stop.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -231,7 +231,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the asking phase with a continue time', () => statusReport(full({ phase: 'asking', at: { ms: R, kinds: ['five_hour'] } })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ? asking         a question is open. Held work waits until you answer, or until 15:00. If no form shows, run !spare10 resume or !spare10 stop.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -253,7 +253,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the stopped phase', () => statusReport(status({ phase: 'stopped' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ■ stopped        you chose Stop here. Type a prompt to be asked again, or run spare10 resume.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -267,7 +267,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the stopped phase with a continue time', () => statusReport(full({ phase: 'stopped', at: { ms: R, kinds: ['five_hour'] }, autoStop: true, work: true })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ■ stopped        you chose Stop here. spare10 continues the work after 15:00. Type a prompt to be asked again, or run spare10 resume.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -289,7 +289,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: the blind phase and reading', () => statusReport(status({ phase: 'blind', basis: { kind: 'none', why: 'blind' }, facts: undefined })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ⚠ blind          Codex reports no quota windows for this login. spare10 lets all work through.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -303,7 +303,7 @@ const GOLDEN: ReadonlyArray<readonly [string, () => string, string]> = [
       'spare10 stop      stop at the reserve now',
     ].join('\n')],
   ['report: scope opt-in', () => statusReport(status({ phase: 'off', enabled: false, scope: 'opt-in' })), [
-      'version 0.3.0',
+      'version 0.4.0',
       '',
       '  ○ off            spare10 only watches in this run.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',
@@ -413,7 +413,7 @@ test('the Codex report equals the sample of 2.8', () => {
   assert.equal(
     `spare10: ${statusReport(SAMPLE)}`,
     [
-      'spare10: version 0.3.0',
+      'spare10: version 0.4.0',
       '',
       '  ● armed          spare10 steps in at 90% used of the weekly window.',
       '  · reserve        10% of the 5-hour window (from spare10 set)',

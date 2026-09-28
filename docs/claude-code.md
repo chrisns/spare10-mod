@@ -589,7 +589,7 @@ Use `/spare10 resume` or `/spare10 stop` when no dialog shows, or from a remote 
 `/spare10` prints a report like this:
 
 ```
-spare10: version 0.3.0
+spare10: version 0.4.0
 
   ● armed          spare10 steps in at 90% used, or at 90% used of the weekly window.
   · reserve        10% of the 5-hour window (from /config)

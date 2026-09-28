@@ -14,7 +14,7 @@ import { HOST } from './host.ts'
 // A word that differs between hosts (a command, the host name) comes from HOST (host.ts). The Codex
 // bundle swaps host.ts, so the same texts carry the Codex words there (Codex design 2.1).
 
-export const VERSION: string = '0.3.0' // keep equal to .claude-plugin/plugin.json and .codex-plugin/plugin.json
+export const VERSION: string = '0.4.0' // keep equal to .claude-plugin/plugin.json and .codex-plugin/plugin.json
 export const HEADER: string = 'spare10'
 export const QUESTION_OPTIONS: readonly [string, string] = ['Stop here', 'Resume']
 /** The limit question: Continue at the reset first, with the focus. Only the exact Stop here label stops. */
