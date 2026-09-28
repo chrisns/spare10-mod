@@ -685,7 +685,6 @@ function stopReply(c, f, trip, auto, weeklyTrip, ended, absent2) {
       return "this run is not guarded. Nothing changed.";
   }
 }
-var unknownVerb = (verb) => `unknown command "${verb}". Use ${HOST.command}, ${HOST.command} resume or ${HOST.command} stop.`;
 function simulateReply(kind, f, opens, pastFloor, realIn) {
   if (kind === "off") return "test reading cleared. Consent and stop for this window are cleared too.";
   if (kind === "weekly-off") return "the weekly reserve is 0, so spare10 does not watch the weekly window. Nothing changed.";
@@ -1116,8 +1115,9 @@ function configOptions(path, raw) {
   }
   return { options, warnings };
 }
+var blankPause = (raw) => /^\s*(""|'')?\s*$/.test(raw);
 function parseSetValue(name, raw) {
-  if (name === "pausePrompt") return raw.trim() === "" ? { ok: false } : { ok: true, value: raw };
+  if (name === "pausePrompt") return blankPause(raw) ? { ok: false } : { ok: true, value: raw };
   const o = OPTIONS.find((x) => x.name === name);
   const v = o?.parse(raw);
   if (v === void 0 || v === null) return { ok: false };
@@ -1173,6 +1173,7 @@ var pathLine = (dir, home) => {
 var byWindow = (f) => (Array.isArray(f) ? [...f] : [f]).sort((a, b) => Number(a.kind === "seven_day") - Number(b.kind === "seven_day"));
 var envList = (set3) => set3.map(([name, raw]) => `${name}=${JSON.stringify(raw)}`).join(", ");
 var HELP_WIDTH = 18;
+var CONFIG_FIX = "Correct the file, or remove it to use the defaults.";
 var codexText = {
   /** CX1: the status message of the four gating hooks. */
   statusHold: "spare10 checks the quota reserve. Esc stops a held step.",
@@ -1202,7 +1203,7 @@ var codexText = {
   /** CX11: a bad value in config.json. */
   configBad: (path, name, raw, range, used) => `${path} sets ${name} to ${JSON.stringify(raw) ?? String(raw)}, which is not ${range}. spare10 uses ${used}.`,
   /** CX12: config.json exists but does not parse. */
-  configUnread: (path, err) => `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset.`,
+  configUnread: (path, err) => `cannot read ${path} (${err}). spare10 uses the default options, and keeps each reserve until the reset. ${CONFIG_FIX}`,
   /** CX13: only a weekly window, and the weekly reserve is 0. */
   weeklyOnlyOff: "Codex reports only a weekly window, and the weekly reserve is 0. So spare10 watches no window.",
   /** CX40: only a weekly window, with a weekly open span. */
@@ -1248,10 +1249,27 @@ var codexText = {
   setEnvWins: (env) => ` ${env} is set here, and it wins over the option. On the Codex daemon, restart the daemon to clear it.`,
   /** CX30 */
   setBad: (name, range) => `${name} takes ${range}. Nothing changed.`,
+  /** CX52: `spare10 set pausePrompt` with no text. */
+  setBlankPause: "pausePrompt needs a text. To clear it, run spare10 set pausePrompt default. Nothing changed.",
   /** CX31 */
   setUnknown: (name) => `unknown option "${name}". The options are reserve, weeklyReserve, lastMinutes, weeklyLastHours, resumeFloor, weeklyResumeFloor, pausePrompt, autoResume, headless and scope.`,
-  /** CX32 */
-  setFailed: (path, err) => `could not write ${path}: ${err}. Nothing changed.`,
+  /** CX49: a typed `spare10 <word>` that is no command. */
+  unknown: (word2) => `unknown command "${word2}". Nothing changed. Run spare10 help to list the commands.`,
+  /**
+   * CX50: `spare10 resume` after a stop that ended, while held work still waits under it. spare10 cleared
+   * the stop, so each held call decides again. A kind that gates still asks.
+   */
+  heldStopOver: "the stop is over. Held work continues now.",
+  /**
+   * CX51 (4.4, 4.20): `spare10 stop` on an open question wrote an auto stop, and each held tool call is in a
+   * thread that no daemon hosts. So the calls wait in place under the stop. `until`: when spare10 continues
+   * them, as the core `asking` reply says it.
+   */
+  stopAskingWaits: (until) => until === void 0 ? `stopped. ${HELD_WAITS}` : `stopped. Held work waits. spare10 continues it ${until.lead === void 0 ? `after ${until.at}` : `at ${untilPhrase(until)}`}. Run !spare10 resume to continue it now.`,
+  /** CX53 (report only): a stop that spare10 does not end by itself is over, and held work still waits under it. */
+  heldStopEnded: `the stop is over. ${HELD_WAITS}`,
+  /** CX32. `unread`: config.json does not parse, or is not an object, so the text says how to repair it. */
+  setFailed: (path, err, unread = false) => `could not write ${path}: ${err}. Nothing changed.${unread ? ` ${CONFIG_FIX}` : ""}`,
   /** CX33: rows of [name, value, source]. */
   setList: (path, rows) => [
     `options, from ${path}:`,
@@ -1990,12 +2008,14 @@ function createSettings(d) {
     }
   };
 }
+var ConfigUnreadError = class extends Error {
+};
 function setOption(paths, owner, name, value) {
   const path = configPath(paths);
   return withLock(join(paths.data, "config.lock"), owner, () => {
-    const read = readJson(path);
+    const read = readOwnJson(path);
     const raw = read === void 0 ? {} : read;
-    if (!isObject2(raw)) throw new Error("it is not a JSON object");
+    if (!isObject2(raw)) throw new ConfigUnreadError("it is not a JSON object");
     const next = { ...raw };
     const old = next[name];
     if (value === void 0) delete next[name];
@@ -3028,16 +3048,18 @@ function removeDead(st, dead) {
     if (st[field2] === d.raw) delete st[field2];
   }
 }
+function parentOf(sx, attended, log) {
+  if (attended || sx.parent === void 0) return void 0;
+  try {
+    return sx.parent.read();
+  } catch (e) {
+    log?.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
+    return void 0;
+  }
+}
 function consentsOf(sx, q, log) {
   const state = sx.store.read();
-  let parent;
-  if (!q.attended && sx.parent !== void 0) {
-    try {
-      parent = sx.parent.read();
-    } catch (e) {
-      log?.debug(codexDebug.readFailed("the parent session", e instanceof Error ? e.message : String(e)));
-    }
-  }
+  const parent = parentOf(sx, q.attended, log);
   const r = consentsIn({ ...q, state, ...parent === void 0 ? {} : { parent }, hostPid: sx.hostPid });
   if (r.dead.length > 0) {
     try {
@@ -3822,6 +3844,7 @@ function codexWarnings(state, s, originator) {
   const has = (id) => warned.includes(id);
   if (has("CX6") || has("CX7")) out.push(codexText.noDaemon(s.cfg.autoResume));
   if (has("CX8")) out.push(codexText.approvalNever);
+  if (has("CX9")) out.push(codexText.unsafe);
   if (has("CX42")) out.push(codexText.optInDaemon);
   if (has("CX43") && originator !== void 0) out.push(codexText.originator(originator));
   if (!s.blind && !s.present.includes("five_hour") && s.present.includes("seven_day")) {
@@ -3860,11 +3883,14 @@ function envWins(eff, name) {
   if (name === "scope") return eff.from.enabled === "SPARE10";
   return eff.from[name] === "env";
 }
+var spanUnread = (eff, name) => (name === "lastMinutes" || name === "weeklyLastHours") && eff.from[name] === "unread";
 function createCommands(d) {
   const attendedOf = (sx) => d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
-  const heldThreads = (sx) => {
+  const heldThreads = (sx, calls = false) => {
     try {
-      return threadIds(sx.store).filter((tid) => readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true);
+      return threadIds(sx.store).filter(
+        (tid) => readThread(sx.store, tid)?.held.some((e) => (!calls || e.site === "tool" || e.site === "step") && d.pidAlive(e.brokerPid)) === true
+      );
     } catch {
       return [];
     }
@@ -3874,18 +3900,28 @@ function createCommands(d) {
     for (const tid of tids) if (await d.daemon.hosted(tid).catch(() => false)) return true;
     return false;
   };
+  const endedHeld = (sx, state, p, autoResume) => {
+    const r = parseStopped(state.stopped);
+    if (r === void 0 || r.sessionId !== sx.sid || p.stop !== void 0 || p.question !== void 0 || !p.attended || !p.cfg.enabled) return false;
+    if (r.kinds !== void 0 && r.auto === true && autoResume) return false;
+    return heldLive(sx);
+  };
+  const endHeldStop = (sx, s) => {
+    const raw = sx.store.read().stopped;
+    const r = parseStopped(raw);
+    if (raw === void 0 || r?.sessionId !== sx.sid || !heldLive(sx)) return false;
+    if (stopInForce(r, sx.sid, void 0, s.now, [], commandHolders(s.kinds)) !== void 0) return false;
+    return sx.store.locked((tx) => {
+      if (tx.state.stopped !== raw) return false;
+      clearStopped(tx.state);
+      return true;
+    });
+  };
   const absentOf = (s) => watchedKinds(s.cfg).filter((k) => !s.present.includes(k));
   const seen = async (sx) => {
     const s = await d.sense.sense(sx);
     const state = sx.store.read();
-    let parent;
-    if (!s.attended && sx.parent !== void 0) {
-      try {
-        parent = sx.parent.read();
-      } catch {
-        parent = void 0;
-      }
-    }
+    const parent = parentOf(sx, s.attended, d.log);
     const lists = (k) => consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid }).list.map(
       (e) => e.c
     );
@@ -3911,6 +3947,14 @@ function createCommands(d) {
     });
     return { p, s, state };
   };
+  const inputOf = (sx, p, s, i) => {
+    const absent2 = absentOf(s);
+    return {
+      ...statusInput(p, i),
+      ...absent2.length === 0 ? {} : { absent: absent2 },
+      ...p.stop !== void 0 && heldLive(sx) ? { heldInPlace: true } : {}
+    };
+  };
   const statusText = async (sx0, o) => {
     await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS);
     const sx = sx0 ?? scratchCtx();
@@ -3919,13 +3963,13 @@ function createCommands(d) {
     const now = p.now;
     const hosted = sx0 === void 0 ? false : await d.daemon.hosted(sx.sid).catch(() => false);
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)];
+    if (sx0 !== void 0 && endedHeld(sx, state, p, cfg.autoResume)) warnings.push(codexText.heldStopEnded);
     for (const k of p.kinds) {
       const c = consentPastWindow(k, state[consentField(k.kind)], now);
       if (c !== void 0) warnings.push(codexText.consentBeyond(k.kind, c.until, now));
     }
     const st = p.stop;
     const tickerStale = sx0 !== void 0 && st?.work === true && st.auto === true && cfg.autoResume && !hosted && !heldLive(sx);
-    const input = statusInput(p, { childPolicy: d.env.SPARE10_HEADLESS ?? state.child ?? cfg.headless, warnings, tickerStale });
     const live = s.view.live;
     const liveError = s.view.liveError;
     const liveRow = live !== void 0 ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === void 0 ? {} : { error: liveError.error });
@@ -3953,11 +3997,8 @@ function createCommands(d) {
       }
     }
     rows.push(["daemon", daemonRow], ["live read", liveRow], ["cli", shownPath(d.paths.launcher, d.paths.home)]);
-    const absent2 = absentOf(s);
     return statusReport({
-      ...input,
-      ...absent2.length === 0 ? {} : { absent: absent2 },
-      ...st !== void 0 && heldLive(sx) ? { heldInPlace: true } : {},
+      ...inputOf(sx, p, s, { childPolicy: d.env.SPARE10_HEADLESS ?? state.child ?? cfg.headless, warnings, tickerStale }),
       extraRows: rows,
       extraHelp: [codexText.helpSet, codexText.helpAnytime]
     });
@@ -3980,9 +4021,9 @@ function createCommands(d) {
     const mode = modeOf(cfg);
     const absent2 = absentOf(s);
     const early = resumeReadReply(s, absent2);
-    if (early !== void 0) return early;
+    if (early !== void 0) return endHeldStop(sx, s) ? codexText.heldStopOver : early;
     const c = resumeCase(s, d.sense.split(sx, s), mode);
-    if ("reply" in c) return c.reply;
+    if ("reply" in c) return endHeldStop(sx, s) ? codexText.heldStopOver : c.reply;
     const wasStopped = stoppedNow(sx, s.now, c.gating, commandHolders(s.kinds)) !== void 0;
     sx.store.locked((tx) => {
       for (const w of c.write) writeConsent(tx.state, w.kind, w.c, s.now, w.test);
@@ -4016,7 +4057,11 @@ function createCommands(d) {
     const carried = overdue?.record.work === true;
     const open = d.questions.openQuestion(sx);
     if (open !== void 0) {
+      const calls = heldThreads(sx, true);
       const late2 = await d.questions.settle(sx, open.key, "stop", "command");
+      if (late2.record?.auto === true && late2.ended === void 0 && calls.length > 0 && !await anyHosted(calls)) {
+        return codexText.stopAskingWaits(late2.record.work === true ? late2.until : void 0);
+      }
       return stopAskingReply(late2) ?? stopAskingIdle(late2.q ?? open, cfg.autoResume, now);
     }
     const s = sNow ?? await d.sense.sense(sx);
@@ -4081,7 +4126,7 @@ function createCommands(d) {
       const raw = "raw" in read && typeof read.raw === "object" && read.raw !== null && !Array.isArray(read.raw) ? read.raw : {};
       const rows = OPTIONS.map((o) => {
         const inFile = Object.prototype.hasOwnProperty.call(raw, o.name) && o.parse(raw[o.name]) !== void 0;
-        const source = envWins(eff, o.name) ? `${o.env} wins` : inFile ? "config.json" : "default";
+        const source = envWins(eff, o.name) ? `${o.env} wins` : spanUnread(eff, o.name) ? "config.json unread" : inFile ? "config.json" : "default";
         return [o.name, optionText(o.name, valueOf(eff, o.name)), source];
       });
       return codexText.setList(shownPath(path, d.paths.home), rows);
@@ -4093,19 +4138,19 @@ function createCommands(d) {
     let value;
     if (!toDefault) {
       const v = parseSetValue(name, rest);
-      if (!v.ok) return codexText.setBad(name, option.range);
+      if (!v.ok) return name === "pausePrompt" ? codexText.setBlankPause : codexText.setBad(name, option.range);
       value = v.value;
     }
     let old;
     try {
       old = setOption(d.paths, d.owner, name, value).old;
     } catch (e) {
-      return codexText.setFailed(shownPath(path, d.paths.home), errText3(e));
+      return codexText.setFailed(shownPath(path, d.paths.home), errText3(e), e instanceof SyntaxError || e instanceof ConfigUnreadError);
     }
     const wins = envWins(eff, name) && d.env[option.env] !== void 0 ? codexText.setEnvWins(option.env) : "";
     if (value === void 0) return `${codexText.setDefault(name, defaultText(name))}${wins}`;
     const was = old === void 0 ? void 0 : option.parse(old);
-    const oldText = was === void 0 ? defaultText(name) : optionText(name, was);
+    const oldText = was !== void 0 ? optionText(name, was) : spanUnread(eff, name) ? optionText(name, valueOf(eff, name)) : defaultText(name);
     return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}`;
   };
   const exec = async (sx, cmd, o) => {
@@ -4125,7 +4170,7 @@ function createCommands(d) {
       case "unknownOption":
         return codexText.setUnknown(cmd.word);
       case "unknown":
-        return unknownVerb(cmd.word);
+        return codexText.unknown(cmd.word);
     }
   };
   return {
@@ -4138,8 +4183,11 @@ function createCommands(d) {
     },
     exec,
     statusText,
-    async phaseLine(sx) {
-      const report = await statusText(sx, { cli: true, full: false });
+    async phaseLine(sx0) {
+      await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS);
+      const sx = sx0 ?? scratchCtx();
+      const { p, s } = await seen(sx);
+      const report = statusReport(inputOf(sx, p, s, { childPolicy: "", warnings: [], tickerStale: false }));
       return (report.split("\n")[2] ?? "").replace(/^ {2}/, "");
     },
     async phase(sx) {

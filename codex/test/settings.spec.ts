@@ -7,7 +7,7 @@ import type { HostKind } from '../../hooks/core/codex.ts'
 import { DEFAULTS } from '../../hooks/core/config.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
 import { badWarning } from '../../hooks/core/text.ts'
-import { ENV_NAMES, configPath, createSettings, envReadsOf, ownsSimulate, readConfig, setOption } from '../src/settings.ts'
+import { ConfigUnreadError, ENV_NAMES, configPath, createSettings, envReadsOf, ownsSimulate, readConfig, setOption } from '../src/settings.ts'
 import type { Env } from '../src/paths.ts'
 import { memoryLog } from './helpers/log.ts'
 import { tempDir } from './helpers/tmp.ts'
@@ -110,7 +110,10 @@ test('settings: a config.json that does not parse keeps the variables, and zeroe
   const err = readConfig(path)
   assert.ok('error' in err)
   assert.equal(eff.warnings[0], codexText.configUnread(path, err.error))
-  assert.match(eff.warnings[0] ?? '', /^cannot read .*config\.json \(.+\)\. spare10 uses the default options, and keeps each reserve until the reset\.$/)
+  assert.match(
+    eff.warnings[0] ?? '',
+    /^cannot read .*config\.json \(.+\)\. spare10 uses the default options, and keeps each reserve until the reset\. Correct the file, or remove it to use the defaults\.$/,
+  )
 })
 
 test('settings: a config.json that is not an object is unread too', (t) => {
@@ -153,8 +156,26 @@ test('settings: setOption never overwrites a config.json that does not parse or 
   assert.throws(() => setOption({ data }, 'cli', 'reserve', 20), SyntaxError)
   assert.equal(readFileSync(path, 'utf8'), '{"reserve": 15,')
   writeFileSync(path, '[1]')
+  assert.throws(() => setOption({ data }, 'cli', 'reserve', 20), ConfigUnreadError)
   assert.throws(() => setOption({ data }, 'cli', 'reserve', 20), /not a JSON object/)
   assert.equal(readFileSync(path, 'utf8'), '[1]')
+})
+
+test('settings: setOption repairs a torn config.json (empty, only white space, or with a NUL byte), which the broker reads as CX12', (t) => {
+  for (const torn of ['', '  \n', '{"reserve": 15\0\0\0']) {
+    const { settings, data, path } = setup(t, { config: torn })
+    // The broker still fails closed on the torn file: CX12, and both spans 0.
+    const before = settings.get()
+    assert.equal(before.lastMinutes, 0, JSON.stringify(torn))
+    assert.equal(before.from.lastMinutes, 'unread')
+    assert.equal(before.warnings.length, 1)
+    assert.deepEqual(setOption({ data }, 'cli', 'lastMinutes', 20), { old: undefined }, JSON.stringify(torn))
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { lastMinutes: 20 })
+    const after = settings.get()
+    assert.equal(after.lastMinutes, 20)
+    assert.equal(after.weeklyLastHours, DEFAULTS.weeklyLastHours, 'the file reads again, so the other span is back to its default')
+    assert.deepEqual(after.warnings, [])
+  }
 })
 
 test('settings: SPARE10_SIMULATE is ignored with a debug line on the daemon and an app-server, and honoured on tui and exec', (t) => {

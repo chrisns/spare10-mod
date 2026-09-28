@@ -20,6 +20,7 @@ import {
   stopAskingIdle,
   stopAskingReply,
   stopCase,
+  stopInForce,
   stopKept,
   stopKeptReply,
   stopOverdueReply,
@@ -32,9 +33,10 @@ import {
 import type { Seen } from '../../hooks/core/flow.ts'
 import { parseSimulate, pctOf } from '../../hooks/core/reading.ts'
 import type { Kind } from '../../hooks/core/reading.ts'
-import { commandFailed, resumeReply, simulateReply, statusReport, stopReply, unknownVerb } from '../../hooks/core/text.ts'
+import { commandFailed, resumeReply, simulateReply, statusReport, stopReply } from '../../hooks/core/text.ts'
+import type { StatusInput } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
-import { clearConsent, consentField, consentsIn, writeConsent } from './consent.ts'
+import { clearConsent, consentField, consentsIn, parentOf, writeConsent } from './consent.ts'
 import type { DaemonLink } from './daemon.ts'
 import type { Deps } from './deps.ts'
 import { readJson } from './files.ts'
@@ -44,7 +46,7 @@ import type { Quota } from './quota.ts'
 import type { Questions } from './question.ts'
 import { toldOf } from './sense.ts'
 import type { CodexSensed, SenseApi, SessionCtx } from './sense.ts'
-import { configPath, readConfig, setOption } from './settings.ts'
+import { ConfigUnreadError, configPath, readConfig, setOption } from './settings.ts'
 import type { SettingsSource } from './settings.ts'
 import { clearStopped, stoppedNow, takeOverdueStop, writeStopped } from './stop.ts'
 import { freshState, freshThread, testOf } from './store.ts'
@@ -55,9 +57,10 @@ import { A_NEAR_MS, LIVE_RELEASE_MAX_AGE_MS } from './timing.ts'
 // The commands (Codex design 2.8, 4.19, 4.20, 7.2 commands.ts): the report, resume, stop, simulate, set and
 // help. A typed prompt `spare10 ...` in the root thread and the CLI run the same functions, on the session
 // files. The replies are the core replies with the Codex host words, and have no prefix: the gate and the
-// CLI add `spare10: `. Codex adds three things to register.tsx: the replies say what happens to held work
+// CLI add `spare10: `. Codex adds four things to register.tsx: the replies say what happens to held work
 // (resume `asking`, and stop `asking` when it refuses held work or HELD_WAITS when held work waits under the
-// stop), a stop clears the held stop, and a stop that writes a stop runs the stop sweep.
+// stop), a stop clears the held stop, a stop that writes a stop runs the stop sweep, and a resume ends a
+// stop that is over while held work still waits under it (CX50).
 
 export type CommandDeps = Pick<Deps, 'paths' | 'clock' | 'log' | 'owner'> & {
   /** The env of the broker, or of the CLI: `SPARE10_HEADLESS` and the variables that win over an option. */
@@ -136,6 +139,7 @@ function codexWarnings(state: SessionState, s: CodexSensed, originator: string |
   const has = (id: string): boolean => warned.includes(id)
   if (has('CX6') || has('CX7')) out.push(codexText.noDaemon(s.cfg.autoResume))
   if (has('CX8')) out.push(codexText.approvalNever)
+  if (has('CX9')) out.push(codexText.unsafe)
   if (has('CX42')) out.push(codexText.optInDaemon)
   if (has('CX43') && originator !== undefined) out.push(codexText.originator(originator))
   // CX13 and CX40 follow the kinds of now: a report also runs before any gate of the session sensed.
@@ -181,13 +185,18 @@ function envWins(eff: Effective, name: OptionName): boolean {
   return eff.from[name] === 'env'
 }
 
+/** 5.2: config.json did not read, so this span is 0, not its default (CX12). */
+const spanUnread = (eff: Effective, name: OptionName): boolean => (name === 'lastMinutes' || name === 'weeklyLastHours') && eff.from[name] === 'unread'
+
 export function createCommands(d: CommandDeps): Commands {
   const attendedOf = (sx: SessionCtx): boolean => d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
 
-  /** The threads of the session with held work: a held entry of a live broker (4.19 heldInPlace, 4.20 `asking`). */
-  const heldThreads = (sx: SessionCtx): string[] => {
+  /** The threads of the session with held work: a held entry of a live broker (4.19 heldInPlace, 4.20 `asking`). `calls`: only tool and step calls. */
+  const heldThreads = (sx: SessionCtx, calls = false): string[] => {
     try {
-      return threadIds(sx.store).filter((tid) => readThread(sx.store, tid)?.held.some((e) => d.pidAlive(e.brokerPid)) === true)
+      return threadIds(sx.store).filter(
+        (tid) => readThread(sx.store, tid)?.held.some((e) => (!calls || e.site === 'tool' || e.site === 'step') && d.pidAlive(e.brokerPid)) === true,
+      )
     } catch {
       return []
     }
@@ -202,6 +211,36 @@ export function createCommands(d: CommandDeps): Commands {
     return false
   }
 
+  /**
+   * CX53: a stop of this session that is over, while held work still waits under it and spare10 does not
+   * end the stop by itself. holdStopped keeps a held call while the record stands (4.4), and only an auto
+   * stop with Continue at the reset on ends in place. So only a resume or Esc ends that wait.
+   */
+  const endedHeld = (sx: SessionCtx, state: SessionState, p: Seen, autoResume: boolean): boolean => {
+    const r = parseStopped(state.stopped)
+    if (r === undefined || r.sessionId !== sx.sid || p.stop !== undefined || p.question !== undefined || !p.attended || !p.cfg.enabled) return false
+    if (r.kinds !== undefined && r.auto === true && autoResume) return false
+    return heldLive(sx)
+  }
+
+  /**
+   * CX50 (4.4): a resume ends a stop of this session that is over while held work still waits under it.
+   * Nothing else ends such a stop, because only an auto stop is taken over or ends in place. A stop that
+   * still applies stays (TS1 too). It writes no consent: each held call decides again, and a kind that
+   * gates asks. The clear is a compare-and-set on the value it read.
+   */
+  const endHeldStop = (sx: SessionCtx, s: CodexSensed): boolean => {
+    const raw = sx.store.read().stopped
+    const r = parseStopped(raw)
+    if (raw === undefined || r?.sessionId !== sx.sid || !heldLive(sx)) return false
+    if (stopInForce(r, sx.sid, undefined, s.now, [], commandHolders(s.kinds)) !== undefined) return false
+    return sx.store.locked((tx) => {
+      if (tx.state.stopped !== raw) return false
+      clearStopped(tx.state)
+      return true
+    })
+  }
+
   /** The watched kinds that the host reports no window for (CX17). */
   const absentOf = (s: CodexSensed): Kind[] => watchedKinds(s.cfg).filter((k) => !s.present.includes(k))
 
@@ -209,14 +248,7 @@ export function createCommands(d: CommandDeps): Commands {
   const seen = async (sx: SessionCtx): Promise<{ p: Seen; s: CodexSensed; state: SessionState }> => {
     const s = await d.sense.sense(sx)
     const state = sx.store.read()
-    let parent: SessionState | undefined
-    if (!s.attended && sx.parent !== undefined) {
-      try {
-        parent = sx.parent.read()
-      } catch {
-        parent = undefined
-      }
-    }
+    const parent = parentOf(sx, s.attended, d.log) // 3.10: logged when it fails, as the gate does
     const lists = (k: (typeof s.kinds)[number]) =>
       consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid }).list.map(
         (e) => e.c,
@@ -243,6 +275,16 @@ export function createCommands(d: CommandDeps): Commands {
     return { p, s, state }
   }
 
+  /** The report input of a view, with the Codex parts that the phase line reads: the absent kinds (CX17) and held work under a stop (4.19). */
+  const inputOf = (sx: SessionCtx, p: Seen, s: CodexSensed, i: Parameters<typeof statusInput>[1]): StatusInput => {
+    const absent = absentOf(s)
+    return {
+      ...statusInput(p, i),
+      ...(absent.length === 0 ? {} : { absent }),
+      ...(p.stop !== undefined && heldLive(sx) ? { heldInPlace: true } : {}),
+    }
+  }
+
   const statusText: Commands['statusText'] = async (sx0, o) => {
     await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS)
     const sx = sx0 ?? scratchCtx()
@@ -251,6 +293,7 @@ export function createCommands(d: CommandDeps): Commands {
     const now = p.now
     const hosted = sx0 === undefined ? false : await d.daemon.hosted(sx.sid).catch(() => false)
     const warnings = [...cfg.warnings, ...codexWarnings(state, s, d.attendance.attended({ transcript: state.transcript ?? sx.transcript }, sx.mode).warnOriginator)]
+    if (sx0 !== undefined && endedHeld(sx, state, p, cfg.autoResume)) warnings.push(codexText.heldStopEnded) // CX53
     for (const k of p.kinds) {
       // R13: a consent that lies beyond this window is ignored, and the report says so (B30). Codex keeps it in the session state (CX48).
       const c = consentPastWindow(k, state[consentField(k.kind)], now)
@@ -261,7 +304,6 @@ export function createCommands(d: CommandDeps): Commands {
     // Held work in a thread with no daemon continues in place at the stop end (4.4): only an idle stopped
     // session needs the reset clock of a hosted root.
     const tickerStale = sx0 !== undefined && st?.work === true && st.auto === true && cfg.autoResume && !hosted && !heldLive(sx)
-    const input = statusInput(p, { childPolicy: d.env.SPARE10_HEADLESS ?? state.child ?? cfg.headless, warnings, tickerStale })
     const live = s.view.live
     const liveError = s.view.liveError
     const liveRow = live !== undefined ? codexText.liveRow({ agoMs: Math.max(0, now - live.at) }) : codexText.liveRow(liveError === undefined ? {} : { error: liveError.error })
@@ -289,11 +331,8 @@ export function createCommands(d: CommandDeps): Commands {
       }
     }
     rows.push(['daemon', daemonRow], ['live read', liveRow], ['cli', shownPath(d.paths.launcher, d.paths.home)])
-    const absent = absentOf(s)
     return statusReport({
-      ...input,
-      ...(absent.length === 0 ? {} : { absent }),
-      ...(st !== undefined && heldLive(sx) ? { heldInPlace: true } : {}),
+      ...inputOf(sx, p, s, { childPolicy: d.env.SPARE10_HEADLESS ?? state.child ?? cfg.headless, warnings, tickerStale }),
       extraRows: rows,
       extraHelp: [codexText.helpSet, codexText.helpAnytime],
     })
@@ -320,9 +359,9 @@ export function createCommands(d: CommandDeps): Commands {
     const mode = modeOf(cfg)
     const absent = absentOf(s)
     const early = resumeReadReply(s, absent) // B23, CX17
-    if (early !== undefined) return early
+    if (early !== undefined) return endHeldStop(sx, s) ? codexText.heldStopOver : early
     const c = resumeCase(s, d.sense.split(sx, s), mode)
-    if ('reply' in c) return c.reply
+    if ('reply' in c) return endHeldStop(sx, s) ? codexText.heldStopOver : c.reply
     const wasStopped = stoppedNow(sx, s.now, c.gating, commandHolders(s.kinds)) !== undefined // TS1: also a stop that a kind of it still holds
     // The command follows the reading now (floor 1.3 item 2): before the floor to the floor, past it until the reset.
     sx.store.locked((tx) => {
@@ -365,7 +404,13 @@ export function createCommands(d: CommandDeps): Commands {
     const carried = overdue?.record.work === true // a new stop keeps the work of the stop it took over (3.2)
     const open = d.questions.openQuestion(sx)
     if (open !== undefined) {
+      const calls = heldThreads(sx, true) // before the settle: a refused call removes its held entry
       const late = await d.questions.settle(sx, open.key, 'stop', 'command') // the settle runs the stop sweep
+      // 4.4: under an auto stop, a held tool or step call of a thread that no daemon hosts waits in place
+      // until the stop ends (CX51). A held prompt is blocked, so only the calls count.
+      if (late.record?.auto === true && late.ended === undefined && calls.length > 0 && !(await anyHosted(calls))) {
+        return codexText.stopAskingWaits(late.record.work === true ? late.until : undefined)
+      }
       return stopAskingReply(late) ?? stopAskingIdle(late.q ?? open, cfg.autoResume, now)
     }
     const s = sNow ?? (await d.sense.sense(sx))
@@ -442,7 +487,7 @@ export function createCommands(d: CommandDeps): Commands {
       const raw = 'raw' in read && typeof read.raw === 'object' && read.raw !== null && !Array.isArray(read.raw) ? (read.raw as Record<string, unknown>) : {}
       const rows = OPTIONS.map((o) => {
         const inFile = Object.prototype.hasOwnProperty.call(raw, o.name) && o.parse(raw[o.name]) !== undefined
-        const source = envWins(eff, o.name) ? `${o.env} wins` : inFile ? 'config.json' : 'default'
+        const source = envWins(eff, o.name) ? `${o.env} wins` : spanUnread(eff, o.name) ? 'config.json unread' : inFile ? 'config.json' : 'default'
         return [o.name, optionText(o.name, valueOf(eff, o.name)), source] as const
       })
       return codexText.setList(shownPath(path, d.paths.home), rows)
@@ -454,21 +499,23 @@ export function createCommands(d: CommandDeps): Commands {
     let value: string | number | boolean | undefined
     if (!toDefault) {
       const v = parseSetValue(name, rest)
-      if (!v.ok) return codexText.setBad(name, option.range)
+      if (!v.ok) return name === 'pausePrompt' ? codexText.setBlankPause : codexText.setBad(name, option.range)
       value = v.value
     }
     let old: unknown
     try {
       old = setOption(d.paths, d.owner, name, value).old
     } catch (e) {
-      return codexText.setFailed(shownPath(path, d.paths.home), errText(e))
+      // CX32: a config.json that does not parse, or is not an object, gets the hint to repair it.
+      return codexText.setFailed(shownPath(path, d.paths.home), errText(e), e instanceof SyntaxError || e instanceof ConfigUnreadError)
     }
     // A15: only a variable that parses wins (withEnv). The variable must be set here: a nested run gets its
     // parent's child policy as `headless` from the env source with no SPARE10_HEADLESS.
     const wins = envWins(eff, name) && d.env[option.env] !== undefined ? codexText.setEnvWins(option.env) : ''
     if (value === undefined) return `${codexText.setDefault(name, defaultText(name))}${wins}`
     const was = old === undefined ? undefined : option.parse(old)
-    const oldText = was === undefined ? defaultText(name) : optionText(name, was)
+    // A torn config.json counts as empty (setOption): a span it held at 0 was 0, not its default.
+    const oldText = was !== undefined ? optionText(name, was) : spanUnread(eff, name) ? optionText(name, valueOf(eff, name)) : defaultText(name)
     return `${codexText.setOk(name, optionText(name, value), oldText)}${wins}`
   }
 
@@ -489,7 +536,7 @@ export function createCommands(d: CommandDeps): Commands {
       case 'unknownOption':
         return codexText.setUnknown(cmd.word)
       case 'unknown':
-        return unknownVerb(cmd.word)
+        return codexText.unknown(cmd.word) // CX49: it names spare10 help, which lists every Codex command
     }
   }
 
@@ -503,8 +550,12 @@ export function createCommands(d: CommandDeps): Commands {
     },
     exec,
     statusText,
-    async phaseLine(sx) {
-      const report = await statusText(sx, { cli: true, full: false })
+    async phaseLine(sx0) {
+      // The phase line reads only the view: no daemon, broker or cli row, and no warning (2.9).
+      await d.quota?.live(LIVE_RELEASE_MAX_AGE_MS, A_NEAR_MS)
+      const sx = sx0 ?? scratchCtx()
+      const { p, s } = await seen(sx)
+      const report = statusReport(inputOf(sx, p, s, { childPolicy: '', warnings: [], tickerStale: false }))
       // statusReport: the version, a blank line, then the phase line.
       return (report.split('\n')[2] ?? '').replace(/^ {2}/, '')
     },

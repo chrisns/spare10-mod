@@ -367,7 +367,18 @@ test('unsafeMode (P1): no sandbox, auto review, or a writable data dir', () => {
   assert.equal(unsafeMode({ sandbox: 'external-sandbox', roots: [] }, data), true)
   assert.equal(unsafeMode({ reviewer: 'auto_review', approval: 'on-request', roots: [] }, data), true)
   assert.equal(unsafeMode({ reviewer: 'auto_review', approval: 'never', roots: [] }, data), false)
-  assert.equal(unsafeMode({ roots: ['/Users/me'] }, data), true)
+  // Auto review approves for the person with any approval but never, and guardian_subagent is its old name.
+  assert.equal(unsafeMode({ reviewer: 'auto_review', roots: [] }, data), true)
+  assert.equal(unsafeMode({ reviewer: 'auto_review', approval: 'on-failure', roots: [] }, data), true)
+  assert.equal(unsafeMode({ reviewer: 'guardian_subagent', approval: 'on-request', roots: [] }, data), true)
+  assert.equal(unsafeMode({ reviewer: 'guardian_subagent', approval: 'never', roots: [] }, data), false)
+  // Codex keeps <root>/.codex of each writable root read-only: a writable home folder does not expose ~/.codex.
+  assert.equal(unsafeMode({ roots: ['/Users/me'] }, data), false)
+  assert.equal(unsafeMode({ roots: ['/Users/me/'] }, data), false)
+  assert.equal(unsafeMode({ roots: ['/Users'] }, data), true)
+  assert.equal(unsafeMode({ roots: ['/Users/me/.codex'] }, data), true)
+  assert.equal(unsafeMode({ roots: ['/Users/me/.codex/plugins'] }, data), true)
+  assert.equal(unsafeMode({ roots: ['/'] }, data), true)
   assert.equal(unsafeMode({ roots: ['/Users/me/project'] }, data), false)
   // /tmp is /private/tmp on macOS.
   assert.equal(unsafeMode(turnContextOf(CONTEXT_WRITE), '/private/tmp/h/.codex/plugins/data/spare10-spare10'), true)
@@ -651,7 +662,7 @@ test('configOptions: unknown keys are ignored, a value that is not an object giv
   for (const raw of [null, [], 'x', 5, true]) {
     assert.deepEqual(configOptions(PATH, raw), {
       options: {},
-      warnings: [`cannot read ${PATH} (it is not a JSON object). spare10 uses the default options, and keeps each reserve until the reset.`],
+      warnings: [`cannot read ${PATH} (it is not a JSON object). spare10 uses the default options, and keeps each reserve until the reset. Correct the file, or remove it to use the defaults.`],
     })
   }
 })
@@ -674,6 +685,10 @@ test('parseSetValue: each option and its range, the stored JSON type', () => {
   ok('weeklyResumeFloor', '2.5', 2.5)
   ok('pausePrompt', 'Finish this, then stop.', 'Finish this, then stop.')
   no('pausePrompt', '   ')
+  // A pair of quotes is no text: stored, it would turn on tell mode, where spare10 stops nothing.
+  no('pausePrompt', '""')
+  no('pausePrompt', " '' ")
+  ok('pausePrompt', '"Wind down."', '"Wind down."')
   ok('autoResume', 'off', false)
   ok('autoResume', 'ON', true)
   no('autoResume', 'false')
