@@ -1574,7 +1574,7 @@ async function seen($: EngineInterface): Promise<Seen> {
   if (!(cfg.enabled && att)) sid = await $.session.id().catch(() => sid) // count this conversation's keys (3.6)
   const open = openQuestion()
   const question = open === undefined ? undefined : questions.get(open)
-  return seenOf({ cfg, now, bases, kinds, tripped, attended: att, split, stop, question, told, sessionId: sid ?? '' })
+  return seenOf({ cfg, now, bases, kinds, tripped, attended: att, split, stop, question, told, sessionId: sid ?? '', present: watchedKinds(cfg) })
 }
 
 async function badgeNow($: EngineInterface): Promise<View> {

@@ -230,7 +230,7 @@ With the reset start command, the texts have `HH:MM` where these checks show `OP
 
 **Expected:**
 
-- The status report prints. Its first line is `spare10: version 0.5.0`.
+- The status report prints. Its first line is `spare10: version 0.5.1`.
 - No line of the report and no transcript line shows `spare10: spare10:`.
 - The phase detail and every field value start in one column.
 - The report shows the rows `weekly reserve`, `at the reset`, `weekly reading` and `weekly consent`.
