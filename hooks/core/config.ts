@@ -1,4 +1,5 @@
 import type { PluginOptions, Settings as HostSettings } from 'claude-code'
+import { parseWeeklyPace } from './pace.ts'
 import { KINDS, parseSimulate, simulateWords } from './reading.ts'
 import type { Kind } from './reading.ts'
 import { badWarning, floorWarning, fmtPct, simulateWarning } from './text.ts'
@@ -16,6 +17,7 @@ export type Settings = {
   weeklyLastHours: number // the weekly span, in hours. 0 is off
   resumeFloor: number // B48: the 5-hour floor in % left. A Resume at the reserve lasts until 100 - this. 0 is off
   weeklyResumeFloor: number // B48: the weekly floor. 0 is off
+  weeklyPace: string // checkpoints like `Fri:10`: the % of the weekly quota left at the end of a weekday. Blank is off
   pausePrompt: string | null
   autoResume: boolean
   limitPause: boolean // at 100% used, spare10 holds all work until the reset (the quota limit). Off: work runs into the limit
@@ -44,6 +46,7 @@ export type Effective = Settings & {
     weeklyLastHours: SpanSource
     resumeFloor: Source
     weeklyResumeFloor: Source
+    weeklyPace: Source
     pausePrompt: Source
     autoResume: Source
     limitPause: Source
@@ -62,6 +65,7 @@ export type EnvReads = {
   weeklyLastHours?: string
   resumeFloor?: string
   weeklyResumeFloor?: string
+  weeklyPace?: string
   pausePrompt?: string
   autoResume?: string
   limitPause?: string
@@ -77,6 +81,7 @@ export const DEFAULTS: Settings = {
   weeklyLastHours: 8,
   resumeFloor: 5,
   weeklyResumeFloor: 5,
+  weeklyPace: '',
   pausePrompt: null,
   autoResume: true,
   limitPause: true,
@@ -141,6 +146,9 @@ export const floorOf = (s: Pick<Settings, 'reserve' | 'weeklyReserve' | 'resumeF
 export const spanOf = (s: Spans, kind: Kind): number =>
   Math.round(kind === 'seven_day' ? s.weeklyLastHours * 3_600_000 : s.lastMinutes * 60_000)
 
+/** The pace as given, trimmed, when it parses (blank is off). Anything else is undefined. */
+export const normalPace = (raw: unknown): string | undefined => (parseWeeklyPace(raw) === undefined ? undefined : String(raw).trim())
+
 /** Blank or white space means stop and ask. Anything else is the instruction, verbatim. */
 export const parsePausePrompt = (raw: unknown): string | null => (typeof raw === 'string' && raw.trim() !== '' ? raw : null)
 
@@ -177,6 +185,7 @@ export function fromOptions(options: PluginOptions): Settings {
     weeklyLastHours: parseWeeklyLastHours(options['weeklyLastHours']) ?? DEFAULTS.weeklyLastHours,
     resumeFloor: parseResumeFloor(options['resumeFloor']) ?? DEFAULTS.resumeFloor,
     weeklyResumeFloor: parseResumeFloor(options['weeklyResumeFloor']) ?? DEFAULTS.weeklyResumeFloor,
+    weeklyPace: normalPace(options['weeklyPace']) ?? DEFAULTS.weeklyPace,
     pausePrompt: parsePausePrompt(options['pausePrompt']),
     autoResume: parseAutoResume(options['autoResume']),
     limitPause: parseLimitPause(options['limitPause']),
@@ -190,8 +199,8 @@ export function fromOptions(options: PluginOptions): Settings {
  * The kinds spare10 acts on, five_hour first: the weekly window only while its reserve is above 0.
  * `present` (Codex design 4.15): the kinds the host reports a window for. Claude passes none: both.
  */
-export const watchedKinds = (s: Pick<Settings, 'weeklyReserve'>, present: readonly Kind[] = KINDS): Kind[] =>
-  KINDS.filter((k) => present.includes(k) && (k === 'five_hour' || s.weeklyReserve > 0))
+export const watchedKinds = (s: Pick<Settings, 'weeklyReserve'> & { weeklyPace?: string }, present: readonly Kind[] = KINDS): Kind[] =>
+  KINDS.filter((k) => present.includes(k) && (k === 'five_hour' || s.weeklyReserve > 0 || (s.weeklyPace ?? '') !== ''))
 
 export const reserveOf = (s: Pick<Settings, 'reserve' | 'weeklyReserve'>, kind: Kind): number =>
   kind === 'seven_day' ? s.weeklyReserve : s.reserve
@@ -217,6 +226,7 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
       weeklyLastHours: 'option',
       resumeFloor: 'option',
       weeklyResumeFloor: 'option',
+      weeklyPace: 'option',
       pausePrompt: 'option',
       autoResume: 'option',
       limitPause: 'option',
@@ -271,6 +281,14 @@ export function withEnv(base: Settings, env: EnvReads, o: { simulateKind?: Kind 
     else {
       out.weeklyResumeFloor = f
       out.from.weeklyResumeFloor = 'env'
+    }
+  }
+  if (env.weeklyPace !== undefined) {
+    const p = normalPace(env.weeklyPace)
+    if (p === undefined) warnings.push(badWarning('SPARE10_WEEKLY_PACE', env.weeklyPace, base.weeklyPace === '' ? 'off' : base.weeklyPace))
+    else {
+      out.weeklyPace = p
+      out.from.weeklyPace = 'env'
     }
   }
   if (env.pausePrompt !== undefined) {

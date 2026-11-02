@@ -7,6 +7,79 @@ import { readFileSync as readFileSync4, realpathSync as realpathSync3, unlinkSyn
 import { join as join9, resolve as resolve2 } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// hooks/core/pace.ts
+var DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+function parseWeeklyPace(raw) {
+  if (typeof raw !== "string") return void 0;
+  if (raw.trim() === "") return [];
+  const out = [];
+  for (const part2 of raw.split(",")) {
+    const m = /^\s*([a-z]{3})[a-z]*\s*:\s*(\d+(?:\.\d)?)\s*%?\s*$/i.exec(part2);
+    if (m === null) return void 0;
+    const day = DAYS.indexOf((m[1] ?? "").toLowerCase());
+    const left = Number(m[2]);
+    if (day < 0 || !(left >= 1 && left <= 99)) return void 0;
+    const prev = out[out.length - 1];
+    if (prev !== void 0 && (day <= prev.day || left > prev.left)) return void 0;
+    out.push({ day, left });
+  }
+  return out;
+}
+function dayStartOf(ms) {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+function nextMidnight(ms) {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+}
+var weekdayOf = (ms) => (new Date(ms).getDay() + 6) % 7;
+function checkpointTime(day, startMs) {
+  let t = dayStartOf(startMs);
+  for (let i = 0; i < 8 && weekdayOf(t) !== day; i += 1) t = nextMidnight(t);
+  return nextMidnight(t);
+}
+var clamp = (n) => Math.round(n * 10) / 10;
+function paceCeilingAt(cps, resetMs, now, weekMs, anchor) {
+  const last = cps[cps.length - 1];
+  if (last === void 0 || resetMs === null) return null;
+  const start = resetMs - weekMs;
+  const dayEnd = nextMidnight(now);
+  const finalAt = checkpointTime(last.day, start);
+  if (now >= finalAt) return null;
+  const target = 100 - last.left;
+  const points = [{ t: start, used: 0 }];
+  for (const c of cps) points.push({ t: checkpointTime(c.day, start), used: 100 - c.left });
+  const at = Math.min(dayEnd, finalAt);
+  let base = target;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    if (a === void 0 || b === void 0) continue;
+    if (at <= b.t) {
+      base = b.t === a.t ? b.used : a.used + (b.used - a.used) * (at - a.t) / (b.t - a.t);
+      break;
+    }
+  }
+  let ceiling = base;
+  if (anchor !== void 0 && anchor.atMs <= now && anchor.pct < target && finalAt > anchor.atMs) {
+    const rebased = anchor.pct + (target - anchor.pct) * (at - anchor.atMs) / (finalAt - anchor.atMs);
+    ceiling = Math.max(ceiling, rebased);
+  }
+  return clamp(Math.min(ceiling, target));
+}
+function nextPace(cps, resetMs, now, weekMs, pct, state) {
+  if (resetMs === null || now < resetMs - weekMs) return state;
+  const start = resetMs - weekMs;
+  const kept = state?.anchor !== void 0 && state.anchor.atMs >= start && state.anchor.atMs <= now ? state.anchor : void 0;
+  const today = dayStartOf(now);
+  if (state !== void 0 && state.day >= today) return kept === state.anchor ? state : { day: state.day, ...kept === void 0 ? {} : { anchor: kept } };
+  const before = today - 1;
+  const line = before < start ? null : paceCeilingAt(cps, resetMs, before, weekMs);
+  if (line !== null && pct > line) return { day: today, anchor: { atMs: now, pct } };
+  return { day: today, ...kept === void 0 ? {} : { anchor: kept } };
+}
+
 // hooks/core/reading.ts
 var KINDS = ["five_hour", "seven_day"];
 var WINDOW_MS = 5 * 36e5 + 6e4;
@@ -246,7 +319,7 @@ var onlyOf = (fs) => fs.length === 1 ? fs[0] : void 0;
 var clockOf = (f) => f.resetsAtMs === null ? "at an unknown time" : clockText(f.resetsAtMs, kindOf(f), f.timeZone, f.now);
 var reserveOf = (f) => `${fmtPct(f.reserve)}%`;
 var UNTIL_RESET = "until the window resets";
-var reserveName = (f) => f.limit === true ? isWeekly(f) ? "weekly quota limit" : "quota limit" : f.floor !== void 0 ? `${fmtPct(f.floor)}% ${isWeekly(f) ? "weekly floor" : "floor"}` : `${reserveOf(f)} ${isWeekly(f) ? "weekly reserve" : "reserve"}`;
+var reserveName = (f) => f.limit === true ? isWeekly(f) ? "weekly quota limit" : "quota limit" : f.pace === true ? f.floor !== void 0 ? `weekly pace limit (${fmtPct(100 - f.floor)}% used)` : `weekly pace ceiling (${fmtPct(100 - f.reserve)}% used)` : f.floor !== void 0 ? `${fmtPct(f.floor)}% ${isWeekly(f) ? "weekly floor" : "floor"}` : `${reserveOf(f)} ${isWeekly(f) ? "weekly reserve" : "reserve"}`;
 var yourReserves = (fs) => fs.map((f) => `your ${reserveName(f)}`).join(" and ");
 var isAre = (fs) => fs.length > 1 ? "are" : "is";
 var windowNames = (kinds) => {
@@ -274,7 +347,7 @@ var hasFloor = (f) => f.to !== void 0 || f.floor !== void 0;
 function useOne(f) {
   const weekly = isWeekly(f);
   if (f.floor !== void 0) return `the last ${fmtPct(f.left)}%${weekly ? " of the weekly window" : ""} ${untilText(f)}`;
-  const name = weekly ? "the weekly reserve" : "the reserve";
+  const name = f.pace === true ? "the weekly pace" : weekly ? "the weekly reserve" : "the reserve";
   if (f.to !== void 0) return f.resetsAtMs === null ? `${name} for one hour, or until ${fmtPct(f.to)}% used` : `${name} until ${fmtPct(f.to)}% used`;
   return `${name} ${untilText(f)}`;
 }
@@ -392,6 +465,9 @@ function badWarning(name, raw, used) {
   if (name === "SPARE10_WEEKLY_LAST_HOURS") return `SPARE10_WEEKLY_LAST_HOURS="${raw}" is not 0 to 167. spare10 uses ${used}.`;
   if (name === "SPARE10_RESUME_FLOOR") return `SPARE10_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`;
   if (name === "SPARE10_WEEKLY_RESUME_FLOOR") return `SPARE10_WEEKLY_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`;
+  if (name === "SPARE10_WEEKLY_PACE") {
+    return `SPARE10_WEEKLY_PACE="${raw}" is not a list like Fri:10. Each item is a weekday and the percent left, from 1 to 99. spare10 uses ${used}.`;
+  }
   if (name === "SPARE10_AUTO_RESUME") return `SPARE10_AUTO_RESUME="${raw}" is not on or off. spare10 uses ${used}.`;
   if (name === "SPARE10_LIMIT_PAUSE") return `SPARE10_LIMIT_PAUSE="${raw}" is not on or off. spare10 uses ${used}.`;
   if (name === "SPARE10_HEADLESS") return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`;
@@ -598,8 +674,14 @@ function weeklyRows(s) {
     w.consentTo,
     w.consentEnded
   );
+  const pace = s.pace === void 0 ? [] : [
+    field(
+      "weekly pace",
+      `${s.pace.spec} (${fromText(s.pace.from, "SPARE10_WEEKLY_PACE")}): ${s.pace.ceiling === null ? "no ceiling now" : `spare10 holds at ${fmtPct(s.pace.ceiling)}% used until midnight`}`
+    )
+  ];
   return {
-    reserve: [field("weekly reserve", `${fmtPct(w.reserve)}% of the weekly window (${fromText(w.from, "SPARE10_WEEKLY_RESERVE")})`)],
+    reserve: [field("weekly reserve", `${fmtPct(w.reserve)}% of the weekly window (${fromText(w.from, "SPARE10_WEEKLY_RESERVE")})`), ...pace],
     reading: [field("weekly reading", readingValue(w.basis, f, s.now, absentKind(s, "seven_day"), "seven_day"))],
     consent: [field("weekly consent", consent)]
   };
@@ -778,6 +860,7 @@ var DEFAULTS = {
   weeklyLastHours: 8,
   resumeFloor: 5,
   weeklyResumeFloor: 5,
+  weeklyPace: "",
   pausePrompt: null,
   autoResume: true,
   limitPause: true,
@@ -817,6 +900,7 @@ var floorOf = (s, kind) => {
   return floor > 0 && floor < reserve ? floor : 0;
 };
 var spanOf = (s, kind) => Math.round(kind === "seven_day" ? s.weeklyLastHours * 36e5 : s.lastMinutes * 6e4);
+var normalPace = (raw) => parseWeeklyPace(raw) === void 0 ? void 0 : String(raw).trim();
 var parsePausePrompt = (raw) => typeof raw === "string" && raw.trim() !== "" ? raw : null;
 function parseHeadless(raw) {
   const w = word(raw);
@@ -841,6 +925,7 @@ function fromOptions(options) {
     weeklyLastHours: parseWeeklyLastHours(options["weeklyLastHours"]) ?? DEFAULTS.weeklyLastHours,
     resumeFloor: parseResumeFloor(options["resumeFloor"]) ?? DEFAULTS.resumeFloor,
     weeklyResumeFloor: parseResumeFloor(options["weeklyResumeFloor"]) ?? DEFAULTS.weeklyResumeFloor,
+    weeklyPace: normalPace(options["weeklyPace"]) ?? DEFAULTS.weeklyPace,
     pausePrompt: parsePausePrompt(options["pausePrompt"]),
     autoResume: parseAutoResume(options["autoResume"]),
     limitPause: parseLimitPause(options["limitPause"]),
@@ -849,7 +934,7 @@ function fromOptions(options) {
     badge: parseBadge(options["badge"])
   };
 }
-var watchedKinds = (s, present = KINDS) => KINDS.filter((k) => present.includes(k) && (k === "five_hour" || s.weeklyReserve > 0));
+var watchedKinds = (s, present = KINDS) => KINDS.filter((k) => present.includes(k) && (k === "five_hour" || s.weeklyReserve > 0 || (s.weeklyPace ?? "") !== ""));
 var reserveOf2 = (s, kind) => kind === "seven_day" ? s.weeklyReserve : s.reserve;
 function withEnv(base, env, o = {}) {
   const warnings = [];
@@ -863,6 +948,7 @@ function withEnv(base, env, o = {}) {
       weeklyLastHours: "option",
       resumeFloor: "option",
       weeklyResumeFloor: "option",
+      weeklyPace: "option",
       pausePrompt: "option",
       autoResume: "option",
       limitPause: "option",
@@ -917,6 +1003,14 @@ function withEnv(base, env, o = {}) {
     else {
       out.weeklyResumeFloor = f;
       out.from.weeklyResumeFloor = "env";
+    }
+  }
+  if (env.weeklyPace !== void 0) {
+    const p = normalPace(env.weeklyPace);
+    if (p === void 0) warnings.push(badWarning("SPARE10_WEEKLY_PACE", env.weeklyPace, base.weeklyPace === "" ? "off" : base.weeklyPace));
+    else {
+      out.weeklyPace = p;
+      out.from.weeklyPace = "env";
     }
   }
   if (env.pausePrompt !== void 0) {
@@ -1164,6 +1258,7 @@ var OPTIONS = [
   { name: "weeklyLastHours", env: "SPARE10_WEEKLY_LAST_HOURS", range: "0 to 167", parse: parseWeeklyLastHours },
   { name: "resumeFloor", env: "SPARE10_RESUME_FLOOR", range: "0 to 99", parse: parseResumeFloor },
   { name: "weeklyResumeFloor", env: "SPARE10_WEEKLY_RESUME_FLOOR", range: "0 to 99", parse: parseResumeFloor },
+  { name: "weeklyPace", env: "SPARE10_WEEKLY_PACE", range: "checkpoints such as Fri:10, or blank", parse: normalPace },
   { name: "pausePrompt", env: "SPARE10_PAUSE_PROMPT", range: "any text", parse: parsePauseOption },
   { name: "autoResume", env: "SPARE10_AUTO_RESUME", range: "on or off", parse: parseAutoResumeOption },
   { name: "limitPause", env: "SPARE10_LIMIT_PAUSE", range: "on or off", parse: parseAutoResumeOption },
@@ -1174,6 +1269,7 @@ var optionOf = (name) => OPTIONS.find((o) => o.name.toLowerCase() === name.toLow
 function optionText(name, value) {
   if (name === "autoResume" || name === "limitPause") return value === false ? "off" : "on";
   if (name === "pausePrompt") return typeof value === "string" && value.trim() !== "" ? JSON.stringify(value) : "an empty text";
+  if (name === "weeklyPace") return typeof value === "string" && value.trim() !== "" ? value : "off";
   if (typeof value === "number") return fmtPct(value);
   return String(value ?? "");
 }
@@ -2038,6 +2134,7 @@ var ENV_NAMES = [
   ["weeklyLastHours", "SPARE10_WEEKLY_LAST_HOURS"],
   ["resumeFloor", "SPARE10_RESUME_FLOOR"],
   ["weeklyResumeFloor", "SPARE10_WEEKLY_RESUME_FLOOR"],
+  ["weeklyPace", "SPARE10_WEEKLY_PACE"],
   ["pausePrompt", "SPARE10_PAUSE_PROMPT"],
   ["autoResume", "SPARE10_AUTO_RESUME"],
   ["limitPause", "SPARE10_LIMIT_PAUSE"],
@@ -2460,6 +2557,17 @@ var realClock = {
 import { join as join5 } from "node:path";
 
 // hooks/core/flow.ts
+function paceAt(cfg, kind, b, now, anchor) {
+  const base = reserveOf2(cfg, kind);
+  const cps = kind === "seven_day" && cfg.weeklyPace !== "" ? parseWeeklyPace(cfg.weeklyPace) ?? [] : [];
+  const last = cps[cps.length - 1];
+  const ceiling = last === void 0 || b.kind === "none" ? null : paceCeilingAt(cps, b.resetsAtMs, now, WEEK_MS, anchor);
+  if (last === void 0 || ceiling === null) return { reserve: base, pace: false, target: null, ceiling };
+  const r = Math.round((100 - ceiling) * 10) / 10;
+  if (base > 0 && r <= base) return { reserve: base, pace: false, target: null, ceiling };
+  return { reserve: r, pace: true, target: 100 - last.left, ceiling };
+}
+var reserveAt = (cfg, kind, b, now, anchor) => paceAt(cfg, kind, b, now, anchor).reserve;
 function windowEndFor(kind, b, now, fallback) {
   if (b.kind !== "none" && b.resetsAtMs !== null) {
     delete fallback[kind];
@@ -2475,18 +2583,22 @@ function sensesOf(cfg, bases, spans, now, fallback, mems, watched = watchedKinds
   const edges = [];
   const paid = o.paid === true;
   const kinds = watched.map((kind) => {
-    const reserve = reserveOf2(cfg, kind);
     const span = spanOf(spans, kind);
     const real = bases[kind].real;
     const withTest = bases[kind].basis;
+    const pace = paceAt(cfg, kind, withTest, now, o.anchor);
+    const reserve = pace.reserve;
     const limit = limitOf(cfg, withTest, paid);
     const v = limit ? { basis: withTest, tripped: true, skipAt: null, open: false } : viewOf(real, withTest, reserve, span, now);
     const rv = viewOf(real, real, reserve, span, now);
     const b = v.basis;
-    const windowEnd = windowEndFor(kind, b, now, fallback);
+    const paced = pace.pace && v.tripped && !limit;
+    const midnight = nextMidnight(now);
+    const windowEnd = paced ? Math.min(windowEndFor(kind, b, now, fallback), midnight) : windowEndFor(kind, b, now, fallback);
+    if (paced) edges.push(midnight);
     if (v.tripped && v.skipAt !== null) edges.push(v.skipAt);
     if (limit && b.kind !== "none" && b.resetsAtMs !== null) edges.push(b.resetsAtMs);
-    const floor = floorOf(cfg, kind);
+    const floor = paced && pace.target !== null ? Math.round((100 - pace.target) * 10) / 10 : floorOf(cfg, kind);
     const point = floor > 0 ? pointOf(floor) : null;
     return {
       kind,
@@ -2494,8 +2606,8 @@ function sensesOf(cfg, bases, spans, now, fallback, mems, watched = watchedKinds
       basis: b,
       tripped: v.tripped,
       windowEnd,
-      holdEnd: v.skipAt ?? holdEndOf(b, mems[kind], now, kind),
-      stopEnd: v.skipAt ?? windowEnd,
+      holdEnd: paced ? Math.min(v.skipAt ?? windowEnd, windowEnd) : v.skipAt ?? holdEndOf(b, mems[kind], now, kind),
+      stopEnd: paced ? Math.min(v.skipAt ?? windowEnd, windowEnd) : v.skipAt ?? windowEnd,
       span,
       skipAt: v.skipAt,
       open: v.open,
@@ -2504,12 +2616,15 @@ function sensesOf(cfg, bases, spans, now, fallback, mems, watched = watchedKinds
       realIn: rv.tripped && (!rv.open || limitOf(cfg, real, paid)),
       // a real reading at the limit is never open
       realReset: real.kind === "none" ? null : real.resetsAtMs,
+      voidEnd: paced || real.kind === "none" ? null : real.resetsAtMs,
       floor,
       point,
       atFloor: !limit && v.tripped && !v.open && atPoint(b, point),
       // the limit question replaces the second question
       realPct: real.kind === "none" ? void 0 : real.pct,
-      limit
+      limit,
+      pace: paced,
+      paceMax: pace.ceiling
     };
   });
   return { kinds, edges };
@@ -2547,7 +2662,8 @@ function factsFrom(ks, now, owner = false, toOf) {
       ...owner && k.skipAt !== null ? { span: k.span } : {},
       ...k.atFloor ? { floor: k.floor } : {},
       ...to === void 0 ? {} : { to },
-      ...k.limit ? { limit: true } : {}
+      ...k.limit ? { limit: true } : {},
+      ...k.pace ? { pace: true } : {}
     };
   });
 }
@@ -3208,6 +3324,7 @@ function statusInput(p, i) {
       basis: week,
       ...rowOf("seven_day")
     },
+    ...p.cfg.weeklyPace === "" ? {} : { pace: { spec: p.cfg.weeklyPace, from: p.cfg.from.weeklyPace, ceiling: p.kinds.find((x) => x.kind === "seven_day")?.paceMax ?? null } },
     autoResume: { on: p.cfg.autoResume, from: p.cfg.from.autoResume },
     limitPause: { on: p.cfg.limitPause, from: p.cfg.from.limitPause },
     ...lim === void 0 ? {} : { limit: lim },
@@ -3799,12 +3916,13 @@ var unattendedMarksOf = (st) => ({
   reserve: { five_hour: st.unattendedNote?.five_hour ?? 0, seven_day: st.unattendedNote?.seven_day ?? 0 },
   open: { five_hour: st.openNote?.five_hour ?? 0, seven_day: st.openNote?.seven_day ?? 0 }
 });
-function pointsOf(cfg, st) {
+function pointsOf(cfg, st, week) {
   const out = {};
   for (const k of watchedKinds(cfg)) {
     const floor = floorOf(cfg, k);
     const toFloor = parseConsent(st[consentField(k)])?.to !== void 0 || slotList(st.test?.consent[k]).some((c) => c.to !== void 0);
-    out[k] = { trip: tripOf(reserveOf2(cfg, k)), ...floor > 0 && toFloor ? { floorPoint: pointOf(floor) } : {} };
+    const reserve = k === "seven_day" && week.resetMs !== null ? reserveAt(cfg, k, { kind: "seed", pct: 0, resetsAtMs: week.resetMs }, week.now, week.anchor) : reserveOf2(cfg, k);
+    out[k] = { trip: tripOf(reserve), ...floor > 0 && toFloor ? { floorPoint: pointOf(floor) } : {} };
   }
   return out;
 }
@@ -3855,13 +3973,14 @@ function createSense(d) {
     const cfg = d.settings.get();
     const state = sx.store.read();
     const test0 = testOf(state, sx.hostPid);
-    const points = pointsOf(cfg, state);
+    const nowFirst = d.clock.now();
+    const mem = memsOf(sx.sid);
+    const points = pointsOf(cfg, state, { resetMs: mem.seven_day.seed?.resetsAtMs ?? null, now: nowFirst, ...state.pace?.anchor === void 0 ? {} : { anchor: state.pace.anchor } });
     const q = { transcript: sx.transcript, store: sx.store };
     const fresh = site === "tool" || site === "step" || site === "prompt" && noRollout(sx);
     const view = fresh ? await d.quota.nearView(q, points) : d.quota.view(q, d.clock.now(), points);
     const now = d.clock.now();
     const tests = sx.root && cfg.testPct !== void 0 && test0?.envDone !== true ? envTest(sx, cfg, view, now, test0) : { ...test0?.kinds ?? {} };
-    const mem = memsOf(sx.sid);
     for (const k of KINDS) {
       const r = view.readings[k];
       const m = r?.live === void 0 ? mem[k] : sawLive(mem[k], r.live, now);
@@ -3876,9 +3995,24 @@ function createSense(d) {
       const t = tests[k];
       return t !== void 0 && inWindow(t, now, k);
     };
+    let pace = state.pace;
+    const weekLive = view.readings.seven_day?.live;
+    if (cfg.weeklyPace !== "" && weekLive !== void 0) {
+      const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], parseReset(weekLive.resetsAt), now, WEEK_MS, weekLive.percentUsed, pace);
+      if (next !== pace && next !== void 0) {
+        pace = next;
+        try {
+          sx.store.locked((tx) => {
+            tx.state.pace = next;
+          });
+        } catch (e) {
+          d.log.debug(codexDebug.writeFailed("the weekly pace", errText2(e)));
+        }
+      }
+    }
     const present = KINDS.filter((k) => view.present.includes(k) || inForce(k));
     const spans = spansOf(cfg, bases, view.creditsUsable);
-    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable });
+    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable, ...pace?.anchor === void 0 ? {} : { anchor: pace.anchor } });
     const tripped = kinds.some((k) => k.tripped);
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended;
     return {
@@ -3915,7 +4049,7 @@ function createSense(d) {
     const out = splitFrom(
       s.kinds,
       (k) => {
-        const r = state === void 0 ? { list: [], dead: [] } : consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid });
+        const r = state === void 0 ? { list: [], dead: [] } : consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.voidEnd, hostPid: sx.hostPid });
         dead.push(...r.dead);
         if (!k.open) {
           const e = floorEndsOf(k, r.list, s.now, failed);
@@ -3943,7 +4077,7 @@ function createSense(d) {
     return holdersFrom(
       s.kinds,
       gating,
-      (k) => state === void 0 ? [] : consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: false, realEnd: k.realReset, hostPid: sx.hostPid }).list,
+      (k) => state === void 0 ? [] : consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: false, realEnd: k.voidEnd, hostPid: sx.hostPid }).list,
       s.now
     );
   };
@@ -4089,6 +4223,8 @@ function valueOf(eff, name) {
       return eff.resumeFloor;
     case "weeklyResumeFloor":
       return eff.weeklyResumeFloor;
+    case "weeklyPace":
+      return eff.weeklyPace;
     case "pausePrompt":
       return eff.pausePrompt;
     case "autoResume":
@@ -4144,7 +4280,7 @@ function createCommands(d) {
     const s = await d.sense.sense(sx);
     const state = sx.store.read();
     const parent = parentOf(sx, s.attended, d.log);
-    const lists = (k) => consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid }).list.map(
+    const lists = (k) => consentsIn({ state, ...parent === void 0 ? {} : { parent }, kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.voidEnd, hostPid: sx.hostPid }).list.map(
       (e) => e.c
     );
     const split = seenSplit(s.kinds, lists, s.now);

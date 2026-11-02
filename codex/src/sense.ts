@@ -3,6 +3,8 @@ import type { CodexCredits, GateSite } from '../../hooks/core/codex.ts'
 import { floorOf, reserveOf, watchedKinds } from '../../hooks/core/config.ts'
 import type { Effective, Spans } from '../../hooks/core/config.ts'
 import { parseConsent, slotList } from '../../hooks/core/decide.ts'
+import { nextPace, parseWeeklyPace } from '../../hooks/core/pace.ts'
+import type { Anchor } from '../../hooks/core/pace.ts'
 import type { Answered, Holder, Site } from '../../hooks/core/decide.ts'
 import {
   checksStop,
@@ -13,6 +15,7 @@ import {
   needsRealList,
   newTold,
   noFloor,
+  reserveAt,
   resetTooRecent as resetTooRecentCore,
   sensesOf,
   splitFrom,
@@ -26,7 +29,7 @@ import {
   verdictOf,
 } from '../../hooks/core/flow.ts'
 import type { Acted, Bases, FallbackEnds, KindSense, Sensed, Sourced, Split, Told, UnattendedMarks } from '../../hooks/core/flow.ts'
-import { BLIND_AFTER, KINDS, basis, initialMemory, inWindow, pctOf, pointOf, sawLive } from '../../hooks/core/reading.ts'
+import { BLIND_AFTER, KINDS, WEEK_MS, basis, initialMemory, inWindow, parseReset, pctOf, pointOf, sawLive } from '../../hooks/core/reading.ts'
 import type { Anchored, Kind, Memory } from '../../hooks/core/reading.ts'
 import { debugLine } from '../../hooks/core/text.ts'
 import type { AttendanceSource } from './attend.ts'
@@ -131,12 +134,17 @@ const unattendedMarksOf = (st: Pick<SessionState, 'unattendedNote' | 'openNote'>
  * A19: the trip point of each watched kind, and its floor point while the kind has a consent to the floor.
  * The quota reads the daemon again when a reading is near one of them.
  */
-function pointsOf(cfg: Effective, st: SessionState): Points {
+function pointsOf(cfg: Effective, st: SessionState, week: { resetMs: number | null; now: number; anchor?: Anchor }): Points {
   const out: Points = {}
   for (const k of watchedKinds(cfg)) {
     const floor = floorOf(cfg, k)
     const toFloor = parseConsent(st[consentField(k)])?.to !== undefined || slotList(st.test?.consent[k]).some((c) => c.to !== undefined)
-    out[k] = { trip: tripOf(reserveOf(cfg, k)), ...(floor > 0 && toFloor ? { floorPoint: pointOf(floor) } : {}) }
+    // The weekly pace lowers the trip point of the weekly window: the pace ceiling of the day.
+    const reserve =
+      k === 'seven_day' && week.resetMs !== null
+        ? reserveAt(cfg, k, { kind: 'seed', pct: 0, resetsAtMs: week.resetMs }, week.now, week.anchor)
+        : reserveOf(cfg, k)
+    out[k] = { trip: tripOf(reserve), ...(floor > 0 && toFloor ? { floorPoint: pointOf(floor) } : {}) }
   }
   return out
 }
@@ -197,7 +205,9 @@ export function createSense(d: SenseDeps): SenseApi {
     const cfg = d.settings.get()
     const state = sx.store.read()
     const test0 = testOf(state, sx.hostPid)
-    const points = pointsOf(cfg, state)
+    const nowFirst = d.clock.now()
+    const mem = memsOf(sx.sid)
+    const points = pointsOf(cfg, state, { resetMs: mem.seven_day.seed?.resetsAtMs ?? null, now: nowFirst, ...(state.pace?.anchor === undefined ? {} : { anchor: state.pace.anchor }) })
     const q: QuotaCtx = { transcript: sx.transcript, store: sx.store }
     // A19 at a tool or step gate. Q1: a thread with no rollout reads the daemon at a prompt gate too, since
     // in hold mode the prompt decision is the only gate before the first request of its turn.
@@ -205,7 +215,6 @@ export function createSense(d: SenseDeps): SenseApi {
     const view = fresh ? await d.quota.nearView(q, points) : d.quota.view(q, d.clock.now(), points)
     const now = d.clock.now()
     const tests = sx.root && cfg.testPct !== undefined && test0?.envDone !== true ? envTest(sx, cfg, view, now, test0) : { ...(test0?.kinds ?? {}) }
-    const mem = memsOf(sx.sid)
     for (const k of KINDS) {
       const r = view.readings[k]
       const m = r?.live === undefined ? mem[k] : sawLive(mem[k], r.live, now)
@@ -221,10 +230,26 @@ export function createSense(d: SenseDeps): SenseApi {
       const t = tests[k]
       return t !== undefined && inWindow(t, now, k)
     }
+    // The weekly pace rebase: the first reading of a local day decides, and it is kept in the session state.
+    let pace = state.pace
+    const weekLive = view.readings.seven_day?.live
+    if (cfg.weeklyPace !== '' && weekLive !== undefined) {
+      const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], parseReset(weekLive.resetsAt), now, WEEK_MS, weekLive.percentUsed, pace)
+      if (next !== pace && next !== undefined) {
+        pace = next
+        try {
+          sx.store.locked((tx) => {
+            tx.state.pace = next
+          })
+        } catch (e) {
+          d.log.debug(codexDebug.writeFailed('the weekly pace', errText(e)))
+        }
+      }
+    }
     const present = KINDS.filter((k) => view.present.includes(k) || inForce(k))
     const spans = spansOf(cfg, bases, view.creditsUsable)
     // A23: credits that pay past 100% make no kind a limit kind.
-    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable })
+    const { kinds } = sensesOf(cfg, bases, spans, now, fallbackOf(sx.sid), mem, watchedKinds(cfg, present), { paid: view.creditsUsable, ...(pace?.anchor === undefined ? {} : { anchor: pace.anchor }) })
     const tripped = kinds.some((k) => k.tripped)
     const attended = d.attendance.attended({ transcript: sx.transcript }, sx.mode).attended
     return {
@@ -266,7 +291,7 @@ export function createSense(d: SenseDeps): SenseApi {
         const r =
           state === undefined
             ? { list: [], dead: [] }
-            : consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid })
+            : consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.voidEnd, hostPid: sx.hostPid })
         dead.push(...r.dead)
         if (!k.open) {
           // B52: a consent to the floor whose basis reached its end point ends for good, before the kind is classified.
@@ -299,7 +324,7 @@ export function createSense(d: SenseDeps): SenseApi {
       (k) =>
         state === undefined
           ? []
-          : consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: false, realEnd: k.realReset, hostPid: sx.hostPid }).list,
+          : consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: false, realEnd: k.voidEnd, hostPid: sx.hostPid }).list,
       s.now,
     )
   }

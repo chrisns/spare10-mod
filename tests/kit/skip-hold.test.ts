@@ -26,6 +26,7 @@ import {
   stopRec,
   typed,
   world02 as world,
+  plainBadge,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -158,9 +159,9 @@ async function report($: Engine): Promise<string[]> {
 /** The footer badge text as drawn, trimmed. Mounted only for the read, so no pulse runs across a move. */
 async function badgeText($: Engine): Promise<string> {
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  const t = await ui.find({ type: 'Text', text: /spare10/ })
+  const t = await ui.find({ type: 'Text', text: /spare10|week \d/ })
   await ui.unmount()
-  return (t?.text ?? '').trim()
+  return plainBadge(t?.text ?? '').trim()
 }
 
 const untilOf = (raw: string | undefined): number => Number(raw?.split(' ')[1])

@@ -192,7 +192,7 @@
 @setKept = settings|the result is kept until config.json changes
 @setSimHost = settings|SPARE10_SIMULATE is ignored with a debug line on the daemon
 @setNested = settings|a nested run takes the child policy of its parent
-@setEnvReads = settings|envReadsOf takes the twelve names
+@setEnvReads = settings|envReadsOf takes the thirteen names
 @wiring = wiring|a trip, Stop here, turn/interrupt on the socket
 @fSenses = flow|sensesOf: a 5-hour reading in the reserve with its skip start
 @fOpen = flow|sensesOf: in the last span a tripped kind is open
@@ -1083,3 +1083,11 @@ autoResume off: a weekly question waits past its reset, says so once, and a late
 /spare10 stop after a weekly Resume clears the weekly consent, and the next call is refused => @consClear ; @cmdStopConsent
 /spare10 simulate off clears a real weekly consent too => @cmdSim
 a question that names both windows is not settled by another copy's consent for one of them => @fAnswers
+
+[pace.test.ts]
+weeklyPace Fri:10 holds the weekly window at the pace ceiling of the day, below the reserve => pace|pace: Sun:10 holds the weekly window
+a day that starts above the ceiling of the day before is rebased, so the same reading does not hold => pace|pace: a day that starts above the ceiling
+weeklyPace off by default: the same reading passes below the reserve => pace|pace: off by default
+a bad SPARE10_WEEKLY_PACE is ignored, and the pace stays off => pace|pace: a bad SPARE10_WEEKLY_PACE
+/spare10 shows the weekly pace row with the ceiling of the day => pace|pace: spare10 shows the weekly pace row
+the badge shows the weekly usage in place of the name => none:badge

@@ -1,5 +1,7 @@
 import type { SessionRateLimit } from 'claude-code'
 import { floorOf, reserveOf, spanOf, watchedKinds } from './config.ts'
+import { nextMidnight, paceCeilingAt, parseWeeklyPace } from './pace.ts'
+import type { Anchor } from './pace.ts'
 import type { Effective, Spans } from './config.ts'
 import {
   CHECK_MS,
@@ -40,6 +42,7 @@ import {
   skipStartOf,
   viewOf,
   windowMs,
+  WEEK_MS,
 } from './reading.ts'
 import type { Anchored, Basis, Kind, Memory, TestSpec } from './reading.ts'
 import {
@@ -88,11 +91,14 @@ export type KindSense = {
   seed: boolean
   realIn: boolean // TS1: the real reading, beneath any test reading, is tripped and not open
   realReset: number | null // TS1: the reset of the real reading, null when unknown
+  voidEnd: number | null // A22: the reset that voids a real consent of an early reset. A pace trip has none: its consent ends at midnight, long before the reset
   floor: number // B48: the floor in force in %, 0 when none (also for an unattended run, B55)
   point: number | null // B48: pointOf(floor), null when floor is 0
   atFloor: boolean // B48: tripped, not open, and the view reading at or past point
   realPct: number | undefined // TS1, B52: the pct of the real basis
   limit: boolean // at the quota limit with limitPause on (and on Codex no credits that pay): it gates in every state
+  pace: boolean // the weekly pace ceiling, not the reserve, is the trip point now (weeklyPace)
+  paceMax: number | null // the pace ceiling now in % used, null with no pace or after the last checkpoint
 }
 
 /** One sense: the settings, the time, every watched kind, and the attendance. */
@@ -109,6 +115,32 @@ export type FallbackEnds = Partial<Record<Kind, number>>
 
 /** What the host remembers of each kind (reading.ts Memory). */
 export type Mems = Readonly<Record<Kind, Memory>>
+
+/**
+ * The weekly pace at now (weeklyPace): the reserve in force, the pace ceiling's end point in % used, and
+ * whether the ceiling is the trip point. Only the weekly kind has a pace. With no pace, no known reset, or
+ * after the last checkpoint, it is the reserve alone.
+ */
+export function paceAt(
+  cfg: Pick<Effective, 'weeklyReserve' | 'weeklyPace' | 'reserve'>,
+  kind: Kind,
+  b: Basis,
+  now: number,
+  anchor?: Anchor,
+): { reserve: number; pace: boolean; target: number | null; ceiling: number | null } {
+  const base = reserveOf(cfg, kind)
+  const cps = kind === 'seven_day' && cfg.weeklyPace !== '' ? (parseWeeklyPace(cfg.weeklyPace) ?? []) : []
+  const last = cps[cps.length - 1]
+  const ceiling = last === undefined || b.kind === 'none' ? null : paceCeilingAt(cps, b.resetsAtMs, now, WEEK_MS, anchor)
+  if (last === undefined || ceiling === null) return { reserve: base, pace: false, target: null, ceiling }
+  const r = Math.round((100 - ceiling) * 10) / 10
+  if (base > 0 && r <= base) return { reserve: base, pace: false, target: null, ceiling }
+  return { reserve: r, pace: true, target: 100 - last.left, ceiling }
+}
+
+/** The reserve in force at now: the reserve, or the pace ceiling when that is lower. */
+export const reserveAt = (cfg: Pick<Effective, 'weeklyReserve' | 'weeklyPace' | 'reserve'>, kind: Kind, b: Basis, now: number, anchor?: Anchor): number =>
+  paceAt(cfg, kind, b, now, anchor).reserve
 
 /** The window end that bounds consent and stopped. Without resetsAt, one fallback per kind and episode (R11). */
 export function windowEndFor(kind: Kind, b: Basis, now: number, fallback: FallbackEnds): number {
@@ -143,23 +175,28 @@ export function sensesOf(
   fallback: FallbackEnds,
   mems: Mems,
   watched: readonly Kind[] = watchedKinds(cfg),
-  o: { paid?: boolean } = {},
+  o: { paid?: boolean; anchor?: Anchor } = {},
 ): { kinds: KindSense[]; edges: number[] } {
   const edges: number[] = []
   const paid = o.paid === true
   const kinds = watched.map((kind): KindSense => {
-    const reserve = reserveOf(cfg, kind)
     const span = spanOf(spans, kind)
     const real = bases[kind].real
     const withTest = bases[kind].basis
+    const pace = paceAt(cfg, kind, withTest, now, o.anchor)
+    const reserve = pace.reserve
     const limit = limitOf(cfg, withTest, paid)
     const v = limit ? { basis: withTest, tripped: true, skipAt: null, open: false } : viewOf(real, withTest, reserve, span, now) // B41, B45
     const rv = viewOf(real, real, reserve, span, now) // TS1: the real reading alone
     const b = v.basis
-    const windowEnd = windowEndFor(kind, b, now, fallback)
+    const paced = pace.pace && v.tripped && !limit
+    const midnight = nextMidnight(now)
+    // A pace trip ends at the next local midnight, where the line steps: the consent bound, hold end and stop end.
+    const windowEnd = paced ? Math.min(windowEndFor(kind, b, now, fallback), midnight) : windowEndFor(kind, b, now, fallback)
+    if (paced) edges.push(midnight)
     if (v.tripped && v.skipAt !== null) edges.push(v.skipAt)
     if (limit && b.kind !== 'none' && b.resetsAtMs !== null) edges.push(b.resetsAtMs)
-    const floor = floorOf(cfg, kind) // B48
+    const floor = paced && pace.target !== null ? Math.round((100 - pace.target) * 10) / 10 : floorOf(cfg, kind) // B48, pace: the last checkpoint
     const point = floor > 0 ? pointOf(floor) : null
     return {
       kind,
@@ -167,8 +204,8 @@ export function sensesOf(
       basis: b,
       tripped: v.tripped,
       windowEnd,
-      holdEnd: v.skipAt ?? holdEndOf(b, mems[kind], now, kind),
-      stopEnd: v.skipAt ?? windowEnd,
+      holdEnd: paced ? Math.min(v.skipAt ?? windowEnd, windowEnd) : (v.skipAt ?? holdEndOf(b, mems[kind], now, kind)),
+      stopEnd: paced ? Math.min(v.skipAt ?? windowEnd, windowEnd) : (v.skipAt ?? windowEnd),
       span,
       skipAt: v.skipAt,
       open: v.open,
@@ -176,11 +213,14 @@ export function sensesOf(
       seed: b.kind === 'seed',
       realIn: rv.tripped && (!rv.open || limitOf(cfg, real, paid)), // a real reading at the limit is never open
       realReset: real.kind === 'none' ? null : real.resetsAtMs,
+      voidEnd: paced || real.kind === 'none' ? null : real.resetsAtMs,
       floor,
       point,
       atFloor: !limit && v.tripped && !v.open && atPoint(b, point), // the limit question replaces the second question
       realPct: real.kind === 'none' ? undefined : real.pct,
       limit,
+      pace: paced,
+      paceMax: pace.ceiling,
     }
   })
   return { kinds, edges }
@@ -267,6 +307,7 @@ export function factsFrom(ks: readonly KindSense[], now: number, owner = false, 
       ...(k.atFloor ? { floor: k.floor } : {}),
       ...(to === undefined ? {} : { to }),
       ...(k.limit ? { limit: true } : {}),
+      ...(k.pace ? { pace: true } : {}),
     }
   })
 }
@@ -1626,6 +1667,9 @@ export function statusInput(p: Seen, i: { childPolicy: string; warnings: string[
       basis: week,
       ...rowOf('seven_day'),
     },
+    ...(p.cfg.weeklyPace === ''
+      ? {}
+      : { pace: { spec: p.cfg.weeklyPace, from: p.cfg.from.weeklyPace, ceiling: p.kinds.find((x) => x.kind === 'seven_day')?.paceMax ?? null } }),
     autoResume: { on: p.cfg.autoResume, from: p.cfg.from.autoResume },
     limitPause: { on: p.cfg.limitPause, from: p.cfg.from.limitPause },
     ...(lim === undefined ? {} : { limit: lim }),

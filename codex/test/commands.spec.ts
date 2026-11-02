@@ -398,6 +398,7 @@ test('commands: set lists, changes, rejects and resets an option, and a variable
       '  · weeklyLastHours   8 (default)',
       '  · resumeFloor       5 (default)',
       '  · weeklyResumeFloor 5 (default)',
+      '  · weeklyPace        off (default)',
       '  · pausePrompt       an empty text (default)',
       '  · autoResume        on (default)',
       '  · limitPause        on (default)',

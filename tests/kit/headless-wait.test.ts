@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, Plugin } from 'claude-code/testing'
-import { LATER, MARGIN, MIN, RESETS, SOON, T0, TEST_MARGIN, TICK, above, bash, begin, cmd, drain, measure, pastDue, step, typed, world } from '../helpers/world.ts'
+import { LATER, MARGIN, MIN, RESETS, SOON, T0, TEST_MARGIN, TICK, above, bash, begin, cmd, drain, measure, pastDue, step, typed, world, plainBadge} from '../helpers/world.ts'
 
 // Unattended wait through the engine (design 0.2: 8.3 headless.test.ts additions, B36, B37, 5.3, 5.5).
 // Every expected text is spelled out from design section 2 here, not taken from hooks/core/text.ts,
@@ -48,7 +48,7 @@ const mountBadge = ($: Engine) =>
 type Badge = Awaited<ReturnType<typeof mountBadge>>
 const badgeOf = async (ui: Badge): Promise<{ text: string | undefined; color: unknown }> => ({
   text: (await ui.find({ key: 'spare10' }))?.text,
-  color: (await ui.find({ type: 'Text', text: /spare10/ }))?.props.color,
+  color: (await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.props.color,
 })
 
 /**

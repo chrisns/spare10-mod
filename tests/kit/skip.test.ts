@@ -29,6 +29,7 @@ import {
   stopRec,
   typed,
   world02 as world,
+  plainBadge,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -122,9 +123,9 @@ const run = async ($: Engine, args: string): Promise<string | undefined> => (awa
 /** The badge as the terminal draws it. Mount only after a long move (a tripped badge pulses). */
 async function badgeText($: Engine): Promise<string> {
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  const t = await ui.find({ type: 'Text', text: /spare10|Pausing|Winding/ })
+  const t = await ui.find({ type: 'Text', text: /spare10|week \d|Pausing|Winding/ })
   await ui.unmount()
-  return t?.text ?? ''
+  return plainBadge(t?.text) ?? ''
 }
 
 // ---- B41, B42: the owner's rule ----

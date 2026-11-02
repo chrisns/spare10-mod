@@ -244,8 +244,8 @@ test('settings: a parent state that cannot be read is logged and ignored', (t) =
   assert.deepEqual(log.lines, [codexDebug.readFailed('the parent session', 'bad JSON')])
 })
 
-test('settings: envReadsOf takes the twelve names, empty values included', () => {
-  assert.equal(ENV_NAMES.length, 12)
+test('settings: envReadsOf takes the thirteen names, empty values included', () => {
+  assert.equal(ENV_NAMES.length, 13)
   assert.deepEqual(
     envReadsOf({ SPARE10: 'on', SPARE10_PAUSE_PROMPT: '', SPARE10_RESERVE: '15', SPARE10_SIMULATE: '92', SPARE10_LIMIT_PAUSE: 'off', OTHER: 'x', SPARE10_CONSENT: 'S 2026' }),
     { onOff: 'on', pausePrompt: '', reserve: '15', simulate: '92', limitPause: 'off' },

@@ -23,6 +23,7 @@ import {
   stopRec,
   typed,
   world,
+  plainBadge,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -137,9 +138,9 @@ async function status($: Engine): Promise<string[]> {
 /** The footer badge text as drawn (with its leading space). */
 async function badgeOf($: Engine): Promise<string> {
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  const t = await ui.find({ type: 'Text', text: /spare10/ })
+  const t = await ui.find({ type: 'Text', text: /spare10|week \d/ })
   await ui.unmount()
-  return t?.text ?? ''
+  return plainBadge(t?.text) ?? ''
 }
 
 /** A held main tool call answered Stop here at the current time: the stop has work and auto. */
@@ -763,9 +764,9 @@ test('the ticker redraws a stopped badge at its end', async ($, on) => {
   await loopStop($, w)
   await w.clock.set(RESETS_MS - 2 * MIN)
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  expect((await ui.find({ type: 'Text', text: /spare10/ }))?.text).toBe(` ■ spare10: stopped until ${clock(RESETS_MS)}`)
+  expect((await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.text).toBe(` ■ spare10: stopped until ${clock(RESETS_MS)}`)
   await w.clock.set(RESETS_MS + TICK) // across the stop's end, before its due time
-  expect((await ui.find({ type: 'Text', text: /spare10/ }))?.text).not.toContain('stopped')
+  expect((await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.text).not.toContain('stopped')
   await ui.unmount()
 })
 
@@ -774,9 +775,9 @@ test('a fresh module redraws at a stop end it finds in the env', async ($, on) =
   await begin($, w)
   await w.clock.set(RESETS_MS - 2 * MIN)
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  expect((await ui.find({ type: 'Text', text: /spare10/ }))?.text).toBe(` ■ spare10: stopped until ${clock(RESETS_MS)}`)
+  expect((await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.text).toBe(` ■ spare10: stopped until ${clock(RESETS_MS)}`)
   await w.clock.set(RESETS_MS + TICK)
-  expect((await ui.find({ type: 'Text', text: /spare10/ }))?.text).not.toContain('stopped')
+  expect((await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.text).not.toContain('stopped')
   await ui.unmount()
   await pastDue(w, RESETS) // a stop another copy wrote continues here too
   expect(w.submitted).toEqual([resumePrompt()])
@@ -787,9 +788,9 @@ test('a fresh module redraws at a consent end it finds in the env', async ($, on
   await begin($, w)
   await w.clock.set(RESETS_MS - 2 * MIN)
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  expect((await ui.find({ type: 'Text', text: /spare10/ }))?.text).toBe(' ⨯ spare10')
+  expect((await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.text).toBe(' ⨯ spare10')
   await w.clock.set(RESETS_MS + TICK)
-  expect((await ui.find({ type: 'Text', text: /spare10/ }))?.text).not.toBe(' ⨯ spare10')
+  expect((await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.text).not.toBe(' ⨯ spare10')
   await ui.unmount()
 })
 

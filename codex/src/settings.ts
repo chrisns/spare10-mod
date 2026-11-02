@@ -22,6 +22,7 @@ export const ENV_NAMES: ReadonlyArray<readonly [keyof EnvReads, string]> = [
   ['weeklyLastHours', 'SPARE10_WEEKLY_LAST_HOURS'],
   ['resumeFloor', 'SPARE10_RESUME_FLOOR'],
   ['weeklyResumeFloor', 'SPARE10_WEEKLY_RESUME_FLOOR'],
+  ['weeklyPace', 'SPARE10_WEEKLY_PACE'],
   ['pausePrompt', 'SPARE10_PAUSE_PROMPT'],
   ['autoResume', 'SPARE10_AUTO_RESUME'],
   ['limitPause', 'SPARE10_LIMIT_PAUSE'],
@@ -30,7 +31,7 @@ export const ENV_NAMES: ReadonlyArray<readonly [keyof EnvReads, string]> = [
   ['simulate', 'SPARE10_SIMULATE'],
 ]
 
-/** The EnvReads of the twelve names in `env`. A set but empty value counts, as on Claude. */
+/** The EnvReads of the names in `env`. A set but empty value counts, as on Claude. */
 export function envReadsOf(env: Env): EnvReads {
   const out: EnvReads = {}
   for (const [field, name] of ENV_NAMES) {

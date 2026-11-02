@@ -54,6 +54,7 @@ export type Facts = {
   to?: number
   floor?: number
   limit?: boolean
+  pace?: boolean // the weekly pace ceiling is the trip point (weeklyPace): the texts name the pace, not a reserve
 }
 
 /** A window that reset or ended, for {reset}. */
@@ -173,6 +174,10 @@ const reserveName = (f: Facts): string =>
     ? isWeekly(f)
       ? 'weekly quota limit'
       : 'quota limit'
+    : f.pace === true
+    ? f.floor !== undefined
+      ? `weekly pace limit (${fmtPct(100 - f.floor)}% used)`
+      : `weekly pace ceiling (${fmtPct(100 - f.reserve)}% used)`
     : f.floor !== undefined
     ? `${fmtPct(f.floor)}% ${isWeekly(f) ? 'weekly floor' : 'floor'}`
     : `${reserveOf(f)} ${isWeekly(f) ? 'weekly reserve' : 'reserve'}`
@@ -184,6 +189,7 @@ const isAre = (fs: readonly Facts[]): string => (fs.length > 1 ? 'are' : 'is')
 const quotaReserve = (fs: readonly Facts[]): string => {
   const f = onlyOf(fs)
   if (f === undefined) return 'quota reserves'
+  if (f.pace === true) return f.floor !== undefined ? 'weekly pace limit' : 'weekly pace ceiling'
   if (f.floor !== undefined) return `${fmtPct(f.floor)}% ${isWeekly(f) ? 'weekly quota floor' : 'quota floor'}`
   return `${reserveOf(f)} ${isWeekly(f) ? 'weekly quota reserve' : 'quota reserve'}`
 }
@@ -232,7 +238,7 @@ const hasFloor = (f: Facts): boolean => f.to !== undefined || f.floor !== undefi
 function useOne(f: Facts): string {
   const weekly = isWeekly(f)
   if (f.floor !== undefined) return `the last ${fmtPct(f.left)}%${weekly ? ' of the weekly window' : ''} ${untilText(f)}`
-  const name = weekly ? 'the weekly reserve' : 'the reserve'
+  const name = f.pace === true ? 'the weekly pace' : weekly ? 'the weekly reserve' : 'the reserve'
   if (f.to !== undefined) return f.resetsAtMs === null ? `${name} for one hour, or until ${fmtPct(f.to)}% used` : `${name} until ${fmtPct(f.to)}% used`
   return `${name} ${untilText(f)}`
 }
@@ -512,6 +518,7 @@ export function badWarning(
     | 'SPARE10_WEEKLY_LAST_HOURS'
     | 'SPARE10_RESUME_FLOOR'
     | 'SPARE10_WEEKLY_RESUME_FLOOR'
+    | 'SPARE10_WEEKLY_PACE'
     | 'SPARE10_AUTO_RESUME'
     | 'SPARE10_LIMIT_PAUSE'
     | 'SPARE10_HEADLESS'
@@ -525,6 +532,9 @@ export function badWarning(
   if (name === 'SPARE10_WEEKLY_LAST_HOURS') return `SPARE10_WEEKLY_LAST_HOURS="${raw}" is not 0 to 167. spare10 uses ${used}.`
   if (name === 'SPARE10_RESUME_FLOOR') return `SPARE10_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`
   if (name === 'SPARE10_WEEKLY_RESUME_FLOOR') return `SPARE10_WEEKLY_RESUME_FLOOR="${raw}" is not 0 to 99. spare10 uses ${used}.`
+  if (name === 'SPARE10_WEEKLY_PACE') {
+    return `SPARE10_WEEKLY_PACE="${raw}" is not a list like Fri:10. Each item is a weekday and the percent left, from 1 to 99. spare10 uses ${used}.`
+  }
   if (name === 'SPARE10_AUTO_RESUME') return `SPARE10_AUTO_RESUME="${raw}" is not on or off. spare10 uses ${used}.`
   if (name === 'SPARE10_LIMIT_PAUSE') return `SPARE10_LIMIT_PAUSE="${raw}" is not on or off. spare10 uses ${used}.`
   if (name === 'SPARE10_HEADLESS') return `SPARE10_HEADLESS="${raw}" is not off, prompt, stop or wait. spare10 uses ${used}.`
@@ -712,6 +722,7 @@ export type StatusInput = {
   weekly?:
     | { reserve: number; from: Source; basis: Basis; facts?: Facts; consentUntil?: number; consentTo?: number; consentEnded?: boolean }
     | 'off' // reserve 0 is off too
+  pace?: { spec: string; from: Source; ceiling: number | null } // weeklyPace set: the row, with today's ceiling in % used (null: none now)
   autoResume?: { on: boolean; from: Source }
   limitPause?: { on: boolean; from: Source } // the pause at the quota limit. Its row shows only while it is off
   limit?: { ms: number; kinds: readonly Kind[]; held: boolean } // the limit phase: when held work continues. held: a limit question after Continue at the reset. The stopped phase: the reset of the kinds at the limit
@@ -902,8 +913,19 @@ function weeklyRows(s: StatusInput): { reserve: string[]; reading: string[]; con
     w.consentTo,
     w.consentEnded,
   )
+  const pace =
+    s.pace === undefined
+      ? []
+      : [
+          field(
+            'weekly pace',
+            `${s.pace.spec} (${fromText(s.pace.from, 'SPARE10_WEEKLY_PACE')}): ${
+              s.pace.ceiling === null ? 'no ceiling now' : `spare10 holds at ${fmtPct(s.pace.ceiling)}% used until midnight`
+            }`,
+          ),
+        ]
   return {
-    reserve: [field('weekly reserve', `${fmtPct(w.reserve)}% of the weekly window (${fromText(w.from, 'SPARE10_WEEKLY_RESERVE')})`)],
+    reserve: [field('weekly reserve', `${fmtPct(w.reserve)}% of the weekly window (${fromText(w.from, 'SPARE10_WEEKLY_RESERVE')})`), ...pace],
     reading: [field('weekly reading', readingValue(w.basis, f, s.now, absentKind(s, 'seven_day'), 'seven_day'))],
     consent: [field('weekly consent', consent)],
   }

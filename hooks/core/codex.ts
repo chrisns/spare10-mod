@@ -10,6 +10,7 @@ import {
   parseSwitch,
   parseWeeklyLastHours,
   parseWeeklyReserve,
+  normalPace,
 } from './config.ts'
 import { BLIND_AFTER, KINDS, RESET_JITTER_MS, parseSimulate, windowMs } from './reading.ts'
 import type { Anchored, Kind } from './reading.ts'
@@ -512,6 +513,7 @@ export type OptionName =
   | 'weeklyLastHours'
   | 'resumeFloor'
   | 'weeklyResumeFloor'
+  | 'weeklyPace'
   | 'pausePrompt'
   | 'autoResume'
   | 'limitPause'
@@ -541,6 +543,7 @@ export const OPTIONS: ReadonlyArray<{
   { name: 'weeklyLastHours', env: 'SPARE10_WEEKLY_LAST_HOURS', range: '0 to 167', parse: parseWeeklyLastHours },
   { name: 'resumeFloor', env: 'SPARE10_RESUME_FLOOR', range: '0 to 99', parse: parseResumeFloor },
   { name: 'weeklyResumeFloor', env: 'SPARE10_WEEKLY_RESUME_FLOOR', range: '0 to 99', parse: parseResumeFloor },
+  { name: 'weeklyPace', env: 'SPARE10_WEEKLY_PACE', range: 'checkpoints such as Fri:10, or blank', parse: normalPace },
   { name: 'pausePrompt', env: 'SPARE10_PAUSE_PROMPT', range: 'any text', parse: parsePauseOption },
   { name: 'autoResume', env: 'SPARE10_AUTO_RESUME', range: 'on or off', parse: parseAutoResumeOption },
   { name: 'limitPause', env: 'SPARE10_LIMIT_PAUSE', range: 'on or off', parse: parseAutoResumeOption },
@@ -555,6 +558,7 @@ export const optionOf = (name: string): (typeof OPTIONS)[number] | undefined => 
 export function optionText(name: OptionName, value: string | number | boolean | null | undefined): string {
   if (name === 'autoResume' || name === 'limitPause') return value === false ? 'off' : 'on'
   if (name === 'pausePrompt') return typeof value === 'string' && value.trim() !== '' ? JSON.stringify(value) : 'an empty text'
+  if (name === 'weeklyPace') return typeof value === 'string' && value.trim() !== '' ? value : 'off'
   if (typeof value === 'number') return fmtPct(value)
   return String(value ?? '')
 }

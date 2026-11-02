@@ -26,6 +26,7 @@ import {
   stopRec,
   typed,
   world02 as world,
+  plainBadge,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -169,7 +170,7 @@ async function badge(ui: Ui): Promise<{ text: string | undefined; color: unknown
   const box = await ui.find({ key: 'spare10' })
   const inner = (box?.children ?? []).find((c): c is { type: string; props?: Record<string, unknown> } =>
     typeof c === 'object' && c !== null && (c as { type?: unknown }).type === 'Text')
-  return { text: box?.text, color: inner?.props?.color }
+  return { text: plainBadge(box?.text), color: inner?.props?.color }
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()

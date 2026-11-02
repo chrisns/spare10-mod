@@ -65,6 +65,12 @@
       "min": 0,
       "max": 99
     },
+    "weeklyPace": {
+      "type": "string",
+      "title": "Weekly pace",
+      "description": "Pace your week. A list of checkpoints like Fri:10 or Wed:45,Fri:10. Each item is a weekday and the percent of the weekly quota that must be left at the end of that day. spare10 holds work when you use the quota faster than a straight line to the checkpoints. A Resume lets you go on until midnight, then spare10 draws the line again from your use. After the last checkpoint, only the reserve applies. Weekdays use your local time. Blank switches this off. SPARE10_WEEKLY_PACE overrides it for one run.",
+      "default": ""
+    },
     "pausePrompt": {
       "type": "string",
       "title": "Pause prompt",

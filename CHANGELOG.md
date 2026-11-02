@@ -6,6 +6,17 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Weekly pace option.** Set `weeklyPace` to checkpoints such as `Fri:10`. spare10 then holds work when you use the weekly quota faster than a straight line to those checkpoints. The ceiling steps up at each local midnight. A **Resume** lasts until midnight, and then spare10 draws the line again from your real use. `SPARE10_WEEKLY_PACE` overrides the option for one run. It works in Claude Code and in Codex. In Codex, use `spare10 set weeklyPace Fri:10`. The Codex broker now passes `SPARE10_WEEKLY_PACE` in `codex/mcp.json`.
+- **Weekly pace in the report and the question.** `/spare10` shows a `weekly pace` row with the ceiling of the day. The question names the weekly pace ceiling, not a reserve.
+- **Weekly usage in the badge.** The badge now shows the weekly usage, such as `week 12%`, in place of the name `spare10`. With no weekly reading, it shows `spare10` as before. The `off` row keeps the name.
+
+### Fixed
+
+- **Weekly pace Resume.** A Resume at the pace ceiling ended at once, because the early-reset rule treated its midnight end as an old window. It now lasts until midnight.
+- **Weekly pace hold end.** A hold at the pace ceiling ended at the weekly open time, days away. It now ends at the next local midnight, as its Resume does.
+
 ## [0.4.0] - 2026-09-28
 
 ### Added

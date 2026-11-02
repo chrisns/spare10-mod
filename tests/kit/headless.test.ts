@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world02 as world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, typed, world02 as world, plainBadge} from '../helpers/world.ts'
 
 // The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // Unattended runs through the engine (design 11.4 headless.test.ts, 2.4 B15 and B16, 9, ruling R2).
@@ -54,7 +54,7 @@ const mountBadge = ($: Engine) =>
 type Badge = Awaited<ReturnType<typeof mountBadge>>
 const badgeOf = async (ui: Badge): Promise<{ text: string | undefined; color: unknown }> => ({
   text: (await ui.find({ key: 'spare10' }))?.text,
-  color: (await ui.find({ type: 'Text', text: /spare10/ }))?.props.color,
+  color: (await ui.find({ type: 'Text', text: /spare10|week \d/ }))?.props.color,
 })
 
 test('-p default off: inside the reserve everything runs, nothing asks, the seed is still written', async ($, on) => {

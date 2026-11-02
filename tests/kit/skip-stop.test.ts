@@ -29,6 +29,7 @@ import {
   stopRec,
   typed,
   world,
+  plainBadge,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -176,7 +177,7 @@ async function drawn(ui: Ui): Promise<Shown> {
   const box = await ui.find({ key: 'spare10' })
   const inner = (box?.children ?? []).find((c): c is { type: string; props?: Record<string, unknown> } =>
     typeof c === 'object' && c !== null && (c as { type?: unknown }).type === 'Text')
-  return { text: box?.text, color: inner?.props?.color }
+  return { text: plainBadge(box?.text), color: inner?.props?.color }
 }
 
 /** Mounts the badge, reads it and unmounts it again, so no pulse runs across a clock move. */

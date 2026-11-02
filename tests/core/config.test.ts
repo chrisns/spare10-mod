@@ -82,6 +82,7 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyLastHours: 8,
     resumeFloor: 5,
     weeklyResumeFloor: 5,
+    weeklyPace: '',
     pausePrompt: null,
     autoResume: true,
     limitPause: true,
@@ -98,6 +99,7 @@ test('fromOptions fills the defaults and reads only declared fields', () => {
     weeklyLastHours: 8,
     resumeFloor: 5,
     weeklyResumeFloor: 5,
+    weeklyPace: '',
     pausePrompt: 'Wrap up.',
     autoResume: true,
     limitPause: true,
@@ -231,6 +233,7 @@ test('fromOptions fills weeklyReserve 10 and autoResume true', () => {
     'resumeFloor',
     'scope',
     'weeklyLastHours',
+    'weeklyPace',
     'weeklyReserve',
     'weeklyResumeFloor',
   ])
@@ -252,6 +255,7 @@ test('withEnv: SPARE10_WEEKLY_RESERVE and SPARE10_AUTO_RESUME override, bad valu
     weeklyLastHours: 'option',
     resumeFloor: 'option',
     weeklyResumeFloor: 'option',
+    weeklyPace: 'option',
     pausePrompt: 'option',
     autoResume: 'option',
     limitPause: 'option',
@@ -383,7 +387,7 @@ test('parseWeeklyLastHours takes 0 to 167 with one decimal', () => {
 
 test('fromOptions fills lastMinutes 20 and weeklyLastHours 8', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(12)
+  expect(Object.keys(d)).toHaveLength(13)
   expect(d.lastMinutes).toBe(20)
   expect(d.weeklyLastHours).toBe(8)
   expect(fromOptions({ lastMinutes: 0, weeklyLastHours: 0 })).toEqual({ ...DEFAULTS, lastMinutes: 0, weeklyLastHours: 0 })
@@ -462,7 +466,7 @@ test('parseResumeFloor takes 0 to 99 with one decimal', () => {
 
 test('fromOptions fills resumeFloor 5 and weeklyResumeFloor 5', () => {
   const d = fromOptions({})
-  expect(Object.keys(d)).toHaveLength(12)
+  expect(Object.keys(d)).toHaveLength(13)
   expect(d.resumeFloor).toBe(5)
   expect(d.weeklyResumeFloor).toBe(5)
   expect(fromOptions({ resumeFloor: 0, weeklyResumeFloor: 2.54 })).toEqual({ ...DEFAULTS, resumeFloor: 0, weeklyResumeFloor: 2.5 })

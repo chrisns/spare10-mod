@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import { HOUR, LATER, MIN, OPENS, RESETS, T0, WEEK_OPENS, WEEK_RESETS, bash, begin, clear, cmd, measure, typed, world } from '../helpers/world.ts'
+import { HOUR, LATER, MIN, OPENS, RESETS, T0, WEEK_OPENS, WEEK_RESETS, bash, begin, clear, cmd, measure, typed, world, plainBadge } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
 // The floor state (floor design B48 to B55, 2.2 to 2.9, 3.3, 3.4), written from the spec only: the
@@ -161,7 +161,7 @@ async function badgeOf($: Engine): Promise<{ text: string | undefined; color: un
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
   const t = await ui.find({ type: 'Text' })
   await ui.unmount()
-  return { text: t?.text, color: t?.props['color'] }
+  return { text: plainBadge(t?.text), color: t?.props['color'] }
 }
 
 /** D1 and the text rules: no prefix that the engine adds, no em-dash, no en-dash, no semicolon. */

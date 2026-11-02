@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { SessionMeasureInput } from 'claude-code'
-import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world02 as world } from '../helpers/world.ts'
+import { HOUR, LATER, RESETS, T0, bash, begin, clear, cmd, drain, measure, step, stopRec, typed, world02 as world, plainBadge} from '../helpers/world.ts'
 
 // The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts.
 // The reading through the engine (design section 6, 11.4 reading.test.ts). Written from the spec:
@@ -59,7 +59,7 @@ const weekClock = (at: string): string =>
 async function badge($: Engine): Promise<() => Promise<{ text: string; color: unknown }>> {
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } } as never)
   return async () => {
-    const t = await ui.find({ type: 'Text', text: /spare10|Pausing|Winding/ })
+    const t = await ui.find({ type: 'Text', text: /spare10|week \d|Pausing|Winding/ })
     return { text: t?.text ?? '', color: t?.props.color }
   }
 }

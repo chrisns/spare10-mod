@@ -591,7 +591,7 @@ test('parseAutoResumeOption takes a boolean, on or off', () => {
   assert.equal(parseAutoResumeOption(null), undefined)
 })
 
-test('OPTIONS names the eleven options of 5.1 with their variables and ranges', () => {
+test('OPTIONS names the twelve options of 5.1 with their variables and ranges', () => {
   assert.deepEqual(
     OPTIONS.map((o) => [o.name, o.env, o.range]),
     [
@@ -601,6 +601,7 @@ test('OPTIONS names the eleven options of 5.1 with their variables and ranges', 
       ['weeklyLastHours', 'SPARE10_WEEKLY_LAST_HOURS', '0 to 167'],
       ['resumeFloor', 'SPARE10_RESUME_FLOOR', '0 to 99'],
       ['weeklyResumeFloor', 'SPARE10_WEEKLY_RESUME_FLOOR', '0 to 99'],
+      ['weeklyPace', 'SPARE10_WEEKLY_PACE', 'checkpoints such as Fri:10, or blank'],
       ['pausePrompt', 'SPARE10_PAUSE_PROMPT', 'any text'],
       ['autoResume', 'SPARE10_AUTO_RESUME', 'on or off'],
       ['limitPause', 'SPARE10_LIMIT_PAUSE', 'on or off'],
@@ -626,6 +627,7 @@ test('configOptions: good values pass to fromOptions', () => {
     weeklyLastHours: 0,
     resumeFloor: 3,
     weeklyResumeFloor: 2.5,
+    weeklyPace: '',
     pausePrompt: 'Commit, then stop.',
     autoResume: false,
     limitPause: false,
