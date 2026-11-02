@@ -14,6 +14,8 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Weekly pace in a new Codex session.** A new Codex session reads the weekly quota from `seed.json` first, and the pace rebase ignored that reading. It now uses it.
+- **Weekly pace wording.** The not-started line named the weekly reset as the end of a pace hold. It now names the next midnight.
 - **Weekly pace Resume.** A Resume at the pace ceiling ended at once, because the early-reset rule treated its midnight end as an old window. It now lasts until midnight.
 - **Weekly pace hold end.** A hold at the pace ceiling ended at the weekly open time, days away. It now ends at the next local midnight, as its Resume does.
 

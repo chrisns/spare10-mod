@@ -1,8 +1,11 @@
+import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dayStartOf, paceCeilingAt, parseWeeklyPace } from '../../hooks/core/pace.ts'
 import { WEEK_MS } from '../../hooks/core/reading.ts'
-import { readJson } from '../src/files.ts'
+import { readJson, writeJson } from '../src/files.ts'
+import type { SeedFile } from '../src/quota.ts'
+import { VERSION } from '../../hooks/core/text.ts'
 import type { QuestionRecord } from '../src/question.ts'
 import { HOUR, MIN, SID, T0, parsed, world } from './helpers/world.ts'
 import type { World } from './helpers/world.ts'
@@ -93,4 +96,14 @@ test('pace: spare10 shows the weekly pace row with the ceiling of the day', asyn
   const b = await w.broker()
   const reply = parsed(await b.gate('prompt', { prompt: 'spare10' }))['reason'] as string
   assert.match(reply, new RegExp(`· weekly pace {4}${PACE} \\([^)]*\\): spare10 holds at ${ceiling}% used until midnight`))
+})
+
+test('pace: a new session that has only seed.json reads the first reading of the day from it, and rebases', async (t) => {
+  if (yesterday === null) return // Monday has no day before
+  const w = world(t, { config: { weeklyPace: PACE } })
+  writeJson(join(w.data, 'seed.json'), { v: 1, by: VERSION, seven_day: { pct: ceiling - 0.1, resetsAtMs: WEEK_RESET, at: T0 - MIN } } satisfies SeedFile)
+  const b = await w.broker()
+  assert.equal(await b.gate('tool'), '')
+  assert.notEqual(w.state().pace?.anchor, undefined)
+  assert.equal(question(w), undefined)
 })

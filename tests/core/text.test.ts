@@ -2367,3 +2367,11 @@ test('every limit notice, warning and reply starts without the engine prefix', (
     expect(t.startsWith('spare10 ')).toBe(false)
   }
 })
+
+test('untilText names the next midnight for a weekly pace trip, and the reset for a reserve trip', () => {
+  const reset = Date.UTC(2026, 10, 5, 12)
+  const midnight = Date.UTC(2026, 10, 3)
+  const base = { used: 45, left: 55, resetsAtMs: reset, reserve: 56.3, kind: 'seven_day' as const, now: Date.UTC(2026, 10, 2, 12), timeZone: 'UTC' }
+  expect(untilText({ ...base, pace: true, holdEnd: midnight })).toBe('until Tue 00:00')
+  expect(untilText({ ...base })).toBe('until Thu 12:00')
+})

@@ -317,6 +317,7 @@ var isList = (f) => Array.isArray(f);
 var listOf = (f) => (isList(f) ? [...f] : [f]).sort((a, b) => Number(isWeekly(a)) - Number(isWeekly(b)));
 var onlyOf = (fs) => fs.length === 1 ? fs[0] : void 0;
 var clockOf = (f) => f.resetsAtMs === null ? "at an unknown time" : clockText(f.resetsAtMs, kindOf(f), f.timeZone, f.now);
+var endClock = (f) => f.pace === true && f.holdEnd !== void 0 ? clockText(f.holdEnd, kindOf(f), f.timeZone, f.now) : clockOf(f);
 var reserveOf = (f) => `${fmtPct(f.reserve)}%`;
 var UNTIL_RESET = "until the window resets";
 var reserveName = (f) => f.limit === true ? isWeekly(f) ? "weekly quota limit" : "quota limit" : f.pace === true ? f.floor !== void 0 ? `weekly pace limit (${fmtPct(100 - f.floor)}% used)` : `weekly pace ceiling (${fmtPct(100 - f.reserve)}% used)` : f.floor !== void 0 ? `${fmtPct(f.floor)}% ${isWeekly(f) ? "weekly floor" : "floor"}` : `${reserveOf(f)} ${isWeekly(f) ? "weekly reserve" : "reserve"}`;
@@ -338,8 +339,8 @@ function personFacts(f) {
 function untilText(f) {
   const fs = listOf(f);
   const one = onlyOf(fs);
-  if (one !== void 0) return one.resetsAtMs === null ? "for one hour" : `until ${clockOf(one)}`;
-  const clocks = fs.map((x) => x.resetsAtMs === null ? "an unknown time" : clockOf(x));
+  if (one !== void 0) return one.resetsAtMs === null ? "for one hour" : `until ${endClock(one)}`;
+  const clocks = fs.map((x) => x.resetsAtMs === null ? "an unknown time" : endClock(x));
   return `until they reset (${clocks.join(" and ")})`;
 }
 var pointText = (to, kind) => `${fmtPct(to)}% used${kind === "seven_day" ? " of the weekly window" : ""}`;
@@ -3996,9 +3997,11 @@ function createSense(d) {
       return t !== void 0 && inWindow(t, now, k);
     };
     let pace = state.pace;
-    const weekLive = view.readings.seven_day?.live;
-    if (cfg.weeklyPace !== "" && weekLive !== void 0) {
-      const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], parseReset(weekLive.resetsAt), now, WEEK_MS, weekLive.percentUsed, pace);
+    const wr = view.readings.seven_day;
+    const weekPct = wr?.live?.percentUsed ?? wr?.seed?.pct;
+    const weekReset = wr?.live !== void 0 ? parseReset(wr.live.resetsAt) : wr?.seed?.resetsAtMs ?? null;
+    if (cfg.weeklyPace !== "" && weekPct !== void 0 && (weekReset === null || weekReset > now)) {
+      const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], weekReset, now, WEEK_MS, weekPct, pace);
       if (next !== pace && next !== void 0) {
         pace = next;
         try {
