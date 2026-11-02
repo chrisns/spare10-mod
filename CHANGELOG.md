@@ -6,6 +6,8 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-02
+
 ### Fixed
 
 - **Badge on an account with no 5-hour window.** The badge read only the 5-hour window, so it showed `quota unavailable` while the weekly reading was live. It now reads every window that spare10 watches. It shows `week N%` when the weekly reading is live.
@@ -231,7 +233,8 @@ These parts of spare10 v0.5.0 are not in spare10-mod, because the mod runs insid
 - the `--refresh` option, bundle pinning and status-line chaining
 - the list of stopped background runs. Use `claude agents` instead.
 
-[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/chrisns/spare10-mod/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/chrisns/spare10-mod/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...v0.3.0
