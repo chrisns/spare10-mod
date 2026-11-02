@@ -7,7 +7,6 @@ import {
   flagOnlyInShell,
   fromOptions,
   questionTimeout,
-  reserveOf,
   spanOf,
   unreadEnv,
   watchedKinds,
@@ -52,11 +51,14 @@ import {
   isTripped,
   limitOf,
   newer,
+  parseReset,
   parseSimulate,
+  pctOf,
   sawLive,
   sawMeasure,
   viewOf,
   voidedByReset,
+  WEEK_MS,
   withoutVoided,
 } from './core/reading.ts'
 import type { Anchored, Basis, Kind, Memory } from './core/reading.ts'
@@ -90,6 +92,8 @@ import {
   withdrawnText,
 } from './core/text.ts'
 import type { Ended } from './core/text.ts'
+import { nextPace, parseWeeklyPace } from './core/pace.ts'
+import type { PaceState } from './core/pace.ts'
 import { badgeView } from './core/badge.ts'
 import type { View } from './core/badge.ts'
 import {
@@ -137,6 +141,7 @@ import {
   seenSplit,
   sensedNote,
   sensesOf,
+  reserveAt,
   simulateText,
   splitKind,
   statusInput,
@@ -291,6 +296,8 @@ let drawGen = 0 // redraw() calls: a render after one senses afresh
 let pulseDue = false // a pulse asked for renders, and no redraw came since: each render of each surface may reuse
 let trippedInputs: { gen: number; at: number; reserve: number; test: boolean; mode: Mode } | undefined // the last full tripped render
 let viewKey = ''
+let anchorLoaded = false
+let paceState: PaceState | undefined // weeklyPace: the rebase of the week, from the first reading of a day above the day before
 
 // ---- Settings (8.2) ----
 
@@ -318,6 +325,7 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
   const weeklyLastHours = await $.env.get('SPARE10_WEEKLY_LAST_HOURS')
   const resumeFloor = await $.env.get('SPARE10_RESUME_FLOOR')
   const weeklyResumeFloor = await $.env.get('SPARE10_WEEKLY_RESUME_FLOOR')
+  const weeklyPace = await $.env.get('SPARE10_WEEKLY_PACE')
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
   const autoResume = await $.env.get('SPARE10_AUTO_RESUME')
   const limitPause = await $.env.get('SPARE10_LIMIT_PAUSE')
@@ -331,6 +339,7 @@ async function readEnv($: EngineInterface): Promise<EnvReads> {
     ...(weeklyLastHours !== undefined && { weeklyLastHours }),
     ...(resumeFloor !== undefined && { resumeFloor }),
     ...(weeklyResumeFloor !== undefined && { weeklyResumeFloor }),
+    ...(weeklyPace !== undefined && { weeklyPace }),
     ...(pausePrompt !== undefined && { pausePrompt }),
     ...(autoResume !== undefined && { autoResume }),
     ...(limitPause !== undefined && { limitPause }),
@@ -384,6 +393,7 @@ async function currentBases($: EngineInterface, now: number): Promise<Bases> {
     const live = limitOf(limits, kind)
     if (live !== undefined) mem[kind] = sawLive(mem[kind], live, now)
   }
+  await noteAnchor($, limitOf(limits, 'seven_day'), now)
   if (!testFromEnvDone) {
     testFromEnvDone = true
     const cfg = await settings($)
@@ -399,9 +409,29 @@ async function currentBases($: EngineInterface, now: number): Promise<Bases> {
   return { five_hour: both('five_hour'), seven_day: both('seven_day') }
 }
 
+/** weeklyPace: load the anchor once, and start a new one from a live weekly reading that begins a day above the day before. */
+async function noteAnchor($: EngineInterface, live: SessionRateLimit | undefined, now: number): Promise<void> {
+  const cfg = await settings($)
+  if (cfg.weeklyPace === '') return
+  if (!anchorLoaded) {
+    anchorLoaded = true
+    const a = await $.store.get('pace-anchor').catch(() => undefined)
+    if (typeof a === 'object' && a !== null) {
+      const { day, anchor } = a as { day?: unknown; anchor?: { atMs?: unknown; pct?: unknown } }
+      const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
+      if (ok(day)) paceState = { day, ...(anchor !== undefined && ok(anchor.atMs) && ok(anchor.pct) ? { anchor: { atMs: anchor.atMs, pct: anchor.pct } } : {}) }
+    }
+  }
+  if (live === undefined) return
+  const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], parseReset(live.resetsAt), now, WEEK_MS, live.percentUsed, paceState)
+  if (next === paceState) return
+  paceState = next
+  if (next !== undefined) await $.store.set('pace-anchor', next).catch(() => undefined)
+}
+
 /** The spans for one sense: asked only when a watched kind is tripped, so an event below the reserve costs no noun call. */
-async function spansFor($: EngineInterface, cfg: Effective, bases: Bases): Promise<Spans> {
-  const anyTripped = watchedKinds(cfg).some((kind) => isTripped(bases[kind].basis, reserveOf(cfg, kind)))
+async function spansFor($: EngineInterface, cfg: Effective, bases: Bases, now: number): Promise<Spans> {
+  const anyTripped = watchedKinds(cfg).some((kind) => isTripped(bases[kind].basis, reserveAt(cfg, kind, bases[kind].basis, now, paceState?.anchor)))
   return anyTripped ? await spansInForce($) : NO_SPANS
 }
 
@@ -425,7 +455,7 @@ async function limitFor($: EngineInterface, cfg: Effective, bases: Bases): Promi
 
 /** Every watched kind at now (flow.ts sensesOf). The skip starts of tripped kinds are badge edges (skip 4.1). */
 function sensesNow(cfg: Effective, bases: Bases, spans: Spans, now: number): KindSense[] {
-  const r = sensesOf(cfg, bases, spans, now, fallbackEnd, mem)
+  const r = sensesOf(cfg, bases, spans, now, fallbackEnd, mem, undefined, { ...(paceState?.anchor === undefined ? {} : { anchor: paceState.anchor }) })
   for (const t of r.edges) addEdge(t) // the ticker redraws at the skip start
   return r.kinds
 }
@@ -671,7 +701,7 @@ async function sense($: EngineInterface): Promise<Sensed> {
   const now = await $.clock.now()
   const bases = await currentBases($, now)
   const cfg = await limitFor($, own, bases) // the pause at the limit in force
-  const kinds = sensesNow(cfg, bases, await spansFor($, cfg, bases), now)
+  const kinds = sensesNow(cfg, bases, await spansFor($, cfg, bases, now), now)
   noteBasis($, kinds)
   const tripped = kinds.some((k) => k.tripped)
   const att = tripped ? await isAttended($) : attended === true
@@ -688,9 +718,9 @@ async function splitOf($: EngineInterface, s: { kinds: readonly KindSense[]; now
   const out = emptySplit()
   for (const k of s.kinds) {
     if (!k.tripped) continue
-    const read = await consentsOf($, k.kind, s.attended, k.test, k.realReset).then(
+    const read = await consentsOf($, k.kind, s.attended, k.test, k.voidEnd).then(
       (list) => ({ list, failed: false }),
-      () => ({ list: slotsOf(k.kind, k.test, k.realReset), failed: true }),
+      () => ({ list: slotsOf(k.kind, k.test, k.voidEnd), failed: true }),
     )
     if (!k.open) endFloors($, k, read.list, s.now, read.failed) // B52: sync slots and tombs, void env
     splitKind(out, k, read.list, read.failed, s.now) // unreadable: not consented
@@ -717,7 +747,7 @@ async function holdersOf(
 ): Promise<Holder[]> {
   const lists: Partial<Record<Kind, Sourced[]>> = {}
   for (const k of s.kinds) {
-    if (needsRealList(k)) lists[k.kind] = await consentsOf($, k.kind, s.attended, false, k.realReset).catch((): Sourced[] => [])
+    if (needsRealList(k)) lists[k.kind] = await consentsOf($, k.kind, s.attended, false, k.voidEnd).catch((): Sourced[] => [])
   }
   return holdersFrom(s.kinds, gating, (k) => lists[k.kind] ?? [], s.now)
 }
@@ -1531,12 +1561,12 @@ async function seen($: EngineInterface): Promise<Seen> {
   const now = await $.clock.now()
   const bases = await currentBases($, now)
   const cfg = await limitFor($, own, bases) // the pause at the limit in force
-  const sensed = sensesNow(cfg, bases, await spansFor($, cfg, bases), now)
+  const sensed = sensesNow(cfg, bases, await spansFor($, cfg, bases, now), now)
   const tripped = sensed.some((k) => k.tripped)
   const att = await isAttended($)
   const kinds = att ? sensed : sensed.map(noFloor) // B55
   const lists: Partial<Record<Kind, Consent[]>> = {}
-  for (const k of kinds) lists[k.kind] = (await consentsOf($, k.kind, att, k.test, k.realReset)).map((e) => e.c)
+  for (const k of kinds) lists[k.kind] = (await consentsOf($, k.kind, att, k.test, k.voidEnd)).map((e) => e.c)
   // As splitOf classifies (floor 4.2), but it only reads: it never ends a consent (B52).
   const split = seenSplit(kinds, (k) => lists[k.kind] ?? [], now)
   const holders = cfg.enabled && att ? await holdersOf($, { kinds, now, attended: att }, split.gating) : [] // TS1
@@ -1564,7 +1594,8 @@ async function badgeNow($: EngineInterface): Promise<View> {
     const test = p.kinds.some((k) => k.test)
     const mode = modeOf(p.cfg)
     trippedInputs = p.phase === 'tripped' ? { gen, at: p.now, reserve: p.cfg.reserve, test, mode } : undefined
-    return badgeView(p.phase, { reserve: p.cfg.reserve, test, mode, blink, ...untilOf(p) })
+    const week = pctOf(p.bases.seven_day)
+    return badgeView(p.phase, { reserve: p.cfg.reserve, test, mode, blink, ...untilOf(p), ...(week === undefined ? {} : { week }) })
   } catch {
     trippedInputs = undefined
     // The label of the reserve in force (SPARE10_RESERVE included), when the settings are readable.
@@ -1616,6 +1647,8 @@ async function bgWarnings($: EngineInterface): Promise<string[]> {
   if (weeklyLastHours !== undefined) set.push(['SPARE10_WEEKLY_LAST_HOURS', weeklyLastHours])
   const resumeFloor = await $.env.get('SPARE10_RESUME_FLOOR')
   if (resumeFloor !== undefined) set.push(['SPARE10_RESUME_FLOOR', resumeFloor])
+  const weeklyPace = await $.env.get('SPARE10_WEEKLY_PACE')
+  if (weeklyPace !== undefined) set.push(['SPARE10_WEEKLY_PACE', weeklyPace])
   const weeklyResumeFloor = await $.env.get('SPARE10_WEEKLY_RESUME_FLOOR')
   if (weeklyResumeFloor !== undefined) set.push(['SPARE10_WEEKLY_RESUME_FLOOR', weeklyResumeFloor])
   const pausePrompt = await $.env.get('SPARE10_PAUSE_PROMPT')
@@ -1902,7 +1935,7 @@ export const register: Register = (on, options) => {
           const real = basis(live, mem[kind], now, undefined, kind)
           // This copy's spans: the badge only (skip 6.6). A kind at the quota limit is never open, as the sense says.
           if (cfg.limitPause && atLimit(withTest)) return { kind, basis: withTest, tripped: true, open: false }
-          const v = viewOf(real, withTest, reserveOf(cfg, kind), spanOf(cfg, kind), now)
+          const v = viewOf(real, withTest, reserveAt(cfg, kind, withTest, now, paceState?.anchor), spanOf(cfg, kind), now)
           return { kind, basis: v.basis, tripped: v.tripped, open: v.open }
         }),
       )

@@ -177,6 +177,8 @@ function valueOf(eff: Effective, name: OptionName): string | number | boolean | 
       return eff.resumeFloor
     case 'weeklyResumeFloor':
       return eff.weeklyResumeFloor
+    case 'weeklyPace':
+      return eff.weeklyPace
     case 'pausePrompt':
       return eff.pausePrompt
     case 'autoResume':
@@ -270,7 +272,7 @@ export function createCommands(d: CommandDeps): Commands {
     const state = sx.store.read()
     const parent = parentOf(sx, s.attended, d.log) // 3.10: logged when it fails, as the gate does
     const lists = (k: (typeof s.kinds)[number]) =>
-      consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.realReset, hostPid: sx.hostPid }).list.map(
+      consentsIn({ state, ...(parent === undefined ? {} : { parent }), kind: k.kind, attended: s.attended, testBasis: k.test, realEnd: k.voidEnd, hostPid: sx.hostPid }).list.map(
         (e) => e.c,
       )
     const split = seenSplit(s.kinds, lists, s.now)

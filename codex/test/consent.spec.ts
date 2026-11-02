@@ -38,11 +38,14 @@ function kind(pct: number, o: Partial<KindSense> = {}): KindSense {
     seed: false,
     realIn: pct >= 90,
     realReset: RESET,
+    voidEnd: RESET,
     floor: 5,
     point: 95,
     atFloor: pct >= 95,
     realPct: pct,
     limit: false,
+    pace: false,
+    paceMax: null,
     ...o,
   }
 }

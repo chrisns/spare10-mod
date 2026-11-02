@@ -1805,3 +1805,4 @@ Before the next release, run the release gate with LC38 to LC43 and LC45.
 Version 0.4.0 shipped before these checks ran.
 The kit tests and the Codex specs cover each of their cases.
 Run LC38 to LC43 and LC45 at the next chance, and add a row for each run.
+| Weekly pace (LC-pace) | 2026-11-02 | 2.1.316 | pass, after one fix | iTerm2, Haiku, `SPARE10_WEEKLY_PACE=Fri:10`. `/spare10 simulate 30 weekly` tripped the pace. The first run said the hold lasted until the weekly open time. That was a defect and is fixed. The second run said `Until Tue 00:00`, **Resume** let the prompt run, and `/spare10` showed the consent until 90% used or Tue 00:00. The midnight rebase is not live checked. Core and kit tests cover it. |

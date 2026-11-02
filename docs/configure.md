@@ -48,6 +48,42 @@ The parent session reads the same quota, so it holds at its own next step and as
 To choose a different policy, set `SPARE10_HEADLESS` before you start Claude Code.
 To let child runs wait, set `SPARE10_HEADLESS=wait`.
 
+## Weekly pace
+
+The 5-hour window stops you from using too much too fast.
+Some accounts have no 5-hour window.
+The weekly pace gives you a speed bump for the week.
+
+Set the option **Weekly pace** to a list of checkpoints.
+Each checkpoint is a weekday, a colon and the percent of the weekly quota that must be left at the end of that day.
+
+- `Fri:10` keeps 10% of the week at the end of Friday.
+- `Wed:45,Fri:10` keeps 45% at the end of Wednesday and 10% at the end of Friday.
+
+spare10 draws a line from the weekly reset to your checkpoints.
+Your reset has 100% left.
+With `Fri:10` and a reset on Monday at 00:00, the line allows 18% of the quota each day.
+The ceiling of a day is the line at the end of that day.
+The ceiling steps up at each local midnight.
+Weekdays use the time zone of your computer.
+
+When your use reaches the ceiling, spare10 holds the work and asks you.
+It uses the same question as the reserve.
+A **Resume** lets you continue until midnight.
+It never lets you pass the last checkpoint.
+At the next midnight, spare10 draws the line again from your real use to the last checkpoint.
+So a day of heavy use that you chose does not cause an alert on every day after it.
+spare10 asks again only when you go faster than the new line.
+
+After the last checkpoint, the pace ends.
+Only the reserve and the quota limit apply.
+Set the weekly reserve to `0` if you want to use the whole last part at the weekend.
+
+If spare10 does not know the weekly reset time, the pace does nothing.
+`SPARE10_WEEKLY_PACE` overrides the option for one run.
+In Codex, set `weeklyPace` with `spare10 set weeklyPace Fri:10`.
+A bad value shows a warning and the pace stays off.
+
 ## Options
 
 Set the options in `/config`, in the row for spare10.
@@ -61,6 +97,7 @@ A change of option reloads the plugin.
 | Open weekly reserve before weekly reset (h) | `8` | 0 to 167, one decimal at most | The same for the weekly window, in hours. `0` switches this off. |
 | Resume floor (%) | `5` | 0 to 99, one decimal at most | After a **Resume** at the 5-hour reserve, spare10 asks again when this much is left. `0` switches this off. A value at or above the reserve does nothing. |
 | Weekly resume floor (%) | `5` | 0 to 99, one decimal at most | The same for the weekly window. |
+| Weekly pace | empty | checkpoints, such as `Fri:10` | Paces your week. Each item is a weekday and the percent of the weekly quota that must be left at the end of that day. Empty switches this off. See [Weekly pace](#weekly-pace). |
 | Pause prompt | empty | any text | Empty: stop and ask you. Text: tell each agent this text and stop nothing. At 100% used, **Pause at the limit** still holds all work and asks you. |
 | Continue at the reset | on | on, off | On: spare10 continues held and stopped work by itself. It does this when the reserve opens, or a few minutes after the reset. **Stop here** then means "stop until then". At 100% used, **Stop here** never continues by itself. Off: work waits for you. |
 | Pause at the limit | on | on, off | On: at 100% used, spare10 holds all work. This is also true in an open reserve, after a **Resume** and with a pause prompt. It asks you once. With no answer, the work continues after the reset, unless the option **Continue at the reset** is off. **Stop here** stops the work until you type a prompt after the reset. Off: work runs into the limit. Switch it off when you pay for extra usage. See [At the quota limit](claude-code.md#at-the-quota-limit). |

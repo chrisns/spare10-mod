@@ -121,3 +121,12 @@ test('the limit row: the reset at which held work continues, the warning colour,
   expect(view('limit', { reserve: 40 }).text).toBe('‖ spare10 (40%): at the limit')
   expect(view('limit').text).not.toBe(view('told').text) // its own glyph, not the told mark
 })
+
+test('the weekly usage replaces the name in every phase but off', () => {
+  expect(badgeLabel(10, false, 12)).toBe('week 12%')
+  expect(badgeLabel(40, true, 12.54)).toBe('week 12.5% (40%) (test)')
+  expect(badgeView('armed', { reserve: 10, test: false, mode: 'hold', blink: true, week: 7 }).text).toBe('● week 7%')
+  expect(badgeView('stopped', { reserve: 10, test: false, mode: 'hold', blink: true, week: 93, until: 'Tue 00:00' }).text).toBe('■ week 93%: stopped until Tue 00:00')
+  expect(badgeView('off', { reserve: 10, test: false, mode: 'hold', blink: true, week: 7 }).text).toBe('○ spare10 off')
+  expect(badgeView('armed', { reserve: 10, test: false, mode: 'hold', blink: true }).text).toBe('● spare10')
+})

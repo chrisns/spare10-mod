@@ -733,3 +733,6 @@ export const auditor: Plugin = {
     })
   },
 }
+
+/** The badge text with the weekly label ("week 12%") written as the name it replaces, for the tests that do not read the label. */
+export const plainBadge = <T extends string | undefined>(t: T): T => (typeof t === 'string' ? (t.replace(/week [\d.]+%/, 'spare10') as T) : t)

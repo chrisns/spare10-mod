@@ -25,6 +25,7 @@ import {
   stopRec,
   typed,
   world,
+  plainBadge,
 } from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -113,7 +114,7 @@ async function badgeOf($: Engine): Promise<Shown> {
   const inner = (box?.children ?? []).find((c): c is { type: string; props?: Record<string, unknown> } =>
     typeof c === 'object' && c !== null && (c as { type?: unknown }).type === 'Text')
   await ui.unmount()
-  return { text: box?.text, color: inner?.props?.color }
+  return { text: plainBadge(box?.text), color: inner?.props?.color }
 }
 
 /** A Resume at the reserve (91% by default): a held main call, answered Resume. */

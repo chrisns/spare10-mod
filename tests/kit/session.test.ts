@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { VERSION } from '../../hooks/core/text.ts'
-import { HOUR, LATER, OPENS, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, real5, step, stopRec, typed, world as shipped, world02 as world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, WEEK_RESETS, bash, begin, clear, cmd, drain, measure, real5, step, stopRec, typed, world as shipped, world02 as world, plainBadge} from '../helpers/world.ts'
 import type { World } from '../helpers/world.ts'
 
 // The 0.2 texts: floors off (world02). The floor tests: floor*.test.ts. Four tests use `shipped`, the
@@ -70,9 +70,9 @@ async function status($: Engine): Promise<string[]> {
 /** The footer badge as the terminal draws it: its text (with the leading space) and its colour. */
 async function badgeOf($: Engine): Promise<{ text: string; color: unknown }> {
   const ui = await $.ui.mount({ plugin: 'spare10', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-  const t = await ui.find({ type: 'Text', text: /spare10/ })
+  const t = await ui.find({ type: 'Text', text: /spare10|week \d/ })
   await ui.unmount()
-  return { text: t?.text ?? '', color: t?.props['color'] }
+  return { text: plainBadge(t?.text) ?? '', color: t?.props['color'] }
 }
 
 // ---- the 11.4 session table ----

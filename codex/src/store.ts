@@ -5,6 +5,7 @@ import type { GateSite, HostKind } from '../../hooks/core/codex.ts'
 import { parseStopped } from '../../hooks/core/decide.ts'
 import type { Answered, ConsentSlots, Tomb } from '../../hooks/core/decide.ts'
 import type { QuestionCore, Via } from '../../hooks/core/flow.ts'
+import type { PaceState } from '../../hooks/core/pace.ts'
 import type { Anchored, Kind } from '../../hooks/core/reading.ts'
 import { VERSION } from '../../hooks/core/text.ts'
 import type { Clock } from './clock.ts'
@@ -57,6 +58,7 @@ export type SessionState = Stamp & {
   stopMeta?: { noDialog?: boolean } // noDialog: a held stop (4.4)
   child?: 'stop' // B37 for a nested codex exec
   test?: TestState
+  pace?: PaceState // the weekly pace rebase: the local day of the last first reading, and its anchor
   absentCount?: Partial<Record<Kind, number>> // 3.6: observations in a row that omit the kind
   absentAt?: number // 3.6: the time of the newest observation that absentCount counts, so no observation counts twice
   told?: Partial<Record<Kind, { windowEnd: number; keys: string[] }>> // B51

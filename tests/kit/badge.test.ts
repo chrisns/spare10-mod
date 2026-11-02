@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { Engine, ElementQuery, FoundElement } from 'claude-code/testing'
 import type { RenderSurface } from 'claude-code'
-import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, real5, stopRec, typed, world02 as world } from '../helpers/world.ts'
+import { HOUR, LATER, OPENS, RESETS, T0, above, bash, begin, cmd, measure, real5, stopRec, typed, world02 as world, plainBadge} from '../helpers/world.ts'
 import { atText } from '../../hooks/core/text.ts'
 import type { World } from '../helpers/world.ts'
 
@@ -27,7 +27,7 @@ async function badge(ui: Ui): Promise<Shown> {
   const box = await ui.find({ key: 'spare10' })
   const inner = (box?.children ?? []).find((c): c is { type: string; props?: Record<string, unknown> } =>
     typeof c === 'object' && c !== null && (c as { type?: unknown }).type === 'Text')
-  return { text: box?.text, color: inner?.props?.color }
+  return { text: plainBadge(box?.text), color: inner?.props?.color }
 }
 
 const shown = (text: string, color?: string): Shown => ({ text, color })

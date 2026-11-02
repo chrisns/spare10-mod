@@ -5,9 +5,13 @@ import { fmtPct } from './text.ts'
 
 export type View = { text: string; color?: 'inactive' | 'success' | 'warning'; pulse: boolean }
 
-/** 'spare10', or 'spare10 (40%)' when the reserve is not 10, plus ' (test)' under a test reading. */
-export function badgeLabel(reserve: number, test: boolean): string {
-  const label = reserve === 10 ? 'spare10' : `spare10 (${fmtPct(reserve)}%)`
+/**
+ * 'spare10', or 'spare10 (40%)' when the reserve is not 10, plus ' (test)' under a test reading. With the
+ * weekly usage (`week`, in % used), the name gives way to it: 'week 12%', and 'week 12% (40%)'.
+ */
+export function badgeLabel(reserve: number, test: boolean, week?: number): string {
+  const name = week === undefined ? 'spare10' : `week ${fmtPct(week)}%`
+  const label = reserve === 10 ? name : `${name} (${fmtPct(reserve)}%)`
   return test ? `${label} (test)` : label
 }
 
@@ -20,9 +24,9 @@ export function badgeLabel(reserve: number, test: boolean): string {
  */
 export function badgeView(
   phase: Phase,
-  i: { reserve: number; test: boolean; mode: Mode; blink: boolean; until?: string; to?: string },
+  i: { reserve: number; test: boolean; mode: Mode; blink: boolean; until?: string; to?: string; week?: number },
 ): View {
-  const label = badgeLabel(i.reserve, i.test)
+  const label = badgeLabel(i.reserve, i.test, phase === 'off' ? undefined : i.week)
   const until = i.until === undefined ? '' : ` until ${i.until}`
   switch (phase) {
     case 'off':

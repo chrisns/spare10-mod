@@ -238,6 +238,7 @@ During a turn, put `!` in front of it.
 | `weeklyLastHours` | `8` | spare10 opens the weekly reserve in these last hours of the weekly window. `0` switches this off. |
 | `resumeFloor` | `5` | After a **Resume**, spare10 asks again when this percent of the 5-hour window is left. |
 | `weeklyResumeFloor` | `5` | The same for the weekly window. |
+| `weeklyPace` | empty | Checkpoints such as `Fri:10`: the percent of the weekly quota that must be left at the end of a weekday. spare10 holds work when you use the quota faster than a line to them. See [Weekly pace](docs/configure.md#weekly-pace). |
 | `pausePrompt` | empty | Text here tells the agents to wind down, and spare10 stops nothing. At 100% used, `limitPause` still holds all work and asks you. |
 | `autoResume` | on | spare10 continues held and stopped work when the reserve opens, or after the reset. |
 | `limitPause` | on | At 100% used, spare10 holds all work and asks you once, also with a pause prompt. With no answer, it continues the work after the reset, unless `autoResume` is off. Switch it off when you pay for extra usage. |

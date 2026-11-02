@@ -529,8 +529,12 @@ See [At the quota limit](#at-the-quota-limit).
 
 The badge is at the right of the prompt footer, in the terminal and the desktop app.
 Its colours follow your theme.
-The label is `spare10`, or `spare10 (15%)` when the reserve is not 10.
+The label shows the weekly usage, such as `week 12%`, while spare10 has a weekly reading.
+With no weekly reading, the label is `spare10`.
+When the reserve is not 10, the label adds it, such as `week 12% (15%)` or `spare10 (15%)`.
+The `○ spare10 off` row always keeps the name.
 The weekly reserve never shows in the label.
+In the rows below, `spare10` stands for this label.
 While a test reading applies, the label ends with ` (test)`.
 The rows without a label, such as `⚠ Pausing at next step`, show no ` (test)`.
 

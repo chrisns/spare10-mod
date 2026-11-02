@@ -193,7 +193,7 @@ Codex has no screen for plugin options.
 spare10 keeps its options in `~/.codex/plugins/data/spare10-spare10/config.json`.
 Change them with `spare10 set`.
 The options, defaults and values are the same as in [Configure](configure.md#options), without **Status badge**.
-Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `pausePrompt`, `autoResume`, `limitPause`, `headless` and `scope`.
+Their names are `reserve`, `weeklyReserve`, `lastMinutes`, `weeklyLastHours`, `resumeFloor`, `weeklyResumeFloor`, `weeklyPace`, `pausePrompt`, `autoResume`, `limitPause`, `headless` and `scope`.
 A `SPARE10_*` variable with a valid value wins over the file, as in Claude Code.
 `limitPause` is **Pause at the limit**. Switch it off with `spare10 set limitPause off`.
 While it is off, the report warns when a window is at 100% used and no credits can pay:
