@@ -235,6 +235,18 @@ test('a blind sensor shows the plain warning, and a reading clears it', async ($
   expect(await badge(ui)).toEqual(shown(' ● spare10', 'success'))
 })
 
+test('an account with no 5-hour window is armed by its weekly reading, not blind', async ($, on) => {
+  const w = world(on, { weekPct: 12 })
+  await begin($, w)
+  const ui = await mountBadge($)
+  for (let i = 0; i < 3; i += 1) {
+    await $.session.measure(measure(undefined, undefined, undefined, { pct: 12 })) // billed responses with a weekly window only
+    await w.clock.settle()
+  }
+  expect((await badge(ui)).text).toBe(' ● spare10')
+  expect((await ui.find({ key: 'spare10' }))?.text).toContain('week 12%')
+})
+
 test('a non-default reserve is spelled out in every labelled row', async ($, on) => {
   const w = world(on, { env: { SPARE10_RESERVE: '40' } })
   await begin($, w)

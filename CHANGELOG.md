@@ -6,6 +6,10 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Badge on an account with no 5-hour window.** The badge read only the 5-hour window, so it showed `quota unavailable` while the weekly reading was live. It now reads every window that spare10 watches. It shows `week N%` when the weekly reading is live.
+
 ## [0.5.0] - 2026-11-02
 
 ### Added

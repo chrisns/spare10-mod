@@ -543,7 +543,7 @@ The rows without a label, such as `⚠ Pausing at next step`, show no ` (test)`.
 | `○ spare10 off` | spare10 is not enabled in this run. It only watches. |
 | `? spare10: waiting for you until 13:40` | A question is open. Held work waits for your answer, or until 13:40, when the reserve opens. |
 | `? spare10: waiting for you` | A question is open, and the option **Continue at the reset** is off. Held work waits for your answer. |
-| `⚠ spare10 quota unavailable` | Claude Code reports no 5-hour quota. spare10 lets all work through. |
+| `⚠ spare10 quota unavailable` | Claude Code reports no quota for any window that spare10 watches. spare10 lets all work through. |
 | `⧗ spare10` | There is no reading yet. spare10 lets all work through. |
 | `● spare10` | Usage is below each reserve. |
 | `‖ spare10: at the limit until 15:00` | A window is at 100% used. spare10 holds all work until the reset, and asks you once. After the answer **Continue at the reset**, held work continues about 5 minutes after 15:00. |
