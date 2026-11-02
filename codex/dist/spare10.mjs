@@ -243,7 +243,7 @@ var HOST = {
 };
 
 // hooks/core/text.ts
-var VERSION = "0.4.0";
+var VERSION = "0.5.0";
 var HEADER = "spare10";
 var QUESTION_OPTIONS = ["Stop here", "Resume"];
 var LIMIT_OPTIONS = ["Continue at the reset", "Stop here"];

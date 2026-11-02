@@ -6,6 +6,8 @@ The project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-02
+
 ### Added
 
 - **Weekly pace option.** Set `weeklyPace` to checkpoints such as `Fri:10`. spare10 then holds work when you use the weekly quota faster than a straight line to those checkpoints. The ceiling steps up at each local midnight. A **Resume** lasts until midnight, and then spare10 draws the line again from your real use. `SPARE10_WEEKLY_PACE` overrides the option for one run. It works in Claude Code and in Codex. In Codex, use `spare10 set weeklyPace Fri:10`. The Codex broker now passes `SPARE10_WEEKLY_PACE` in `codex/mcp.json`.
@@ -225,7 +227,8 @@ These parts of spare10 v0.5.0 are not in spare10-mod, because the mod runs insid
 - the `--refresh` option, bundle pinning and status-line chaining
 - the list of stopped background runs. Use `claude agents` instead.
 
-[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/chrisns/spare10-mod/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/chrisns/spare10-mod/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/chrisns/spare10-mod/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chrisns/spare10-mod/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chrisns/spare10-mod/compare/v0.1.0...v0.2.0
