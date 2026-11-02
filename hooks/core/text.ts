@@ -165,6 +165,9 @@ const onlyOf = (fs: readonly Facts[]): Facts | undefined => (fs.length === 1 ? f
 
 const clockOf = (f: Facts): string =>
   f.resetsAtMs === null ? 'at an unknown time' : clockText(f.resetsAtMs, kindOf(f), f.timeZone, f.now)
+/** The clock a quiet period ends at: the reset, or for a weekly pace trip the next local midnight (its hold end). */
+const endClock = (f: Facts): string =>
+  f.pace === true && f.holdEnd !== undefined ? clockText(f.holdEnd, kindOf(f), f.timeZone, f.now) : clockOf(f)
 const reserveOf = (f: Facts): string => `${fmtPct(f.reserve)}%`
 const UNTIL_RESET = 'until the window resets' // only when a caller has no figures
 
@@ -223,8 +226,8 @@ export const modelFacts = (f: Facts | readonly Facts[]): string => listOf(f).map
 export function untilText(f: Facts | readonly Facts[]): string {
   const fs = listOf(f)
   const one = onlyOf(fs)
-  if (one !== undefined) return one.resetsAtMs === null ? 'for one hour' : `until ${clockOf(one)}`
-  const clocks = fs.map((x) => (x.resetsAtMs === null ? 'an unknown time' : clockOf(x)))
+  if (one !== undefined) return one.resetsAtMs === null ? 'for one hour' : `until ${endClock(one)}`
+  const clocks = fs.map((x) => (x.resetsAtMs === null ? 'an unknown time' : endClock(x)))
   return `until they reset (${clocks.join(' and ')})`
 }
 

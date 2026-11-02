@@ -232,9 +232,12 @@ export function createSense(d: SenseDeps): SenseApi {
     }
     // The weekly pace rebase: the first reading of a local day decides, and it is kept in the session state.
     let pace = state.pace
-    const weekLive = view.readings.seven_day?.live
-    if (cfg.weeklyPace !== '' && weekLive !== undefined) {
-      const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], parseReset(weekLive.resetsAt), now, WEEK_MS, weekLive.percentUsed, pace)
+    // The weekly reading of any route: the live one, else the seed (a new session reads only seed.json at first).
+    const wr = view.readings.seven_day
+    const weekPct = wr?.live?.percentUsed ?? wr?.seed?.pct
+    const weekReset = wr?.live !== undefined ? parseReset(wr.live.resetsAt) : (wr?.seed?.resetsAtMs ?? null)
+    if (cfg.weeklyPace !== '' && weekPct !== undefined && (weekReset === null || weekReset > now)) {
+      const next = nextPace(parseWeeklyPace(cfg.weeklyPace) ?? [], weekReset, now, WEEK_MS, weekPct, pace)
       if (next !== pace && next !== undefined) {
         pace = next
         try {
